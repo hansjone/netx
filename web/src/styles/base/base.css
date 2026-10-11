@@ -1,0 +1,45 @@
+/* Base: HeroUI token alignment, scrollbars, body */
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  color-scheme: dark;
+  scrollbar-color: var(--nx-line-strong) var(--nx-surface-2);
+  scrollbar-width: thin;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: var(--nx-surface-2);
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--nx-line-strong);
+  border: 2px solid var(--nx-surface-2);
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--nx-text-faint);
+}
+
+*::-webkit-scrollbar-corner {
+  background: var(--nx-surface-2);
+}
+
+body {
+  margin: 0;
+  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  background: #070b14;
+  color: var(--nx-text);
+}
+
+#root {
+  min-height: 100vh;
+}

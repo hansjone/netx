@@ -1,0 +1,25 @@
+const common = {
+  help: "帮助说明",
+  refresh: "刷新",
+  refreshing: "刷新中…",
+  query: "查询",
+  clearFilters: "清除筛选",
+  prevPage: "上一页",
+  nextPage: "下一页",
+  perPage: "{{n}}/页",
+  pagerMeta: "共 {{total}} 条 · 第 {{page}}/{{pages}} 页",
+  jumpPage: "跳转到页",
+  pageSize: "每页条数",
+  exportCsv: "导出 CSV",
+  exporting: "导出中…",
+  exportOk: "已导出 {{count}} 条",
+  exportTruncated: "已导出前 {{count}} 条（共 {{total}}，已截断）",
+  exportFailed: "导出失败",
+  opFailed: "操作失败",
+  empty: "-",
+  cancel: "取消",
+  copy: "复制",
+  copied: "已复制",
+};
+
+export default common;

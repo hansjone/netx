@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import en from "./en";
-import zh from "./zh";
+import en from "./locales/en";
+import zh from "./locales/zh";
 
 export type Locale = "zh" | "en";
 

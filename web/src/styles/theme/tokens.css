@@ -1,0 +1,109 @@
+/*
+ * NetX design tokens — the ONLY place raw palette values live.
+ *
+ * Direction: modern blue on the original NetX navy palette. Deep navy surfaces with soft gradients, 8/12px
+ * rounded shapes, the original blue accent used for primary actions and focus,
+ * gentle glows and lift-on-hover. Status colors stay semantic.
+ *
+ * Rules for new CSS:
+ *   - Use var(--nx-*) — never raw hex / rgb() for surfaces, text, lines, accent.
+ *   - Translucent surfaces: rgb(var(--nx-ink-rgb) / .6), not rgba(15,23,42,.6).
+ *   - Status colors are semantic: --nx-ok / --nx-warn / --nx-bad.
+ */
+:root {
+  /* Surfaces — original navy, 4 elevation steps + inset field */
+  --nx-bg: #070b14;
+  --nx-surface-1: #0c1521;
+  --nx-surface-2: #111c2a;
+  --nx-surface-3: #162232;
+  --nx-field: #0b1220;
+
+  /* Channel triplets for translucent fills: rgb(var(--nx-ink-rgb) / .6) */
+  --nx-ink-rgb: 15 23 42; /* = surface-1 */
+  --nx-ink-deep-rgb: 2 8 23; /* darker than bg, for scrims / insets */
+  --nx-surface-3-rgb: 30 41 59;
+  --nx-accent-rgb: 59 130 246;
+
+  /* Lines */
+  --nx-line: #2b3748;
+  --nx-line-strong: #3a4a60;
+  --nx-line-soft: rgb(148 163 184 / 0.14);
+
+  /* Text — five tones, all >= 4.5:1 on surface-1 */
+  --nx-text-strong: #f1f5f9;
+  --nx-text: #e2e8f0;
+  --nx-text-soft: #cbd5e1;
+  --nx-text-muted: #94a3b8;
+  --nx-text-faint: #74849b;
+
+  /* Accent: blue. Primary actions, selection, focus, gradients. */
+  --nx-accent: #6ba9ec;
+  --nx-accent-strong: #3b82f6;
+  --nx-accent-text: #93c5fd;
+  --nx-accent-soft: rgb(var(--nx-accent-rgb) / 0.14);
+
+  /* Status — semantic only */
+  --nx-ok: #4ade80;
+  --nx-warn: #fbbf24;
+  --nx-bad: #f87171;
+  --nx-bad-text: #fecaca; /* readable text on a red wash */
+  --nx-ok-rgb: 74 222 128;
+  --nx-warn-rgb: 251 191 36;
+  --nx-bad-rgb: 248 113 113;
+
+  /* Shape: soft rounded corners */
+  --nx-radius-sm: 6px;
+  --nx-radius: 8px;
+  --nx-radius-lg: 12px;
+
+  --nx-ring: 0 0 0 3px rgb(var(--nx-accent-rgb) / 0.35);
+  --nx-shadow-panel: 0 1px 0 rgb(255 255 255 / 0.04) inset, 0 10px 28px rgb(0 0 0 / 0.28);
+  --nx-shadow-pop: 0 18px 48px rgb(0 0 0 / 0.55);
+
+  --nx-font-sans: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --nx-font-mono: ui-monospace, "Cascadia Mono", "SF Mono", Consolas, monospace;
+
+  --nx-gradient-accent: linear-gradient(180deg, #3b82f6 0%, #2563eb 100%);
+  --nx-header-h: 48px; /* pages size themselves with calc(100vh - 48px) */
+}
+
+/* Legacy --nm-* tokens (hundreds of rules still read them) → single source. */
+.app--shell {
+  --nm-accent: var(--nx-accent-strong);
+  --nm-header: var(--nx-bg);
+  --nm-chrome: var(--nx-bg);
+  --nm-main: var(--nx-bg);
+  --nm-nav: var(--nx-surface-1);
+  --nm-nav-border: var(--nx-line);
+  --nm-nav-hover: rgb(var(--nx-accent-rgb) / 0.08);
+  --nm-nav-active: rgb(var(--nx-accent-rgb) / 0.14);
+  --nm-nav-ink: var(--nx-text);
+  --nm-nav-muted: var(--nx-text-muted);
+  --nm-panel: var(--nx-surface-1);
+  --nm-panel-solid: var(--nx-surface-1);
+  --nm-panel-border: var(--nx-line);
+  --nm-brand: var(--nx-text-strong);
+  --nm-text: var(--nx-text);
+  --nm-muted: var(--nx-text-muted);
+  --nm-glass: rgb(var(--nx-ink-rgb) / 0.9);
+  --nm-glass-border: var(--nx-line);
+  --nm-ops-line: var(--nx-line);
+  --nm-ops-muted: var(--nx-text-muted);
+  --nm-ops-accent: var(--nx-accent);
+  --nm-ops-surface: var(--nx-surface-2);
+}
+
+/* HeroUI v3 tokens (oklch in its defaults) aligned to the same palette. */
+.dark,
+[data-theme="dark"] {
+  --background: var(--nx-bg);
+  --foreground: var(--nx-text);
+  --surface: var(--nx-surface-1);
+  --surface-secondary: var(--nx-surface-2);
+  --overlay: var(--nx-surface-1);
+  --accent: var(--nx-accent-strong);
+  --accent-foreground: #fff;
+  --muted: var(--nx-text-muted);
+  --border: var(--nx-line);
+  --field-background: var(--nx-field);
+}

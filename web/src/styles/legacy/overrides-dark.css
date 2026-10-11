@@ -1,0 +1,268 @@
+/* LEGACY: unified dark surfaces, dark modals, audit logs. Dissolve into components/ over time. */
+
+/* ===== Unified dark content surfaces (forms / tables / status) ===== */
+.page-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 240px;
+  color: var(--nx-text-muted);
+  font-size: 13px;
+}
+.page-loading--soft {
+  min-height: 120px;
+  opacity: 0;
+  animation: page-loading-soft-in 160ms ease 180ms forwards;
+}
+@keyframes page-loading-soft-in {
+  to {
+    opacity: 1;
+  }
+}
+
+.app-main option,
+option {
+  background: var(--nx-surface-2);
+  color: var(--nx-text);
+}
+
+.app-main .filter-inline,
+.ne-page .filter-inline,
+.ume-page .filter-inline,
+.system-page .filter-inline,
+.network-main .filter-inline {
+  background: rgb(var(--nx-ink-deep-rgb) / 0.45) !important;
+  border-color: var(--nm-ops-line) !important;
+}
+
+.app-main .filter-inline input,
+.app-main .filter-inline select,
+.ne-page .filter-inline input,
+.ne-page .filter-inline select,
+.ume-page .filter-inline input,
+.ume-page .filter-inline select,
+.system-page .filter-inline input,
+.system-page .filter-inline select,
+.network-main .filter-inline input,
+.network-main .filter-inline select {
+  background: var(--nx-field) !important;
+  border-color: var(--nm-ops-line) !important;
+  color: var(--nx-text) !important;
+}
+
+.app-main .pt-list-table-wrap,
+.ne-page .pt-list-table-wrap,
+.ume-page .pt-list-table-wrap,
+.system-page .pt-list-table-wrap,
+.network-main .pt-list-table-wrap,
+.pt-list-table-wrap {
+  border-color: var(--nm-ops-line) !important;
+  background: rgb(var(--nx-ink-deep-rgb) / 0.28);
+}
+
+.app-main .pt-list-table thead th,
+.ne-page .pt-list-table thead th,
+.ume-page .pt-list-table thead th,
+.system-page .pt-list-table thead th,
+.network-main .pt-list-table thead th,
+.pt-list-table thead th,
+.app-main .data-table thead th,
+.data-table thead th {
+  background: var(--nx-surface-3) !important;
+  color: var(--nx-text-muted) !important;
+  border-bottom-color: var(--nm-ops-line);
+}
+
+.app-main .pt-list-table tbody tr:hover td,
+.pt-list-table tbody tr:hover td,
+.app-main .data-table tbody tr:hover td,
+.data-table tbody tr:hover td {
+  background: rgb(var(--nx-surface-3-rgb) / 0.55) !important;
+}
+
+.app-main .pt-list-status--unknown,
+.pt-list-status--unknown,
+.app-main .pt-list-status--other,
+.pt-list-status--other,
+.app-main .pt-list-status--stopped,
+.pt-list-status--stopped {
+  background: rgba(148, 163, 184, 0.14) !important;
+  color: var(--nx-text-muted) !important;
+}
+
+.app-main .pt-list-status--ok,
+.pt-list-status--ok,
+.app-main .pt-list-status--pass,
+.pt-list-status--pass,
+.app-main .pt-list-status--up,
+.pt-list-status--up {
+  background: rgba(34, 197, 94, 0.16) !important;
+  color: #86efac !important;
+}
+
+.app-main table,
+.app-main .data-table {
+  color: var(--nx-text);
+}
+
+.app-main .muted,
+.muted {
+  color: var(--nx-text-muted);
+}
+
+/* ===== Dark modals + topology non-canvas ===== */
+.modal-backdrop,
+.token-scopes-modal__backdrop,
+.topo-modal__backdrop {
+  background: rgb(var(--nx-ink-deep-rgb) / 0.72) !important;
+}
+
+.modal,
+.app-main .modal,
+.token-scopes-modal__panel,
+.topo-modal__panel,
+.webcrt-auth-modal,
+.webcrt-new-session-modal,
+.webcrt-keyword-modal,
+.webcrt-session-opts-modal {
+  background: var(--nx-surface-2) !important;
+  color: var(--nx-text) !important;
+  border: 1px solid rgba(148, 163, 184, 0.22) !important;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45) !important;
+}
+
+.modal h3,
+.token-scopes-modal__head h3,
+.topo-modal__head h3,
+.pt-log-modal__head h3 {
+  color: var(--nx-text-strong) !important;
+}
+
+.modal .muted,
+.modal .form-hint,
+.modal label,
+.modal .form-label,
+.token-scopes-modal__row,
+.topo-modal__hint,
+.topo-modal__selectall {
+  color: var(--nx-text-soft) !important;
+}
+
+.modal input,
+.modal select,
+.modal textarea,
+.topo-modal__panel input,
+.topo-modal__panel select,
+.token-scopes-modal__panel input,
+.token-scopes-modal__panel select {
+  background: var(--nx-field) !important;
+  border-color: rgba(148, 163, 184, 0.28) !important;
+  color: var(--nx-text) !important;
+}
+
+.topo-browser,
+.topo-main {
+  background: var(--nm-chrome, #070b14);
+  color: var(--nm-text, var(--nx-text));
+  border-color: rgba(148, 163, 184, 0.2);
+}
+.topo-browser__head,
+.topo-toolbar {
+  background: rgb(var(--nx-ink-rgb) / 0.9);
+  border-color: rgba(148, 163, 184, 0.18);
+}
+.topo-browser__grid,
+.topo-browser__grid--regions {
+  background: rgb(var(--nx-ink-deep-rgb) / 0.4);
+}
+.topo-map-list__row,
+.topo-palette__row {
+  background: rgb(var(--nx-ink-rgb) / 0.75);
+  border-color: rgba(148, 163, 184, 0.22);
+}
+
+.app-main .topo-toolbar__select,
+.topo-toolbar__select,
+.app-main .topo-toolbar__display > summary,
+.topo-toolbar__display > summary,
+.app-main .topo-toolbar__actions > .btn:not([data-variant="primary"]):not([data-variant="secondary"]),
+.topo-toolbar__actions > .btn:not([data-variant="primary"]):not([data-variant="secondary"]),
+.app-main .topo-toolbar__group > .btn,
+.topo-toolbar__group > .btn {
+  background: var(--nx-field) !important;
+  border-color: rgba(148, 163, 184, 0.28) !important;
+  color: var(--nx-text) !important;
+}
+
+.topo-nav-node {
+  background: linear-gradient(165deg, var(--nx-line) 0%, var(--nx-surface-2) 100%);
+  border-color: rgba(148, 163, 184, 0.28);
+  color: var(--nx-text);
+}
+.topo-nav-node__icon {
+  background: rgba(37, 99, 235, 0.18);
+}
+
+.webcrt-menubar__menu {
+  background: var(--nx-surface-2) !important;
+  border-color: rgba(148, 163, 184, 0.28) !important;
+  color: var(--nx-text) !important;
+}
+.webcrt-menubar__menu-item {
+  color: var(--nx-text) !important;
+}
+.webcrt-menubar__menu-item:hover {
+  background: rgba(37, 99, 235, 0.2) !important;
+}
+
+.pt-log-modal__list {
+  background: rgb(var(--nx-ink-deep-rgb) / 0.55) !important;
+  border-color: rgba(148, 163, 184, 0.2) !important;
+  color: var(--nx-text) !important;
+}
+
+/* Operation audit logs */
+.system-page .audit-quick-filters button.is-active {
+  background: rgba(37, 99, 235, 0.18);
+  border-color: rgb(var(--nx-accent-rgb) / 0.55);
+  color: #1e3a8a;
+  font-weight: 600;
+}
+
+.system-page .audit-summary-cell {
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.system-page button.linkish {
+  background: transparent;
+  border: none;
+  color: var(--nx-accent-strong);
+  cursor: pointer;
+  padding: 0;
+  height: auto;
+  font: inherit;
+  text-decoration: underline;
+}
+
+.system-page .audit-detail-row td {
+  background: rgb(var(--nx-ink-rgb) / 0.04);
+  padding: 10px 12px 14px;
+}
+
+.system-page .audit-detail-pre {
+  margin: 0;
+  max-height: 240px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.system-page .audit-detail-meta {
+  margin: 8px 0 0;
+}

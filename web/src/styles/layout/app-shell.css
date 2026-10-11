@@ -1,0 +1,105 @@
+/* App shell + brand header (.app--shell, .app-brand, .app-main) */
+
+.app--shell {
+  /* --nm-* chrome tokens: see styles/theme/tokens.css */
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  color: var(--nm-text);
+}
+
+.app-brand {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 48px;
+  padding: 0 20px;
+  background: var(--nm-header, #0f1b2d);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: none;
+}
+
+.app-brand__logo {
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: #fff;
+  text-decoration: none;
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+.app-brand__logo--static {
+  display: inline-block;
+}
+
+.app-brand__sep {
+  width: 1px;
+  height: 16px;
+  background: rgba(255, 255, 255, 0.22);
+  flex-shrink: 0;
+}
+
+.app-brand__start {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.app-brand__apps {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.88);
+  cursor: pointer;
+}
+
+.app-brand__apps:hover,
+.app-brand__apps:focus-visible {
+  background: rgb(var(--nx-accent-rgb) / 0.22);
+  color: #fff;
+  outline: none;
+}
+
+.app-brand__module-title {
+  font-size: 14px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.92);
+  white-space: nowrap;
+  letter-spacing: 0.02em;
+}
+
+.app-brand__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.app-brand__actions-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.app-brand__actions-sep {
+  width: 1px;
+  height: 14px;
+  margin: 0 4px;
+  background: rgba(255, 255, 255, 0.18);
+  flex-shrink: 0;
+}
+
+.app-main {
+  flex: 1;
+  padding: 20px 28px 32px;
+  background: var(--nm-chrome, #e8eef6);
+  color: var(--nm-text, var(--nx-line));
+}

@@ -1,75 +1,75 @@
 import { lazy, Suspense } from "react";
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { AppLayout } from "./layout/AppLayout";
-import { WorkbenchPage } from "./pages/WorkbenchPage";
-import { LoginPage } from "./pages/LoginPage";
-import { ForceChangePasswordPage } from "./pages/ForceChangePasswordPage";
-import { useAuth } from "./auth/AuthContext";
+import { WorkbenchPage } from "./features/workbench/WorkbenchPage";
+import { LoginPage } from "./features/auth/LoginPage";
+import { ForceChangePasswordPage } from "./features/auth/ForceChangePasswordPage";
+import { useAuth } from "./features/auth/AuthContext";
 
-const CollectPage = lazy(() => import("./pages/CollectPage").then((m) => ({ default: m.CollectPage })));
+const CollectPage = lazy(() => import("./features/collect/CollectPage").then((m) => ({ default: m.CollectPage })));
 const ConfigSyncPage = lazy(() =>
-  import("./pages/ConfigSyncPage").then((m) => ({ default: m.ConfigSyncPage })),
+  import("./features/config-sync/ConfigSyncPage").then((m) => ({ default: m.ConfigSyncPage })),
 );
-const NePage = lazy(() => import("./pages/NePage").then((m) => ({ default: m.NePage })));
-const UmePage = lazy(() => import("./pages/UmePage").then((m) => ({ default: m.UmePage })));
-const WebcrtPage = lazy(() => import("./pages/WebcrtPage").then((m) => ({ default: m.WebcrtPage })));
-const TopologyPage = lazy(() => import("./pages/TopologyPage").then((m) => ({ default: m.TopologyPage })));
+const NePage = lazy(() => import("./features/managed-ne/NePage").then((m) => ({ default: m.NePage })));
+const UmePage = lazy(() => import("./features/ume/UmePage").then((m) => ({ default: m.UmePage })));
+const WebcrtPage = lazy(() => import("./features/webcrt/WebcrtPage").then((m) => ({ default: m.WebcrtPage })));
+const TopologyPage = lazy(() => import("./features/topology/TopologyPage").then((m) => ({ default: m.TopologyPage })));
 const NetworkLayout = lazy(() =>
-  import("./pages/network/NetworkLayout").then((m) => ({ default: m.NetworkLayout })),
+  import("./features/network/NetworkLayout").then((m) => ({ default: m.NetworkLayout })),
 );
 const NetworkDevicesPage = lazy(() =>
-  import("./pages/network/NetworkDevicesPage").then((m) => ({ default: m.NetworkDevicesPage })),
+  import("./features/network/NetworkDevicesPage").then((m) => ({ default: m.NetworkDevicesPage })),
 );
 const NetworkAlarmsPage = lazy(() =>
-  import("./pages/network/NetworkAlarmsPage").then((m) => ({ default: m.NetworkAlarmsPage })),
+  import("./features/network/NetworkAlarmsPage").then((m) => ({ default: m.NetworkAlarmsPage })),
 );
 const NetworkConfigsPage = lazy(() =>
-  import("./pages/network/NetworkConfigsPage").then((m) => ({ default: m.NetworkConfigsPage })),
+  import("./features/network/NetworkConfigsPage").then((m) => ({ default: m.NetworkConfigsPage })),
 );
 const LldpLinksPage = lazy(() =>
-  import("./pages/network/LldpLinksPage").then((m) => ({ default: m.LldpLinksPage })),
+  import("./features/network/LldpLinksPage").then((m) => ({ default: m.LldpLinksPage })),
 );
 const TopologyClassifyPage = lazy(() =>
-  import("./pages/network/TopologyClassifyPage").then((m) => ({ default: m.TopologyClassifyPage })),
+  import("./features/network/TopologyClassifyPage").then((m) => ({ default: m.TopologyClassifyPage })),
 );
 const PortTrafficPage = lazy(() =>
-  import("./pages/network/PortTrafficPage").then((m) => ({ default: m.PortTrafficPage })),
+  import("./features/port-traffic/PortTrafficPage").then((m) => ({ default: m.PortTrafficPage })),
 );
 const PortTrafficBoardListPage = lazy(() =>
-  import("./pages/network/PortTrafficBoardListPage").then((m) => ({
+  import("./features/port-traffic/PortTrafficBoardListPage").then((m) => ({
     default: m.PortTrafficBoardListPage,
   })),
 );
 const PortTrafficWallPage = lazy(() =>
-  import("./pages/network/PortTrafficWallPage").then((m) => ({ default: m.PortTrafficWallPage })),
+  import("./features/port-traffic/PortTrafficWallPage").then((m) => ({ default: m.PortTrafficWallPage })),
 );
 const BizStatePage = lazy(() =>
-  import("./pages/network/BizStatePage").then((m) => ({ default: m.BizStatePage })),
+  import("./features/cutover/BizStatePage").then((m) => ({ default: m.BizStatePage })),
 );
 const BizComparePage = lazy(() =>
-  import("./pages/network/BizComparePage").then((m) => ({ default: m.BizComparePage })),
+  import("./features/cutover/BizComparePage").then((m) => ({ default: m.BizComparePage })),
 );
 const BizMigrationPage = lazy(() =>
-  import("./pages/network/BizMigrationPage").then((m) => ({ default: m.BizMigrationPage })),
+  import("./features/cutover/BizMigrationPage").then((m) => ({ default: m.BizMigrationPage })),
 );
 const BizMonitorTemplatesPage = lazy(() =>
-  import("./pages/network/BizMonitorTemplatesPage").then((m) => ({
+  import("./features/cutover/BizMonitorTemplatesPage").then((m) => ({
     default: m.BizMonitorTemplatesPage,
   })),
 );
-const UsersPage = lazy(() => import("./pages/UsersPage").then((m) => ({ default: m.UsersPage })));
+const UsersPage = lazy(() => import("./features/users/UsersPage").then((m) => ({ default: m.UsersPage })));
 const AuditLayout = lazy(() =>
-  import("./pages/audit/AuditLayout").then((m) => ({ default: m.AuditLayout })),
+  import("./features/audit/AuditLayout").then((m) => ({ default: m.AuditLayout })),
 );
 const TaskOverviewPage = lazy(() =>
-  import("./pages/audit/TaskOverviewPage").then((m) => ({ default: m.TaskOverviewPage })),
+  import("./features/audit/TaskOverviewPage").then((m) => ({ default: m.TaskOverviewPage })),
 );
-const AuditPage = lazy(() => import("./pages/AuditPage").then((m) => ({ default: m.AuditPage })));
+const AuditPage = lazy(() => import("./features/audit/AuditPage").then((m) => ({ default: m.AuditPage })));
 const ApiTokensPage = lazy(() =>
-  import("./pages/ApiTokensPage").then((m) => ({ default: m.ApiTokensPage })),
+  import("./features/api-tokens/ApiTokensPage").then((m) => ({ default: m.ApiTokensPage })),
 );
 const SessionsPage = lazy(() =>
-  import("./pages/SessionsPage").then((m) => ({ default: m.SessionsPage })),
+  import("./features/sessions/SessionsPage").then((m) => ({ default: m.SessionsPage })),
 );
 
 /** Preserve query when redirecting legacy /network/webcrt → /webcrt. */

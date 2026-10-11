@@ -1,0 +1,26 @@
+const layout = {
+  title: "UME Integration",
+  titleUme: "UME Sync",
+  titleNetwork: "Network Management",
+  titleManagedNe: "NE Management",
+  titleCollect: "Batch Collect",
+  titleWebcrt: "WebCRT",
+  titleTopology: "Topology",
+  titlePortTrafficWall: "Traffic wall",
+  titleUsers: "Users",
+  titleAudit: "Audit",
+  titleApiKeys: "API Keys",
+  titleSessions: "Login sessions",
+  navUme: "UME",
+  netxApi: "netx api",
+  oclawBridge: "oclaw WSS",
+  activeTasks: "Active {{count}}",
+  activeTasksHint: "Open Audit · Task overview",
+  language: "Language",
+  switchLanguage: "Switch language / 切换语言",
+  moreMenu: "More",
+  langZh: "中文",
+  langEn: "English",
+};
+
+export default layout;

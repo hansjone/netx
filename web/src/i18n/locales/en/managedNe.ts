@@ -1,0 +1,202 @@
+const managedNe = {
+  title: "Network Elements",
+  credsNotConfigured:
+    "NETX_CREDENTIAL_SECRET_KEY is not set. Configure a Fernet key in .env and restart the API to store passwords.",
+  add: "Add NE",
+  importBtn: "Import",
+  downloadTemplate: "Download template",
+  importing: "Importing…",
+  edit: "Edit",
+  delete: "Delete",
+  openTerminal: "Terminal",
+  confirmDelete:
+    "Delete this network element? If its Fabric node is managed-only (no UME binding), that node and its direct links will also be removed.",
+  batchDelete: "Batch delete",
+  batchDeleting: "Deleting…",
+  batchDeleteConfirm:
+    "Delete {{n}} selected network element(s)? Cannot be undone. Managed-only Fabric nodes cascade (node + direct links); nodes still bound to UME keep topology.",
+  batchDeleteDone: "Deleted {{n}} network element(s)",
+  batchDeleteSelectRequired: "Select network elements to delete",
+  keywordPh: "name / IP / user / tags",
+  allVendors: "All vendors",
+  allConnectStatus: "All connect status",
+  stats: {
+    title: "Overview",
+    total: "{{n}} NEs managed",
+    pass: "Connected",
+    fail: "Failed",
+    unknown: "Untested",
+    testing: "Testing",
+    batchProxy: "Batch add proxy",
+    batchTest: "Batch connect-test",
+    tagFilter: "Filter by tag",
+    all: "All",
+    allTag: "All (no tag filter)",
+    noTag: "No tags",
+    tagStats: "Top tags",
+    confirm: "Apply to {{n}} NE(s). Continue?",
+    proxyDone: "Proxy applied to {{n}} NE(s)",
+    testDone: "Connect-test submitted for {{n}} NE(s)",
+    loadingIds: "Loading…",
+  },
+  col: {
+    name: "Name",
+    vendor: "Vendor",
+    deviceType: "Device type",
+    execPolicy: "CLI exec policy",
+    source: "Source",
+    ip: "Management IP",
+    port: "Port",
+    protocol: "Protocol",
+    user: "Username",
+    password: "Password",
+    tags: "Tags",
+    remark: "Remark",
+    connect: "Connect",
+    testedAt: "Tested at",
+    actions: "Actions",
+  },
+  execPolicy: {
+    readonly: "Read-only (show/display/ping)",
+    linuxShell: "Shell / script (multiline / heredoc OK)",
+    unrestricted: "Lab open (multiline / heredoc OK)",
+    hint: "Applies to MCP/API execManagedNe only. Default is read-only; Linux and MikroTik (routeros/switchos) may use shell / lab-open for multiline scripts and heredoc.",
+  },
+  source: {
+    manual: "Manual",
+    ume_sync: "UME sync",
+    webcrt: "WebCRT",
+    lldp: "LLDP placeholder",
+    topology: "Topology placeholder",
+  },
+  connect: {
+    run: "Connectivity test",
+    running: "Testing…",
+    submitted: "Submitted tests for {{n}} device(s)",
+    retest: "Test again",
+  },
+  connectDetail: "Details",
+  connectDetailTitle: "Connectivity test log",
+  connectDetailEmpty:
+    "No log yet. Run a connectivity test first; failures store full errors and hop context (passwords excluded).",
+  umeSync: {
+    sync: "Sync UME NEs",
+    syncing: "Syncing…",
+    delete: "Delete UME NEs",
+    deleting: "Deleting…",
+    deleteConfirm:
+      "Delete all managed NEs created from UME sync? Cannot be undone. Fabric nodes that become fully orphaned (no UME left) are removed with their direct links.",
+    done: "UME sync done: {{inserted}} inserted, {{updated}} updated, {{deleted}} deleted, {{total}} inventory total",
+    deletedDone: "Deleted {{n}} UME-synced NEs",
+  },
+  account: {
+    batchAdd: "Batch add account",
+    batchByTag: "Batch account by tag",
+    batchTitle: "Batch add account",
+    batchHint: "Apply the account info below to {{n}} selected NE(s).",
+    batchByTagHint: "Apply the account info below to NEs under the selected tag; leave password blank to update only username.",
+    batchDone: "Account updated for {{n}} NE(s)",
+    selectRequired: "Select network elements first",
+    applying: "Applying…",
+    apply: "Apply to NEs",
+    usernameOrPasswordRequired: "Enter at least a username or a password",
+    passwordOptionalBatch: "leave blank to keep unchanged",
+  },
+  help:
+    "[Bulk import]\n" +
+    "· Required: device_type, ip, username, port, protocol, name, vendor (download template first)\n" +
+    "· password may be empty for bastion-managed / later Batch add proxy; required for direct login\n" +
+    "· Flow: import → select rows → Batch add proxy\n\n" +
+    "[Jump / bastion]\n" +
+    "· Username template: {hop_user}@{target_user}@{target_ip} (bastion host filled separately)\n" +
+    "· Managed mode: Jump password (Vault); target password optional. Manual mode needs target password\n" +
+    "· JumpServer/CBH ports often 2222; some sites use 22\n\n" +
+    "[Connectivity / edit]\n" +
+    "· Storing passwords needs NETX_CREDENTIAL_SECRET_KEY\n" +
+    "· Blank password on edit keeps current; use Details hop context after failed connect (no secrets)",
+  importResult: {
+    done: "Import done: {{inserted}} inserted, {{updated}} updated, {{failed}} failed row(s)",
+  },
+  form: {
+    requiredHint: "Fields marked with * are required",
+    nameConnectHint: "After a successful connectivity test, name is replaced with the device hostname",
+    createTitle: "Add network element",
+    editTitle: "Edit network element",
+    save: "Save",
+    saving: "Saving…",
+    cancel: "Cancel",
+    created: "Network element created",
+    updated: "Network element updated",
+    deleted: "Network element deleted",
+    passwordRequired: "Password is required",
+    passwordOptional: "leave blank to keep unchanged",
+  },
+  hop: {
+    sectionTitle: "Jump host / proxy",
+    type: "Jump type",
+    enable: "Connect to target via jump host",
+    vendor: {
+      zte: "ZTE device (CLI jump)",
+      huawei: "Huawei device (CLI jump)",
+      cisco: "Cisco device (CLI jump)",
+      linux: "Linux server (SSH tunnel)",
+      bastion: "Bastion host (SSH protocol proxy)",
+    },
+    zteHint: "Run ssh/telnet on the ZTE device to reach the target; target credentials use secondary auth.",
+    huaweiHint: "Run telnet / stelnet (SSH) on the Huawei hop; stelnet is SSH. Target credentials use secondary auth.",
+    ciscoHint: "Run Cisco ssh -vrf / telnet /vrf jump commands; target credentials use secondary auth.",
+    linuxHint: "SSH to the Linux bastion, then direct-tcpip tunnel to target IP:port (ProxyJump-style).",
+    bastionHint:
+      "SSH with composite username via bastion protocol proxy. Hop host may be an IP or FQDN. Examples: bastion-user@target-user@198.51.100.20@192.0.2.10 or bastion-user@target-user@198.51.100.20@ssh-bastion.example.com; password is the bastion/Vault password. JumpServer/CBH often use port 2222.",
+    targetAuthMode: "Target credentials",
+    targetAuthBastionManaged: "Bastion-managed (target password optional)",
+    targetAuthManual: "Manual (secondary auth after connect)",
+    targetAuthHint: "Bastion-managed needs only bastion password; manual mode requires target NE password.",
+    usernameTemplate: "SSH username template",
+    templateHintBastion:
+      "Default {hop_user}@{target_user}@{target_ip}. Bastion address (IP or FQDN) goes in Jump host. CLI example: ssh bastion-user@target-user@198.51.100.20@ssh-bastion.example.com.",
+    host: "Jump host",
+    hostPlaceholderBastion: "192.0.2.10 or ssh-bastion.example.com",
+    hostHintBastion:
+      "IP or FQDN. You can paste a full SSH destination (e.g. bastion-user@target-user@198.51.100.20@ssh-bastion.example.com); on blur it splits into jump username + host.",
+    port: "Jump port",
+    protocol: "Jump protocol",
+    protocolSshStelnet: "ssh (stelnet)",
+    username: "Jump username",
+    password: "Jump password",
+    vrf: "Mgmt VRF (optional)",
+    vpnInstance: "VPN-Instance (optional)",
+    vrfCisco: "VRF (optional, e.g. MGMT)",
+    enterSystemView: "Huawei system-view before jump",
+    enterSystemViewNo: "Stay in user-view (default)",
+    enterSystemViewYes: "Enter system-view first",
+    enterSystemViewHint:
+      "Some Huawei hops only accept stelnet/telnet in system-view. Choose explicitly; NetX will not auto-retry.",
+    commandTemplate: "Jump command template",
+    templateHint:
+      "ZTE CLI: telnet {target_ip}, telnet {target_ip} vrf {vrf}, ssh {target_ip}, ssh {target_ip} vrf {vrf}. Auto-suggested from jump protocol/VRF; same when left blank. Target credentials via secondary auth prompts.",
+    templateHintHuawei:
+      "Huawei CLI: telnet {target_ip}, telnet vpn-instance {vrf} {target_ip}, stelnet {target_ip}, stelnet {target_ip} -vpn-instance {vrf}. SSH protocol maps to stelnet. Auto-suggested when left blank.",
+    templateHintCisco:
+      "Cisco CLI: ssh {target_ip}, ssh -vrf {vrf} {target_ip}, telnet {target_ip}, telnet {target_ip} /vrf {vrf}. Auto-suggested when left blank.",
+    badge: {
+      zte: "ZTE hop",
+      huawei: "Huawei hop",
+      cisco: "Cisco hop",
+      linux: "Linux hop",
+      bastion: "Bastion",
+    },
+    hostRequired: "Jump host is required",
+    userRequired: "Jump username is required",
+    passwordRequired: "Jump password is required",
+    batchAdd: "Add proxy",
+    batchTitle: "Batch add jump proxy",
+    batchHint: "Apply the jump-host settings below to {{n}} selected NE(s) (overwrites existing proxy config).",
+    batchDone: "Proxy applied to {{n}} NE(s)",
+    selectRequired: "Select network elements first",
+    applying: "Applying…",
+    apply: "Apply to selected",
+  },
+};
+
+export default managedNe;

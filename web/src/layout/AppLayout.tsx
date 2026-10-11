@@ -2,15 +2,15 @@ import { Link, useLocation } from "react-router-dom";
 import type { ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Button, Chip } from "@heroui/react";
-import { AppsGridIcon } from "../components/AppsGridIcon";
-import { HeaderMenu } from "../components/HeaderMenu";
+import { AppsGridIcon } from "./AppsGridIcon";
+import { HeaderMenu } from "./HeaderMenu";
 import { getPageTitleKey, isWorkbenchPath } from "../config/modules";
 import { useAppWindowRegistration } from "../hooks/useAppWindowRegistration";
 import { useI18n } from "../i18n";
 import { fetchOpsTasks } from "../services/api";
 import { openOrFocusModule } from "../utils/moduleWindows";
 import { returnToWorkbench } from "../utils/workbench";
-import { useAuth } from "../auth/AuthContext";
+import { useAuth } from "../features/auth/AuthContext";
 
 type Props = {
   children: ReactNode;

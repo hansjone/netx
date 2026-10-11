@@ -1,0 +1,1548 @@
+import { Button, Input, Modal } from "@heroui/react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { ListPager } from "../../components/ListPager";
+import { AppModalShell } from "../../components/ui/AppModalShell";
+import { FieldSelect } from "../../components/ui/FieldSelect";
+import {
+  createPortTrafficDevice,
+  deletePortTrafficDevice,
+  discoverPortTrafficPorts,
+  fetchCliTargets,
+  fetchPortTrafficDashboard,
+  fetchPortTrafficDevices,
+  fetchPortTrafficEvents,
+  fetchPortTrafficTargets,
+  formatErr,
+  pausePortTrafficDevice,
+  putPortTrafficInterfaces,
+  rebindPortTrafficDevice,
+  startPortTrafficDevice,
+  stopPortTrafficDevice,
+  updatePortTrafficDevice,
+} from "../../services/api";
+import { queryKeys } from "../../constants/queryKeys";
+import { useI18n } from "../../i18n";
+import { useDebouncedValue } from "../../hooks/useDebouncedValue";
+import { useToast } from "../../hooks/useToast";
+import type {
+  CliTargetItem,
+  PortTrafficDevice,
+  PortTrafficDiscoverPort,
+  PortTrafficEvent,
+  PortTrafficIfaceIn,
+} from "../../types";
+import { downloadCsv, fetchAllPages } from "../../utils/csvExport";
+import { pageCount } from "../../utils/display";
+import { formatSystemTime } from "../../utils/time";
+import { jobChipColor, NmStatusChip } from "../../components/NmChips";
+
+const POLL_MS = 5000;
+const TARGET_PAGE_SIZE = 10;
+
+type ViewMode = "list" | "wizard" | "edit";
+
+function statusTone(status: string): "running" | "paused" | "stopped" | "draft" | "other" {
+  if (status === "running") return "running";
+  if (status === "paused") return "paused";
+  if (status === "stopped") return "stopped";
+  if (status === "draft") return "draft";
+  return "other";
+}
+
+function upDownPillClass(value: string): string {
+  const v = String(value || "").trim().toLowerCase();
+  if (v === "up") return "conn-pill conn-pill--up";
+  if (v === "down") return "conn-pill conn-pill--down";
+  return "conn-pill conn-pill--unknown";
+}
+
+function PortUpDownCell({
+  admin,
+  phy,
+  prot,
+  labels,
+}: {
+  admin?: string;
+  phy?: string;
+  prot?: string;
+  labels: { admin: string; phy: string; prot: string };
+}) {
+  const a = String(admin || "").trim() || "—";
+  const p = String(phy || "").trim() || "—";
+  const r = String(prot || "").trim() || "—";
+  return (
+    <span className="pt-port-updown" title={`${labels.admin}/${labels.phy}/${labels.prot}`}>
+      <span className={upDownPillClass(a)} title={labels.admin}>
+        {a}
+      </span>
+      <span className={upDownPillClass(p)} title={labels.phy}>
+        {p}
+      </span>
+      <span className={upDownPillClass(r)} title={labels.prot}>
+        {r}
+      </span>
+    </span>
+  );
+}
+
+function formatPortTrafficLogMessage(
+  raw: string,
+  t: (key: string, vars?: Record<string, string | number>) => string,
+): string {
+  const s = String(raw || "").trim();
+  if (!s) return "";
+  if (s.includes("managed_ne_not_found") || s.includes("ume_ne_not_found")) {
+    return t("portTraffic.err.managedNeNotFound");
+  }
+  const m = s.match(/^(\d+)_target_errors$/);
+  if (m) return t("portTraffic.err.targetErrors", { count: m[1] });
+  if (s === "unsupported_vendor") return t("portTraffic.err.unsupportedVendor");
+  if (s === "invalid_source") return t("portTraffic.err.invalidSource");
+  return s;
+}
+
+function needsNeRebind(row: PortTrafficDevice): boolean {
+  const err = String(row.last_error || "");
+  if (err.includes("managed_ne_not_found") || err.includes("ume_ne_not_found")) return true;
+  // Older rounds only stored "N_target_errors"; still offer rebind when IP is known.
+  if (/^\d+_target_errors$/.test(err.trim()) && String(row.ne_ip || "").trim()) return true;
+  return false;
+}
+
+function formatBw(bps: number) {
+  if (!bps) return "—";
+  if (bps >= 1e9) return `${bps / 1e9}G`;
+  if (bps >= 1e6) return `${bps / 1e6}M`;
+  return `${bps}`;
+}
+
+function deviceLabel(d: PortTrafficDevice) {
+  return d.ne_name || d.ne_ip || d.ne_id || "—";
+}
+
+export function PortTrafficPage() {
+  const { t } = useI18n();
+  const { showOk, showError } = useToast();
+  const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const deepLinkAppliedRef = useRef(false);
+
+  const [view, setView] = useState<ViewMode>("list");
+  const [listPage, setListPage] = useState(1);
+  const [listPageSize, setListPageSize] = useState(10);
+  const [listKeyword, setListKeyword] = useState("");
+  const [listStatus, setListStatus] = useState("");
+  const [exportingDevices, setExportingDevices] = useState(false);
+  const debouncedListKeyword = useDebouncedValue(listKeyword, 300);
+
+  // Wizard / edit
+  const [editDeviceId, setEditDeviceId] = useState("");
+  const [editDeviceSnap, setEditDeviceSnap] = useState<PortTrafficDevice | null>(null);
+  const [intervalSec, setIntervalSec] = useState(300);
+  const [retentionDays, setRetentionDays] = useState(7);
+  const [concurrency, setConcurrency] = useState(1);
+  const [note, setNote] = useState("");
+  const [startNow, setStartNow] = useState(true);
+  const [neKeyword, setNeKeyword] = useState("");
+  const [nePage, setNePage] = useState(1);
+  const [selectedNe, setSelectedNe] = useState<CliTargetItem | null>(null);
+  const [ports, setPorts] = useState<PortTrafficDiscoverPort[]>([]);
+  const [portsLoading, setPortsLoading] = useState(false);
+  const [portsError, setPortsError] = useState("");
+  const [discoverMeta, setDiscoverMeta] = useState<{
+    ok: boolean;
+    command: string;
+    raw_preview: string;
+    error: string;
+  } | null>(null);
+  const [pickedIfnames, setPickedIfnames] = useState<Record<string, PortTrafficIfaceIn>>({});
+  const [deepLinkHint, setDeepLinkHint] = useState("");
+  const [deepLinkSource, setDeepLinkSource] = useState<"managed" | "ume" | "">("");
+  const [deepLinkNeId, setDeepLinkNeId] = useState("");
+  const [deepLinkIfname, setDeepLinkIfname] = useState("");
+  const [wizardStep, setWizardStep] = useState<1 | 2 | 3>(1);
+  const [logDeviceId, setLogDeviceId] = useState("");
+  const [logDeviceLabel, setLogDeviceLabel] = useState("");
+  const [logKeyword, setLogKeyword] = useState("");
+  const [rebindDevice, setRebindDevice] = useState<PortTrafficDevice | null>(null);
+  const [rebindKeyword, setRebindKeyword] = useState("");
+  const [rebindPage, setRebindPage] = useState(1);
+  const [rebindSelectedNe, setRebindSelectedNe] = useState<CliTargetItem | null>(null);
+
+  const dashQuery = useQuery({
+    queryKey: queryKeys.portTrafficDashboard,
+    queryFn: fetchPortTrafficDashboard,
+    staleTime: 5000,
+    refetchInterval: (q) => {
+      const d = q.state.data;
+      const running = Number(d?.running_device_count ?? d?.running_task_count ?? 0);
+      return running > 0 ? POLL_MS : 15_000;
+    },
+    refetchIntervalInBackground: false,
+  });
+
+  const devicesQuery = useQuery({
+    queryKey: queryKeys.portTrafficDevices(listPage, listPageSize, listStatus, debouncedListKeyword),
+    queryFn: () =>
+      fetchPortTrafficDevices({
+        page: listPage,
+        pageSize: listPageSize,
+        status: listStatus || undefined,
+        keyword: debouncedListKeyword || undefined,
+      }),
+    staleTime: 5000,
+    refetchInterval: (q) => {
+      const items = q.state.data?.items || [];
+      const running = items.some((x) => x.status === "running" || Boolean(x.collect_running));
+      return running ? POLL_MS : 15_000;
+    },
+    refetchIntervalInBackground: false,
+  });
+
+  const nesQuery = useQuery({
+    queryKey: queryKeys.cliTargets(neKeyword, nePage, TARGET_PAGE_SIZE),
+    queryFn: () =>
+      fetchCliTargets({ source: "all", keyword: neKeyword, page: nePage, pageSize: TARGET_PAGE_SIZE }),
+    enabled: view === "wizard" && wizardStep === 1,
+    staleTime: 5000,
+  });
+
+  const rebindSource = rebindDevice?.source === "ume" ? "ume" : "managed";
+  const rebindNesQuery = useQuery({
+    queryKey: ["cliTargets", "rebind", rebindSource, rebindKeyword, rebindPage, TARGET_PAGE_SIZE],
+    queryFn: () =>
+      fetchCliTargets({
+        source: rebindSource,
+        keyword: rebindKeyword,
+        page: rebindPage,
+        pageSize: TARGET_PAGE_SIZE,
+      }),
+    enabled: Boolean(rebindDevice),
+    staleTime: 5000,
+  });
+
+  const editTargetsQuery = useQuery({
+    queryKey: queryKeys.portTrafficTargets(editDeviceId),
+    queryFn: () => fetchPortTrafficTargets(editDeviceId),
+    enabled: view === "edit" && Boolean(editDeviceId),
+    staleTime: 2000,
+  });
+
+  const logQuery = useQuery({
+    queryKey: queryKeys.portTrafficEvents(logDeviceId),
+    queryFn: () => fetchPortTrafficEvents(logDeviceId, 200),
+    enabled: Boolean(logDeviceId),
+    staleTime: 2000,
+    refetchInterval: logDeviceId ? POLL_MS : false,
+  });
+
+  useEffect(() => {
+    if (deepLinkAppliedRef.current) return;
+    const neId = (searchParams.get("ne_id") || "").trim();
+    if (!neId) return;
+    deepLinkAppliedRef.current = true;
+    const source = searchParams.get("source") === "ume" ? "ume" : "managed";
+    const ifname = (searchParams.get("ifname") || "").trim();
+    setDeepLinkNeId(neId);
+    setDeepLinkSource(source);
+    setDeepLinkIfname(ifname);
+    setView("wizard");
+    setWizardStep(1);
+    setNeKeyword(neId);
+    setNePage(1);
+    setDeepLinkHint(
+      t("portTraffic.deepLinkHint")
+        .replace("{{ne}}", neId)
+        .replace(
+          "{{ifname}}",
+          ifname ? t("portTraffic.deepLinkIfname").replace("{{ifname}}", ifname) : "",
+        ),
+    );
+    setSearchParams({}, { replace: true });
+  }, [searchParams, setSearchParams, t]);
+
+  useEffect(() => {
+    if (!deepLinkNeId || view !== "wizard" || wizardStep !== 1) return;
+    const items = nesQuery.data?.items || [];
+    const hit = items.find((row) => {
+      const src = row.source === "ume" ? "ume" : "managed";
+      if (deepLinkSource && src !== deepLinkSource) return false;
+      return row.id === deepLinkNeId;
+    });
+    if (!hit) return;
+    setSelectedNe(hit);
+    setDeepLinkNeId("");
+  }, [deepLinkNeId, deepLinkSource, nesQuery.data, view, wizardStep]);
+
+  const invalidateAll = () => {
+    void queryClient.invalidateQueries({ queryKey: queryKeys.portTrafficDevicesAll });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.portTrafficDashboard });
+  };
+
+  const createMut = useMutation({
+    mutationFn: createPortTrafficDevice,
+    onSuccess: () => {
+      showOk(t("portTraffic.created"));
+      invalidateAll();
+      resetWizard();
+      setView("list");
+    },
+    onError: (e: Error) => showError(e.message || t("portTraffic.createFailed")),
+  });
+
+  const updateMut = useMutation({
+    mutationFn: ({ id, body }: { id: string; body: Parameters<typeof updatePortTrafficDevice>[1] }) =>
+      updatePortTrafficDevice(id, body),
+    onSuccess: () => {
+      showOk(t("portTraffic.updated"));
+      invalidateAll();
+    },
+    onError: (e: Error) => showError(e.message),
+  });
+
+  const putIfacesMut = useMutation({
+    mutationFn: ({ id, ifaces }: { id: string; ifaces: PortTrafficIfaceIn[] }) =>
+      putPortTrafficInterfaces(id, ifaces),
+    onSuccess: () => {
+      showOk(t("portTraffic.interfacesSaved"));
+      invalidateAll();
+      void queryClient.invalidateQueries({ queryKey: queryKeys.portTrafficTargets(editDeviceId) });
+    },
+    onError: (e: Error) => showError(e.message),
+  });
+
+  const startMut = useMutation({
+    mutationFn: startPortTrafficDevice,
+    onSuccess: () => {
+      showOk(t("portTraffic.started"));
+      invalidateAll();
+    },
+    onError: (e: Error) => showError(e.message),
+  });
+  const pauseMut = useMutation({
+    mutationFn: pausePortTrafficDevice,
+    onSuccess: () => {
+      showOk(t("portTraffic.paused"));
+      invalidateAll();
+    },
+    onError: (e: Error) => showError(e.message),
+  });
+  const stopMut = useMutation({
+    mutationFn: stopPortTrafficDevice,
+    onSuccess: () => {
+      showOk(t("portTraffic.stopped"));
+      invalidateAll();
+    },
+    onError: (e: Error) => showError(e.message),
+  });
+  const deleteMut = useMutation({
+    mutationFn: deletePortTrafficDevice,
+    onSuccess: () => {
+      showOk(t("portTraffic.deleted"));
+      invalidateAll();
+    },
+    onError: (e: Error) => showError(e.message),
+  });
+
+  const rebindMut = useMutation({
+    mutationFn: ({ id, neId }: { id: string; neId: string }) =>
+      rebindPortTrafficDevice(id, { ne_id: neId }),
+    onSuccess: () => {
+      showOk(t("portTraffic.rebindOk"));
+      setRebindDevice(null);
+      setRebindSelectedNe(null);
+      setRebindKeyword("");
+      setRebindPage(1);
+      invalidateAll();
+    },
+    onError: (e: Error) => {
+      const msg = String(e.message || "");
+      if (msg.includes("managed_ne_not_found") || msg.includes("ume_ne_not_found")) {
+        showError(t("portTraffic.err.rebindNeMissing"));
+      } else if (msg.includes("device_already_monitored")) {
+        showError(t("portTraffic.err.alreadyMonitored"));
+      } else if (msg.includes("ne_id_required")) {
+        showError(t("portTraffic.err.rebindPickFirst"));
+      } else {
+        showError(msg || t("portTraffic.rebindFailed"));
+      }
+    },
+  });
+
+  const openRebind = (row: PortTrafficDevice) => {
+    setRebindDevice(row);
+    setRebindSelectedNe(null);
+    setRebindKeyword(row.ne_ip || row.ne_name || "");
+    setRebindPage(1);
+  };
+
+  const closeRebind = () => {
+    if (rebindMut.isPending) return;
+    setRebindDevice(null);
+    setRebindSelectedNe(null);
+    setRebindKeyword("");
+    setRebindPage(1);
+  };
+
+  const confirmRebind = () => {
+    if (!rebindDevice || !rebindSelectedNe) {
+      showError(t("portTraffic.err.rebindPickFirst"));
+      return;
+    }
+    const src = rebindSelectedNe.source === "ume" ? "ume" : "managed";
+    if (src !== rebindSource) {
+      showError(t("portTraffic.err.rebindSourceMismatch"));
+      return;
+    }
+    const label = `${rebindSelectedNe.name} (${rebindSelectedNe.ip_address})`;
+    if (!window.confirm(t("portTraffic.rebindConfirm", { ne: label }))) return;
+    rebindMut.mutate({ id: rebindDevice.id, neId: rebindSelectedNe.id });
+  };
+
+  const resetWizard = () => {
+    setWizardStep(1);
+    setIntervalSec(300);
+    setRetentionDays(7);
+    setConcurrency(1);
+    setNote("");
+    setStartNow(true);
+    setSelectedNe(null);
+    setPorts([]);
+    setPortsError("");
+    setDiscoverMeta(null);
+    setPickedIfnames({});
+    setNeKeyword("");
+    setNePage(1);
+    setDeepLinkHint("");
+    setDeepLinkSource("");
+    setDeepLinkNeId("");
+    setDeepLinkIfname("");
+    setEditDeviceId("");
+    setEditDeviceSnap(null);
+  };
+
+  const openWizard = () => {
+    resetWizard();
+    setView("wizard");
+  };
+
+  const openWallList = () => {
+    navigate("/network/tasks/port-traffic/wall");
+  };
+
+  const openEdit = (row: PortTrafficDevice) => {
+    setEditDeviceId(row.id);
+    setEditDeviceSnap(row);
+    setIntervalSec(row.interval_sec);
+    setRetentionDays(row.retention_days);
+    setConcurrency(row.concurrency || 1);
+    setNote(row.note || "");
+    setPickedIfnames({});
+    setPorts([]);
+    setPortsError("");
+    setDiscoverMeta(null);
+    setView("edit");
+  };
+
+  useEffect(() => {
+    if (view !== "edit" || !editTargetsQuery.data) return;
+    const next: Record<string, PortTrafficIfaceIn> = {};
+    for (const tgt of editTargetsQuery.data.items) {
+      if (tgt.status !== "active") continue;
+      next[tgt.ifname] = {
+        ifname: tgt.ifname,
+        if_description: tgt.if_description,
+        bw_bps: tgt.bw_bps,
+      };
+    }
+    setPickedIfnames(next);
+  }, [view, editTargetsQuery.data]);
+
+  const discoverSelected = async () => {
+    const source =
+      view === "edit"
+        ? editDeviceSnap?.source === "ume"
+          ? "ume"
+          : "managed"
+        : selectedNe?.source === "ume"
+          ? "ume"
+          : "managed";
+    const id = view === "edit" ? editDeviceSnap?.ne_id || "" : selectedNe?.id || "";
+    if (!id) return;
+    setPortsLoading(true);
+    setPortsError("");
+    setDiscoverMeta(null);
+    try {
+      const res = await discoverPortTrafficPorts({ source, id });
+      setPorts(res.ports || []);
+      setDiscoverMeta({
+        ok: res.ok !== false,
+        command: res.command || "",
+        raw_preview: res.raw_preview || "",
+        error: res.error || "",
+      });
+      if (res.ok === false) {
+        const msg = res.error || t("portTraffic.discoverFail");
+        setPortsError(msg);
+        showError(msg);
+      }
+      if (deepLinkIfname) {
+        const hit = (res.ports || []).find((p) => p.ifname === deepLinkIfname);
+        if (hit) {
+          setPickedIfnames((prev) => ({
+            ...prev,
+            [hit.ifname]: {
+              ifname: hit.ifname,
+              if_description: hit.description,
+              bw_bps: hit.bw_bps,
+            },
+          }));
+        }
+        setDeepLinkIfname("");
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "discover_failed";
+      setPorts([]);
+      setPortsError(msg);
+      setDiscoverMeta({
+        ok: false,
+        command: "",
+        raw_preview: "",
+        error: msg,
+      });
+      showError(msg);
+    } finally {
+      setPortsLoading(false);
+    }
+  };
+
+  const toggleIfname = (port: PortTrafficDiscoverPort) => {
+    setPickedIfnames((prev) => {
+      const next = { ...prev };
+      if (next[port.ifname]) {
+        delete next[port.ifname];
+        return next;
+      }
+      next[port.ifname] = {
+        ifname: port.ifname,
+        if_description: port.description,
+        bw_bps: port.bw_bps,
+      };
+      return next;
+    });
+  };
+
+  const pickedList = useMemo(() => Object.values(pickedIfnames), [pickedIfnames]);
+  const discoveredByIfname = useMemo(
+    () => Object.fromEntries(ports.map((p) => [p.ifname, p])),
+    [ports],
+  );
+  const upDownLabels = {
+    admin: t("portTraffic.col.admin"),
+    phy: t("portTraffic.col.phy"),
+    prot: t("portTraffic.col.prot"),
+  };
+
+  const submitWizard = () => {
+    if (!selectedNe) {
+      showError(t("portTraffic.pickNeFirst"));
+      return;
+    }
+    if (!pickedList.length) {
+      showError(t("portTraffic.portsRequired"));
+      return;
+    }
+    const source = selectedNe.source === "ume" ? "ume" : "managed";
+    createMut.mutate({
+      source,
+      ne_id: selectedNe.id,
+      ne_name: selectedNe.name,
+      ne_ip: selectedNe.ip_address,
+      vendor: selectedNe.vendor || "",
+      note: note.trim(),
+      interval_sec: intervalSec,
+      retention_days: retentionDays,
+      concurrency,
+      start_now: startNow,
+      interfaces: pickedList,
+    });
+  };
+
+  const saveEdit = async () => {
+    if (!editDeviceId) return;
+    try {
+      await updateMut.mutateAsync({
+        id: editDeviceId,
+        body: {
+          note: note.trim(),
+          interval_sec: intervalSec,
+          retention_days: retentionDays,
+          concurrency,
+        },
+      });
+      await putIfacesMut.mutateAsync({ id: editDeviceId, ifaces: pickedList });
+      setView("list");
+    } catch {
+      /* toast already shown */
+    }
+  };
+
+  const dash = dashQuery.data;
+  const devices = devicesQuery.data?.items || [];
+  const listTotal = Number(devicesQuery.data?.total || 0);
+  const pages = pageCount(listTotal, listPageSize);
+  const editDevice = editDeviceSnap;
+  const hasListFilters = Boolean(listKeyword.trim() || listStatus);
+  const logEvents = logQuery.data?.items || [];
+  const logKw = logKeyword.trim().toLowerCase();
+  const filteredLogEvents = !logKw
+    ? logEvents
+    : logEvents.filter((ev) => {
+        const msg = formatPortTrafficLogMessage(ev.message, t).toLowerCase();
+        const hay = `${ev.level || ""} ${ev.ifname || ""} ${ev.message || ""} ${msg}`.toLowerCase();
+        return hay.includes(logKw);
+      });
+
+  const statusText = (status: string) => {
+    const tone = statusTone(status);
+    if (tone === "running") return t("portTraffic.statusRunning");
+    if (tone === "paused") return t("portTraffic.statusPaused");
+    if (tone === "stopped") return t("portTraffic.statusStopped");
+    if (tone === "draft") return t("portTraffic.statusDraft");
+    return status;
+  };
+
+  const closeLog = () => {
+    setLogDeviceId("");
+    setLogDeviceLabel("");
+    setLogKeyword("");
+  };
+
+  const exportDevicesCsv = async () => {
+    setExportingDevices(true);
+    try {
+      const rows = await fetchAllPages<PortTrafficDevice>({
+        pageSize: 100,
+        maxRows: 2000,
+        fetchPage: (p, ps) =>
+          fetchPortTrafficDevices({
+            page: p,
+            pageSize: ps,
+            status: listStatus || undefined,
+            keyword: debouncedListKeyword || undefined,
+          }),
+      });
+      downloadCsv(
+        `${t("portTraffic.exportDevicesName")}-${new Date().toISOString().slice(0, 10)}.csv`,
+        rows,
+        [
+          { key: "ne_name", header: t("portTraffic.col.device"), value: (r) => deviceLabel(r) },
+          { key: "ne_ip", header: "IP" },
+          { key: "ne_id", header: "NE ID" },
+          { key: "vendor", header: t("portTraffic.col.vendor") },
+          { key: "status", header: t("portTraffic.col.status"), value: (r) => statusText(r.status) },
+          { key: "target_count", header: t("portTraffic.col.ports") },
+          { key: "active_target_count", header: "Active ports" },
+          { key: "interval_sec", header: t("portTraffic.col.interval") },
+          {
+            key: "last_collect_ended_at",
+            header: t("portTraffic.col.last"),
+            value: (r) => formatSystemTime(r.last_collect_ended_at) || "",
+          },
+          { key: "note", header: t("portTraffic.note") },
+          { key: "last_error", header: t("portTraffic.logMessage") },
+          { key: "id", header: "ID" },
+        ],
+      );
+      if (rows.length < listTotal) {
+        showOk(t("common.exportTruncated", { count: String(rows.length), total: String(listTotal) }));
+      } else {
+        showOk(t("common.exportOk", { count: String(rows.length) }));
+      }
+    } catch (err) {
+      showError(t("common.exportFailed") + ": " + formatErr(err));
+    } finally {
+      setExportingDevices(false);
+    }
+  };
+
+  const exportEventsCsv = () => {
+    try {
+      downloadCsv(
+        `${t("portTraffic.exportEventsName")}-${new Date().toISOString().slice(0, 10)}.csv`,
+        filteredLogEvents,
+        [
+          {
+            key: "created_at",
+            header: t("portTraffic.logTime"),
+            value: (r: PortTrafficEvent) => formatSystemTime(r.created_at) || "",
+          },
+          { key: "level", header: t("portTraffic.logLevel") },
+          { key: "ifname", header: t("portTraffic.col.ifname") },
+          {
+            key: "message",
+            header: t("portTraffic.logMessage"),
+            value: (r: PortTrafficEvent) => formatPortTrafficLogMessage(r.message, t),
+          },
+        ],
+      );
+      showOk(t("common.exportOk", { count: String(filteredLogEvents.length) }));
+    } catch (err) {
+      showError(t("common.exportFailed") + ": " + formatErr(err));
+    }
+  };
+
+  return (
+    <section className="panel nm-page-panel">
+      <div className="panel__toolbar">
+        <h2>{t("portTraffic.title")}</h2>
+        <div className="btn-row">
+          {view !== "list" ? (
+            <Button
+              size="sm"
+              variant="secondary"
+              onPress={() => {
+                resetWizard();
+                setView("list");
+              }}
+            >
+              {t("portTraffic.backList")}
+            </Button>
+          ) : (
+            <>
+              <Button size="sm" variant="secondary" onPress={() => navigate("/network/tasks/port-traffic/wall")}>
+                {t("portTraffic.wall")}
+              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                isDisabled={exportingDevices || listTotal === 0}
+                onPress={() => void exportDevicesCsv()}
+              >
+                {exportingDevices ? t("common.exporting") : t("common.exportCsv")}
+              </Button>
+              <Button size="sm" variant="primary" onPress={openWizard}>
+                {t("portTraffic.create")}
+              </Button>
+            </>
+          )}
+        </div>
+      </div>
+
+      {view === "list" ? (
+        <div className="pt-list">
+          <div className="pt-list-kpis">
+            <div className="pt-list-kpi">
+              <div className="pt-list-kpi__label">{t("portTraffic.kpi.devices")}</div>
+              <div className="pt-list-kpi__value">
+                {dash?.device_count ?? dash?.task_count ?? "—"}
+              </div>
+            </div>
+            <div className="pt-list-kpi pt-list-kpi--live">
+              <div className="pt-list-kpi__label">{t("portTraffic.kpi.running")}</div>
+              <div className="pt-list-kpi__value">
+                {dash?.running_device_count ?? dash?.running_task_count ?? "—"}
+              </div>
+            </div>
+            <div className="pt-list-kpi">
+              <div className="pt-list-kpi__label">{t("portTraffic.kpi.ports")}</div>
+              <div className="pt-list-kpi__value">{dash?.active_target_count ?? "—"}</div>
+            </div>
+            <div className="pt-list-kpi">
+              <div className="pt-list-kpi__label">{t("portTraffic.kpi.samples24h")}</div>
+              <div className="pt-list-kpi__value">{dash?.sample_count_24h ?? "—"}</div>
+            </div>
+          </div>
+
+          <div className="filter-inline">
+            <Input
+              value={listKeyword}
+              placeholder={t("portTraffic.keywordPh")}
+              onChange={(e) => {
+                setListKeyword(e.target.value);
+                setListPage(1);
+              }}
+            />
+            <FieldSelect
+              value={listStatus}
+              onChange={(e) => {
+                setListStatus(e.target.value);
+                setListPage(1);
+              }}
+            >
+              <option value="">{t("portTraffic.allStatus")}</option>
+              <option value="running">{t("portTraffic.statusRunning")}</option>
+              <option value="paused">{t("portTraffic.statusPaused")}</option>
+              <option value="stopped">{t("portTraffic.statusStopped")}</option>
+              <option value="draft">{t("portTraffic.statusDraft")}</option>
+            </FieldSelect>
+            <Button
+              size="sm"
+              variant="tertiary"
+              isDisabled={!hasListFilters}
+              onPress={() => {
+                setListKeyword("");
+                setListStatus("");
+                setListPage(1);
+              }}
+            >
+              {t("common.clearFilters")}
+            </Button>
+          </div>
+
+          {devicesQuery.isLoading ? <p className="muted">{t("common.refreshing")}</p> : null}
+          {devicesQuery.isError ? <p className="error-text">{t("common.opFailed")}</p> : null}
+
+          {!devices.length && !devicesQuery.isLoading ? (
+            <div className="pt-list-empty">
+              <p>{t("portTraffic.empty")}</p>
+              {!hasListFilters ? (
+                <Button variant="primary" onPress={openWizard}>
+                  {t("portTraffic.create")}
+                </Button>
+              ) : null}
+            </div>
+          ) : devices.length ? (
+            <div className="pt-list-table-wrap">
+              <table className="data-table pt-list-table">
+                <thead>
+                  <tr>
+                    <th>{t("portTraffic.col.device")}</th>
+                    <th>{t("portTraffic.col.status")}</th>
+                    <th>{t("portTraffic.col.ports")}</th>
+                    <th>{t("portTraffic.col.interval")}</th>
+                    <th>{t("portTraffic.col.last")}</th>
+                    <th>{t("portTraffic.col.actions")}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {devices.map((row) => {
+                    return (
+                      <tr key={row.id}>
+                        <td>
+                          <div className="pt-list-task-name">{deviceLabel(row)}</div>
+                          <div className="muted" style={{ fontSize: 12 }}>
+                            {row.ne_ip || row.ne_id}
+                            {row.vendor ? ` · ${row.vendor}` : ""}
+                            {row.note ? ` · ${row.note}` : ""}
+                          </div>
+                        </td>
+                        <td>
+                          <div className="pt-port-updown">
+                            <NmStatusChip color={jobChipColor(row.status)}>
+                              {statusText(row.status)}
+                            </NmStatusChip>
+                            {row.collect_running ? (
+                              <NmStatusChip color="accent">{t("portTraffic.collecting")}</NmStatusChip>
+                            ) : null}
+                          </div>
+                        </td>
+                        <td className="pt-list-num">
+                          {row.active_target_count}/{row.target_count}
+                        </td>
+                        <td className="pt-list-num">{row.interval_sec}s</td>
+                        <td className="pt-list-time">
+                          {formatSystemTime(row.last_collect_ended_at) || "—"}
+                        </td>
+                        <td>
+                          <div className="pt-list-actions">
+                            <Button size="sm" variant="primary" onPress={() => openWallList()}>
+                              {t("portTraffic.wall")}
+                            </Button>
+                            <Button size="sm" variant="ghost" onPress={() => openEdit(row)}>
+                              {t("portTraffic.edit")}
+                            </Button>
+                            {needsNeRebind(row) ? (
+                              <Button size="sm" variant="ghost" onPress={() => openRebind(row)}>
+                                {t("portTraffic.rebind")}
+                              </Button>
+                            ) : null}
+                            {row.status !== "running" ? (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                isDisabled={startMut.isPending}
+                                onPress={() => startMut.mutate(row.id)}
+                              >
+                                {t("portTraffic.start")}
+                              </Button>
+                            ) : (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                isDisabled={pauseMut.isPending}
+                                onPress={() => pauseMut.mutate(row.id)}
+                              >
+                                {t("portTraffic.pause")}
+                              </Button>
+                            )}
+                            {row.status !== "stopped" ? (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                isDisabled={stopMut.isPending}
+                                onPress={() => stopMut.mutate(row.id)}
+                              >
+                                {t("portTraffic.stop")}
+                              </Button>
+                            ) : null}
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className={row.last_error ? "pt-list-log-btn--error" : undefined}
+                              onPress={() => {
+                                setLogDeviceId(row.id);
+                                setLogDeviceLabel(deviceLabel(row));
+                                setLogKeyword("");
+                              }}
+                            >
+                              {t("portTraffic.log")}
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="danger"
+                              isDisabled={deleteMut.isPending}
+                              onPress={() => {
+                                if (window.confirm(t("portTraffic.confirmDelete"))) {
+                                  deleteMut.mutate(row.id);
+                                }
+                              }}
+                            >
+                              {t("portTraffic.delete")}
+                            </Button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          ) : null}
+
+          <ListPager
+            page={listPage}
+            pages={pages}
+            total={listTotal}
+            pageSize={listPageSize}
+            pageSizeOptions={[10, 20, 50, 100]}
+            onPageChange={setListPage}
+            onPageSizeChange={(size) => {
+              setListPageSize(size);
+              setListPage(1);
+            }}
+            disabled={devicesQuery.isLoading}
+          />
+        </div>
+      ) : null}
+
+      {view === "wizard" ? (
+        <div className="pt-wizard">
+          <div className="pt-wizard__steps">
+            {[1, 2, 3].map((n) => (
+              <button
+                key={n}
+                type="button"
+                className={`pt-wizard__step${wizardStep === n ? " is-active" : ""}`}
+                onClick={() => setWizardStep(n as 1 | 2 | 3)}
+              >
+                {n}. {t(`portTraffic.wizStep${n}`)}
+              </button>
+            ))}
+          </div>
+
+          {wizardStep === 1 ? (
+            <>
+              {deepLinkHint ? <p className="panel__hint panel__hint--live">{deepLinkHint}</p> : null}
+              <div className="filter-inline">
+                <input
+                  value={neKeyword}
+                  onChange={(e) => {
+                    setNeKeyword(e.target.value);
+                    setNePage(1);
+                  }}
+                  placeholder={t("portTraffic.neKeywordPh")}
+                />
+                {selectedNe ? (
+                  <span className="muted">
+                    {t("portTraffic.selectedOneNe")}: {selectedNe.name} ({selectedNe.ip_address})
+                  </span>
+                ) : null}
+              </div>
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th />
+                    <th>{t("portTraffic.col.source")}</th>
+                    <th>{t("portTraffic.col.name")}</th>
+                    <th>IP</th>
+                    <th>{t("portTraffic.col.vendor")}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(nesQuery.data?.items || []).map((row) => {
+                    const checked =
+                      selectedNe?.id === row.id &&
+                      (selectedNe.source === "ume" ? "ume" : "managed") ===
+                        (row.source === "ume" ? "ume" : "managed");
+                    return (
+                      <tr key={`${row.source}:${row.id}`}>
+                        <td>
+                          <input
+                            type="radio"
+                            name="pt-ne"
+                            checked={checked}
+                            onChange={() => {
+                              setSelectedNe(row);
+                              setPorts([]);
+                              setPickedIfnames({});
+                            }}
+                          />
+                        </td>
+                        <td>{row.source}</td>
+                        <td>{row.name}</td>
+                        <td>{row.ip_address}</td>
+                        <td>{row.vendor || "—"}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </>
+          ) : null}
+
+          {wizardStep === 2 ? (
+            <div className="pt-wizard__ports">
+              {!selectedNe ? <p>{t("portTraffic.pickNeFirst")}</p> : null}
+              {selectedNe ? (
+                <>
+                  <div className="btn-row" style={{ marginBottom: 8 }}>
+                    <strong>
+                      {selectedNe.name} ({selectedNe.ip_address})
+                    </strong>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      isDisabled={portsLoading}
+                      onPress={() => void discoverSelected()}
+                    >
+                      {portsLoading ? "…" : t("portTraffic.discover")}
+                    </Button>
+                    {portsError ? <span className="muted">{portsError}</span> : null}
+                  </div>
+                  {discoverMeta ? (
+                    <details className="panel" style={{ marginBottom: 12 }}>
+                      <summary>
+                        {t("portTraffic.discoverDetail")}
+                        {" · "}
+                        {discoverMeta.ok ? t("portTraffic.discoverOk") : t("portTraffic.discoverFail")}
+                      </summary>
+                      {discoverMeta.command ? (
+                        <p className="muted">
+                          {t("portTraffic.discoverCommand")}: <code>{discoverMeta.command}</code>
+                        </p>
+                      ) : null}
+                      {discoverMeta.error ? (
+                        <p className="muted" style={{ color: "var(--danger, #b00)" }}>
+                          {discoverMeta.error}
+                        </p>
+                      ) : null}
+                      <p className="muted">{t("portTraffic.discoverRaw")}</p>
+                      <pre className="topo-discover-modal__raw" style={{ maxHeight: 240, overflow: "auto" }}>
+                        {discoverMeta.raw_preview || "—"}
+                      </pre>
+                    </details>
+                  ) : null}
+                  {ports.length ? (
+                    <table className="data-table">
+                      <thead>
+                        <tr>
+                          <th />
+                          <th>{t("portTraffic.col.ifname")}</th>
+                          <th>{t("portTraffic.col.bw")}</th>
+                          <th>{t("portTraffic.col.upDown")}</th>
+                          <th>{t("portTraffic.col.description")}</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {ports.map((p) => (
+                          <tr key={p.ifname}>
+                            <td>
+                              <input
+                                type="checkbox"
+                                checked={Boolean(pickedIfnames[p.ifname])}
+                                onChange={() => toggleIfname(p)}
+                              />
+                            </td>
+                            <td>{p.ifname}</td>
+                            <td>{p.bw_raw || formatBw(p.bw_bps)}</td>
+                            <td>
+                              <PortUpDownCell
+                                admin={p.admin}
+                                phy={p.phy}
+                                prot={p.prot}
+                                labels={upDownLabels}
+                              />
+                            </td>
+                            <td>{p.description || "—"}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  ) : null}
+                  <p>{t("portTraffic.selectedPorts", { count: String(pickedList.length) })}</p>
+                </>
+              ) : null}
+            </div>
+          ) : null}
+
+          {wizardStep === 3 ? (
+            <div className="pt-wizard__confirm">
+              <div className="config-sync-policy-row">
+                <label className="config-sync-policy-field">
+                  {t("portTraffic.interval")}
+                  <input
+                    type="number"
+                    min={15}
+                    max={3600}
+                    value={intervalSec}
+                    onChange={(e) => setIntervalSec(Number(e.target.value) || 300)}
+                  />
+                </label>
+                <label className="config-sync-policy-field">
+                  {t("portTraffic.retention")}
+                  <input
+                    type="number"
+                    min={1}
+                    max={90}
+                    value={retentionDays}
+                    onChange={(e) => setRetentionDays(Number(e.target.value) || 7)}
+                  />
+                </label>
+                <label className="config-sync-policy-field">
+                  {t("portTraffic.concurrency")}
+                  <input
+                    type="number"
+                    min={1}
+                    max={5}
+                    value={concurrency}
+                    onChange={(e) => setConcurrency(Number(e.target.value) || 1)}
+                  />
+                </label>
+                <label className="config-sync-policy-field">
+                  {t("portTraffic.note")}
+                  <input
+                    value={note}
+                    onChange={(e) => setNote(e.target.value)}
+                    placeholder={t("portTraffic.notePh")}
+                  />
+                </label>
+                <label className="config-sync-policy-check">
+                  <input type="checkbox" checked={startNow} onChange={(e) => setStartNow(e.target.checked)} />
+                  {t("portTraffic.startNow")}
+                </label>
+              </div>
+              <p>
+                <strong>
+                  {selectedNe?.name || "—"} ({selectedNe?.ip_address || "—"})
+                </strong>
+              </p>
+              <p>{t("portTraffic.selectedPorts", { count: String(pickedList.length) })}</p>
+              <ul className="pt-wizard__confirm-list">
+                {pickedList.slice(0, 40).map((p) => {
+                  const disc = discoveredByIfname[p.ifname];
+                  return (
+                    <li key={p.ifname} className="pt-wizard__confirm-port">
+                      <span>
+                        {p.ifname} ({formatBw(p.bw_bps || 0)})
+                      </span>
+                      {disc ? (
+                        <PortUpDownCell
+                          admin={disc.admin}
+                          phy={disc.phy}
+                          prot={disc.prot}
+                          labels={upDownLabels}
+                        />
+                      ) : null}
+                    </li>
+                  );
+                })}
+                {pickedList.length > 40 ? <li>… +{pickedList.length - 40}</li> : null}
+              </ul>
+              <Button variant="primary" isDisabled={createMut.isPending} onPress={submitWizard}>
+                {t("portTraffic.confirmCreate")}
+              </Button>
+            </div>
+          ) : null}
+
+          <div className="btn-row" style={{ marginTop: 12 }}>
+            <Button
+              variant="secondary"
+              isDisabled={wizardStep <= 1}
+              onPress={() => setWizardStep((s) => (s > 1 ? ((s - 1) as 1 | 2 | 3) : s))}
+            >
+              {t("portTraffic.prev")}
+            </Button>
+            <Button
+              variant="secondary"
+              isDisabled={wizardStep >= 3}
+              onPress={() => {
+                if (wizardStep === 1 && !selectedNe) {
+                  showError(t("portTraffic.pickNeFirst"));
+                  return;
+                }
+                if (wizardStep === 2 && !pickedList.length) {
+                  showError(t("portTraffic.portsRequired"));
+                  return;
+                }
+                setWizardStep((s) => (s < 3 ? ((s + 1) as 1 | 2 | 3) : s));
+              }}
+            >
+              {t("portTraffic.next")}
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
+      {view === "edit" && editDevice ? (
+        <div className="pt-wizard">
+          <h3 style={{ marginTop: 0 }}>
+            {t("portTraffic.edit")}: {deviceLabel(editDevice)}
+          </h3>
+          <div className="config-sync-policy-row">
+            <label className="config-sync-policy-field">
+              {t("portTraffic.interval")}
+              <input
+                type="number"
+                min={15}
+                max={3600}
+                value={intervalSec}
+                onChange={(e) => setIntervalSec(Number(e.target.value) || 300)}
+              />
+            </label>
+            <label className="config-sync-policy-field">
+              {t("portTraffic.retention")}
+              <input
+                type="number"
+                min={1}
+                max={90}
+                value={retentionDays}
+                onChange={(e) => setRetentionDays(Number(e.target.value) || 7)}
+              />
+            </label>
+            <label className="config-sync-policy-field">
+              {t("portTraffic.concurrency")}
+              <Input
+                type="number"
+                min={1}
+                max={5}
+                value={String(concurrency)}
+                onChange={(e) => setConcurrency(Number(e.target.value) || 1)}
+              />
+            </label>
+            <label className="config-sync-policy-field">
+              {t("portTraffic.note")}
+              <Input value={note} onChange={(e) => setNote(e.target.value)} />
+            </label>
+          </div>
+          <div className="btn-row" style={{ margin: "12px 0" }}>
+            <Button
+              size="sm"
+              variant="secondary"
+              isDisabled={portsLoading}
+              onPress={() => void discoverSelected()}
+            >
+              {portsLoading ? "…" : t("portTraffic.discover")}
+            </Button>
+            <span className="muted">{t("portTraffic.selectedPorts", { count: String(pickedList.length) })}</span>
+          </div>
+          {portsError ? <p className="muted">{portsError}</p> : null}
+          {discoverMeta ? (
+            <details className="panel" style={{ marginBottom: 12 }}>
+              <summary>
+                {t("portTraffic.discoverDetail")}
+                {" · "}
+                {discoverMeta.ok ? t("portTraffic.discoverOk") : t("portTraffic.discoverFail")}
+              </summary>
+              {discoverMeta.command ? (
+                <p className="muted">
+                  {t("portTraffic.discoverCommand")}: <code>{discoverMeta.command}</code>
+                </p>
+              ) : null}
+              {discoverMeta.error ? (
+                <p className="muted" style={{ color: "var(--danger, #b00)" }}>
+                  {discoverMeta.error}
+                </p>
+              ) : null}
+              <p className="muted">{t("portTraffic.discoverRaw")}</p>
+              <pre className="topo-discover-modal__raw" style={{ maxHeight: 240, overflow: "auto" }}>
+                {discoverMeta.raw_preview || "—"}
+              </pre>
+            </details>
+          ) : null}
+          {ports.length ? (
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th />
+                  <th>{t("portTraffic.col.ifname")}</th>
+                  <th>{t("portTraffic.col.bw")}</th>
+                  <th>{t("portTraffic.col.upDown")}</th>
+                  <th>{t("portTraffic.col.description")}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {ports.map((p) => (
+                  <tr key={p.ifname}>
+                    <td>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(pickedIfnames[p.ifname])}
+                        onChange={() => toggleIfname(p)}
+                      />
+                    </td>
+                    <td>{p.ifname}</td>
+                    <td>{p.bw_raw || formatBw(p.bw_bps)}</td>
+                    <td>
+                      <PortUpDownCell
+                        admin={p.admin}
+                        phy={p.phy}
+                        prot={p.prot}
+                        labels={upDownLabels}
+                      />
+                    </td>
+                    <td>{p.description || "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <ul className="pt-wizard__confirm-list">
+              {pickedList.map((p) => (
+                <li key={p.ifname}>{p.ifname}</li>
+              ))}
+            </ul>
+          )}
+          <div className="btn-row" style={{ marginTop: 12 }}>
+            <Button
+              variant="primary"
+              isDisabled={updateMut.isPending || putIfacesMut.isPending}
+              onPress={() => void saveEdit()}
+            >
+              {t("portTraffic.save")}
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
+      <AppModalShell open={Boolean(logDeviceId)} onClose={closeLog} size="lg">
+        <Modal.Header>
+          <Modal.Heading>{t("portTraffic.logTitle")}</Modal.Heading>
+          <Modal.CloseTrigger />
+        </Modal.Header>
+        <Modal.Body className="flex flex-col gap-3">
+          <p className="muted pt-log-modal__sub">
+            {t("portTraffic.logDevice")}: {logDeviceLabel || "—"}
+          </p>
+          <div className="filter-inline">
+            <Input
+              value={logKeyword}
+              placeholder={t("portTraffic.keywordPh")}
+              onChange={(e) => setLogKeyword(e.target.value)}
+            />
+          </div>
+          {logQuery.isLoading ? (
+            <p className="muted">…</p>
+          ) : !logEvents.length ? (
+            <p className="muted">{t("portTraffic.logEmpty")}</p>
+          ) : !filteredLogEvents.length ? (
+            <p className="muted">{t("portTraffic.logEmpty")}</p>
+          ) : (
+            <div className="pt-log-modal__list">
+              {filteredLogEvents.map((ev) => {
+                const level = String(ev.level || "error").toLowerCase();
+                const tone =
+                  level === "warn" || level === "warning"
+                    ? "warn"
+                    : level === "info"
+                      ? "info"
+                      : "error";
+                return (
+                  <article key={ev.id} className={`pt-log-item pt-log-item--${tone}`}>
+                    <div className="pt-log-item__meta">
+                      <span className="pt-log-item__level">{level}</span>
+                      <span className="pt-log-item__time">
+                        {formatSystemTime(ev.created_at) || "—"}
+                      </span>
+                      {ev.ifname ? (
+                        <span className="pt-log-item__if" title={ev.ifname}>
+                          {ev.ifname}
+                        </span>
+                      ) : null}
+                    </div>
+                    <pre className="pt-log-item__msg">{formatPortTrafficLogMessage(ev.message, t)}</pre>
+                  </article>
+                );
+              })}
+            </div>
+          )}
+        </Modal.Body>
+        <Modal.Footer>
+          <Button
+            variant="secondary"
+            isDisabled={!filteredLogEvents.length}
+            onPress={exportEventsCsv}
+          >
+            {t("common.exportCsv")}
+          </Button>
+          <Button variant="tertiary" onPress={closeLog}>
+            {t("portTraffic.logClose")}
+          </Button>
+        </Modal.Footer>
+      </AppModalShell>
+
+      <AppModalShell
+        open={Boolean(rebindDevice)}
+        onClose={closeRebind}
+        dismissible={!rebindMut.isPending}
+        size="lg"
+      >
+        <Modal.Header>
+          <Modal.Heading>{t("portTraffic.rebindTitle")}</Modal.Heading>
+          <Modal.CloseTrigger />
+        </Modal.Header>
+        <Modal.Body className="flex flex-col gap-3">
+          {rebindDevice ? (
+            <>
+              <p className="muted pt-log-modal__sub">
+                {t("portTraffic.rebindCurrent")}: {deviceLabel(rebindDevice)}
+                {rebindDevice.ne_ip ? ` · ${rebindDevice.ne_ip}` : ""}
+                {` · ${rebindSource}`}
+                {rebindDevice.ne_id ? ` · ID ${rebindDevice.ne_id.slice(0, 8)}…` : ""}
+              </p>
+              <p className="muted pt-log-modal__sub">{t("portTraffic.rebindHint")}</p>
+
+              <div className="filter-inline">
+                <Input
+                  value={rebindKeyword}
+                  onChange={(e) => {
+                    setRebindKeyword(e.target.value);
+                    setRebindPage(1);
+                  }}
+                  placeholder={t("portTraffic.neKeywordPh")}
+                />
+                {rebindSelectedNe ? (
+                  <span className="muted">
+                    {t("portTraffic.selectedOneNe")}: {rebindSelectedNe.name} (
+                    {rebindSelectedNe.ip_address})
+                  </span>
+                ) : null}
+              </div>
+
+              {rebindNesQuery.isLoading ? (
+                <p className="muted">…</p>
+              ) : !(rebindNesQuery.data?.items || []).length ? (
+                <p className="muted">{t("portTraffic.rebindEmpty")}</p>
+              ) : (
+                <div className="pt-rebind-modal__table-wrap">
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th />
+                        <th>{t("portTraffic.col.name")}</th>
+                        <th>IP</th>
+                        <th>{t("portTraffic.col.vendor")}</th>
+                        <th>ID</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(rebindNesQuery.data?.items || []).map((row) => {
+                        const checked = rebindSelectedNe?.id === row.id;
+                        const sameIp =
+                          Boolean(rebindDevice.ne_ip) &&
+                          String(row.ip_address || "").trim() ===
+                            String(rebindDevice.ne_ip || "").trim();
+                        return (
+                          <tr
+                            key={`${row.source}:${row.id}`}
+                            className={sameIp ? "pt-rebind-row--same-ip" : undefined}
+                            title={sameIp ? t("portTraffic.rebindSameIpHint") : undefined}
+                          >
+                            <td>
+                              <input
+                                type="radio"
+                                name="pt-rebind-ne"
+                                checked={checked}
+                                onChange={() => setRebindSelectedNe(row)}
+                              />
+                            </td>
+                            <td>{row.name}</td>
+                            <td>
+                              {row.ip_address}
+                              {sameIp ? (
+                                <span className="pt-rebind-same-ip">{t("portTraffic.rebindSameIp")}</span>
+                              ) : null}
+                            </td>
+                            <td>{row.vendor || "—"}</td>
+                            <td className="muted" style={{ fontSize: 12 }}>
+                              {row.id.slice(0, 8)}…
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              <div className="pager pt-list-pager">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  isIconOnly
+                  className="pager__btn"
+                  isDisabled={rebindPage <= 1}
+                  onPress={() => setRebindPage((p) => p - 1)}
+                >
+                  ‹
+                </Button>
+                <span className="muted">
+                  {rebindPage}/
+                  {Math.max(1, pageCount(rebindNesQuery.data?.total || 0, TARGET_PAGE_SIZE))}
+                </span>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  isIconOnly
+                  className="pager__btn"
+                  isDisabled={
+                    rebindPage >=
+                    Math.max(1, pageCount(rebindNesQuery.data?.total || 0, TARGET_PAGE_SIZE))
+                  }
+                  onPress={() => setRebindPage((p) => p + 1)}
+                >
+                  ›
+                </Button>
+              </div>
+            </>
+          ) : null}
+        </Modal.Body>
+        <Modal.Footer>
+          <Button variant="tertiary" isDisabled={rebindMut.isPending} onPress={closeRebind}>
+            {t("portTraffic.boardCancel")}
+          </Button>
+          <Button
+            variant="primary"
+            isDisabled={!rebindSelectedNe || rebindMut.isPending}
+            onPress={confirmRebind}
+          >
+            {rebindMut.isPending ? "…" : t("portTraffic.rebindSubmit")}
+          </Button>
+        </Modal.Footer>
+      </AppModalShell>
+    </section>
+  );
+}

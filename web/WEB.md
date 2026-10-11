@@ -7,25 +7,67 @@
 - TanStack Query（服务端状态）
 - 自研 i18n（`src/i18n/`，无额外依赖）
 
-## 目录结构
+## 代码结构
+
+**按领域（feature）组织，依赖方向 `features → 共享层`，反向禁止**（ESLint `no-restricted-imports` 强制）。
 
 ```
 src/
-  config/modules.ts      # 模块注册表（工作台卡片、路由、标题 i18n）
-  constants/queryKeys.ts # React Query key
-  components/            # 可复用 UI（无业务 API 调用）
-  hooks/                 # 通用 hooks（Toast、窗口注册）
-  i18n/                  # 文案 zh / en
-  layout/                # AppLayout、ErrorBoundary
-  pages/                 # 页面（按路由）
-  services/api.ts        # HTTP 封装与 API 函数
-  types.ts               # 与后端契约类型
-  utils/
-    tabChannel.ts        # 跨标签页聚焦（BroadcastChannel）
-    workbench.ts         # 返回工作台
-    moduleWindows.ts     # 打开/聚焦模块页签
-    display.ts           # 纯展示辅助
+  main.tsx  App.tsx             # 入口、路由表（lazy 引入各 feature 页面）
+  features/<领域>/              # 业务模块，kebab-case 目录名
+    XxxPage.tsx                 #   路由入口（XxxLayout.tsx 为带子路由的壳）
+    components/                 #   该领域私有组件（含 modals/）
+    hooks/                      #   该领域私有 hooks（useXxx.ts）
+    lib/                        #   纯逻辑（无 React），可单测
+  layout/                       # 应用壳：AppLayout、顶栏、ErrorBoundary
+  components/ (+ ui/)           # 跨领域复用 UI（无业务 API 调用）
+  hooks/  utils/                # 跨领域 hooks / 纯工具
+  services/api/                 # 后端 API，按领域分文件，index.ts 汇总导出
+  types/                        # 后端契约类型，按领域分文件，index.ts 汇总导出
+  i18n/locales/{zh,en}/<ns>.ts  # 文案，一个命名空间一个文件
+  config/                       # 导航与模块注册表（modules / networkNav / auditNav）
+  constants/queryKeys.ts        # React Query key
+  styles/                       # 见「样式规范」
 ```
+
+现有领域：`auth` `workbench` `managed-ne` `ume` `collect` `config-sync` `webcrt` `topology`
+`network` `port-traffic` `cutover`（业务状态/对比/割接） `audit` `users` `api-tokens` `sessions`。
+
+约定：
+
+- 只被**一个**领域用到的代码放进该领域的 `components/ hooks/ lib/`；被**两个以上**领域用到才上移到共享层。
+- 跨领域只引用对方的页面级导出或 `components/ lib/` 下的文件；现有合理依赖：`* → auth`、`topology/ume → managed-ne`。
+- 共享层（`components hooks utils services i18n types constants`）**不得** import `features/`。
+- 新增 API：写进 `services/api/<领域>.ts`；新增类型：写进 `types/<领域>.ts`；调用方仍 `from "…/services/api"` / `"…/types"`。
+- 单个组件函数超过 ~500 行视为需要拆分：状态/副作用抽成 `hooks/`，纯计算抽成 `lib/`，区块抽成 `components/`。
+  （`BizComparePage` `WebcrtPage` `BizStatePage` `BizMigrationPage` `TopologyPage` 等仍是待拆分的单体组件。）
+
+## 样式规范
+
+`src/index.css` 只是入口：按顺序 `@import` `styles/` 下的文件，**导入顺序即层叠顺序，不要调换**。
+
+```
+styles/
+  theme/tokens.css   # 唯一的色板/圆角/阴影来源（--nx-*），并把旧 --nm-* 映射到它
+  base/              # 全局基础（滚动条、body）
+  layout/            # 应用壳、网络/审计壳（左侧导航）
+  components/        # 共享原语（按钮、输入、表格、卡片、pill…）
+  pages/<领域>.css   # 页面样式，类名带领域前缀（wb-* topo-* webcrt-* bs-* pt-*…）
+  legacy/            # 历史遗留的覆盖层，逐步并入 components/，不要往里加新规则
+  theme/theme.css    # 设计语言层，必须最后加载
+```
+
+设计方向：**现代蓝**——沿用 NetX 原有深海军蓝色板、柔和渐变面板、8/12px 圆角、蓝色强调色（主按钮用渐变），
+胶囊状态标签；hover 有轻微抬升和蓝色光晕，focus 用柔和焦点环。
+
+规则：
+
+- 颜色一律用 `var(--nx-*)`；半透明用 `rgb(var(--nx-ink-rgb) / .6)`，不要写 `#0f172a` / `rgba(15,23,42,.6)`。
+- 状态色用语义变量 `--nx-ok / --nx-warn / --nx-bad`。
+- 次要文字至少用 `--nx-text-faint`（在 `--nx-surface-1` 上对比度 ≥ 4.5:1）。
+- 顶栏高度固定 48px（`--nx-header-h`），多个页面用 `calc(100vh - 48px)` 布局。
+- 新样式放进所属 `pages/` 或 `components/` 文件；只有跨页面的视觉语言才改 `theme/theme.css`。
+- 避免 `!important` 和"覆盖全局 button"式规则；需要时先在 `components/` 里改原语。
 
 ## 路由与模块
 
@@ -61,7 +103,7 @@ src/
 
 1. 在 `MODULES` 增加一项（`moduleId`、`path`、`section`、i18n key、`iconTone`）
 2. 在 `App.tsx` 增加 `<Route path="..." element={...} />`
-3. 在 `i18n/zh.ts` 与 `en.ts` 补充文案
+3. 在 `i18n/locales/zh/<ns>.ts` 与 `en/<ns>.ts` 补充文案（新命名空间还需在各自 `index.ts` 注册）
 4. 工作台卡片由 `modulesInSection` 自动生成，点击走 `openOrFocusModule`
 
 ## 跨标签页导航
@@ -79,7 +121,7 @@ src/
 
 ## 数据请求
 
-- API 仅写在 `services/api.ts`
+- API 仅写在 `services/api/<领域>.ts`
 - Query key 集中在 `constants/queryKeys.ts`
 - 失效缓存用 prefix key（如 `queryKeys.umeSyncStatusAll`）
 - 顶栏连接状态：`App` 轮询 `GET /v1/integrations/status`（5s），展示 **netx api** 与 **DSH alarm hub**
@@ -184,7 +226,7 @@ src/
 
 ## 样式
 
-- 全局样式：`index.css`（工作台浅色主题）
+- 全局样式：见「样式规范」（`index.css` 为入口，令牌在 `styles/theme/tokens.css`）
 - 不使用 CSS Modules；类名 BEM 风格：`app-brand__logo`、`wb-card`
 
 ## 构建

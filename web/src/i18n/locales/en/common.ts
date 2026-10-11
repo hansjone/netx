@@ -1,0 +1,25 @@
+const common = {
+  help: "Help",
+  refresh: "Refresh",
+  refreshing: "Refreshing…",
+  query: "Search",
+  clearFilters: "Clear filters",
+  prevPage: "Previous",
+  nextPage: "Next",
+  perPage: "{{n}}/page",
+  pagerMeta: "{{total}} items · page {{page}}/{{pages}}",
+  jumpPage: "Go to page",
+  pageSize: "Page size",
+  exportCsv: "Export CSV",
+  exporting: "Exporting…",
+  exportOk: "Exported {{count}} rows",
+  exportTruncated: "Exported first {{count}} of {{total}} rows (truncated)",
+  exportFailed: "Export failed",
+  opFailed: "Operation failed",
+  empty: "-",
+  cancel: "Cancel",
+  copy: "Copy",
+  copied: "Copied",
+};
+
+export default common;

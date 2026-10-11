@@ -1,0 +1,4298 @@
+import { Button, Input, Modal } from "@heroui/react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent } from "react";
+import { parseTemplateImport, parseIfaceNormText, toOrGroups, fromOrGroups, validateTemplateDraft } from "./lib/compareTemplateModel";
+import type { MetricSheet, FieldRule, RowFilter } from "./lib/compareTemplateModel";
+import { ListPager } from "../../components/ListPager";
+import { AppModalShell } from "../../components/ui/AppModalShell";
+import { FieldSelect } from "../../components/ui/FieldSelect";
+import { useDebouncedValue } from "../../hooks/useDebouncedValue";
+import { useToast } from "../../hooks/useToast";
+import { useI18n } from "../../i18n";
+import {
+  bizCompareCancelRun,
+  bizCompareCreateJob,
+  bizCompareCreateMapping,
+  bizCompareCreateTemplate,
+  bizCompareDeleteJob,
+  bizCompareDeleteRun,
+  bizCompareDeleteTemplate,
+  bizCompareDownloadRun,
+  bizCompareGetRun,
+  bizCompareListJobs,
+  bizCompareListMappings,
+  bizCompareListMetrics,
+  bizCompareListRunDiffs,
+  bizCompareListRuns,
+  bizCompareListTemplates,
+  bizCompareRunJob,
+  bizCompareUpdateJob,
+  bizCompareUpdateMapping,
+  bizCompareUpdateTemplate,
+  bizCompareValidateMapping,
+  bizStateListBatches,
+  bizStateListTasks,
+  formatErr,
+} from "../../services/api";
+import { formatSystemTime } from "../../utils/time";
+import { cutoverCachedGet, cutoverCachedGetSWR, invalidateCutoverCache } from "./lib/cutoverDataCache";
+import { jobChipColor, NmStatusChip } from "../../components/NmChips";
+
+type PageTab = "templates" | "jobs";
+type JobDetailTab = "config" | "runs" | "result";
+type KindFilter = "diff" | "all" | "added" | "removed" | "changed" | "unchanged";
+type DiffListSource = "stored" | "live" | "";
+type CreateJobStep = 0 | 1 | 2 | 3;
+const CREATE_JOB_STEPS = 4;
+
+type TaskOpt = { id: string; ne_name: string; ne_ip: string; vendor: string };
+type BatchOpt = {
+  id: string;
+  status: string;
+  row_count: number;
+  started_at?: string | null;
+  alias?: string;
+};
+type MetricField = {
+  name: string;
+  display_name: string;
+  dtype: string;
+  is_key: boolean;
+  is_interface: boolean;
+  role: string;
+};
+type MetricSchema = { metric_id: string; fields: MetricField[] };
+
+type Template = {
+  id: string;
+  name: string;
+  metrics?: MetricSheet[];
+  metric_ids?: string[];
+  metric_id: string;
+  key_fields: string[];
+  iface_fields: string[];
+  compare_fields: string[];
+  iface_normalize_rules?: { from: string; to: string }[];
+  note: string;
+  job_count?: number;
+};
+
+type Mapping = { id: string; name: string; rows: { before_if: string; after_if: string }[] };
+type StoreUnchanged = "auto" | "always" | "never" | "sample" | "keys";
+
+type Job = {
+  id: string;
+  name: string;
+  template_id: string;
+  mapping_id: string;
+  before_task_id: string;
+  after_task_id: string;
+  before_batch_id: string;
+  after_batch_id: string;
+  mode: string;
+  status: string;
+  enabled_sheet_ids?: string[];
+  store_unchanged?: StoreUnchanged | string;
+  note?: string;
+};
+
+type DiffRow = {
+  kind: string;
+  key: Record<string, unknown>;
+  before: Record<string, unknown> | null;
+  after: Record<string, unknown> | null;
+  mapped_before?: Record<string, unknown> | null;
+  changes: Record<string, { before?: unknown; after?: unknown; reason?: string }>;
+};
+
+type RunSheet = {
+  sheet_id?: string;
+  title?: string;
+  metric_id: string;
+  key_fields: string[];
+  iface_fields: string[];
+  compare_fields: string[];
+  display_fields?: string[];
+  field_rules?: FieldRule[];
+  mode?: string;
+  /** pending|running|queued|done|cancelled — set while overall run is active */
+  status?: string;
+  summary?: Record<string, number>;
+  diffs?: DiffRow[];
+};
+
+type RunRecord = {
+  id: string;
+  status?: string;
+  created_at?: string;
+  before?: SideInfo;
+  after?: SideInfo;
+  summary?: {
+    added?: number; removed?: number; changed?: number; unchanged?: number;
+    before_count?: number; after_count?: number; duration_ms?: number;
+    progress?: RunProgressInfo;
+  };
+  progress?: RunProgressInfo;
+  message?: string;
+};
+
+function fmtTime(v?: string | null) {
+  if (!v) return "—";
+  return formatSystemTime(v) || v;
+}
+
+function cellText(v: unknown): string {
+  if (v === null || v === undefined) return "";
+  if (typeof v === "object") return JSON.stringify(v);
+  return String(v);
+}
+
+function failFieldNames(d: DiffRow): string[] {
+  if (d.kind === "added" || d.kind === "removed") return [];
+  return Object.keys(d.changes || {});
+}
+
+/** Prefer first non-empty row dict (API may return {} for null sides). */
+function pickSideRow(
+  ...candidates: Array<Record<string, unknown> | null | undefined>
+): Record<string, unknown> {
+  for (const c of candidates) {
+    if (c && typeof c === "object" && Object.keys(c).length > 0) return c;
+  }
+  return {};
+}
+
+/** Non-key fields: always show before/after pair for cutover review. */
+function PairCell(props: {
+  beforeText: string;
+  afterText: string;
+  kind: string;
+  mismatch: boolean;
+  reason?: string;
+  beforeLabel: string;
+  afterLabel: string;
+  zoneStart?: boolean;
+}) {
+  const {
+    beforeText,
+    afterText,
+    kind,
+    mismatch,
+    reason,
+    beforeLabel,
+    afterLabel,
+    zoneStart = false,
+  } = props;
+  const pre = beforeText || "—";
+  const post = afterText || "—";
+  const isAdded = kind === "added";
+  const isRemoved = kind === "removed";
+  const same =
+    !mismatch && !isAdded && !isRemoved && String(beforeText || "") === String(afterText || "");
+  // Whole-row missing/extra: emphasize the present side; do not strike it out.
+  const preClass = [
+    "bs-cmp-val",
+    !beforeText || isAdded ? "is-empty" : "",
+    isRemoved && beforeText ? "bs-cmp-val--present-pre" : "",
+    !isAdded && !isRemoved && mismatch && beforeText ? "bs-cmp-val--pre" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const postClass = [
+    "bs-cmp-val",
+    !afterText || isRemoved ? "is-empty" : "",
+    isAdded && afterText ? "bs-cmp-val--present-post" : "",
+    !isAdded && !isRemoved && mismatch && afterText ? "bs-cmp-val--post" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return (
+    <td
+      className={`bs-cmp-val-cell bs-cmp-val-cell--pair${
+        mismatch || isAdded || isRemoved ? " bs-cmp-val-cell--diff" : ""
+      }${same ? " is-same" : ""}${isAdded ? " is-added" : ""}${isRemoved ? " is-removed" : ""}${
+        zoneStart ? " bs-cmp-zone-start" : ""
+      }`}
+      title={
+        same
+          ? pre
+          : `${beforeLabel} ${isAdded ? "—" : pre} → ${afterLabel} ${isRemoved ? "—" : post}`
+      }
+    >
+      {same ? (
+        <div className="bs-cmp-pair bs-cmp-pair--same">
+          <span className="bs-cmp-val bs-cmp-val--same">{pre || "—"}</span>
+        </div>
+      ) : (
+        <div className="bs-cmp-pair">
+          <div className="bs-cmp-pair__row">
+            <span className="bs-cmp-pair__tag">{beforeLabel}</span>
+            <span className={preClass}>{isAdded ? "—" : pre}</span>
+          </div>
+          <div className="bs-cmp-pair__row">
+            <span className="bs-cmp-pair__tag">{afterLabel}</span>
+            <span className={postClass}>{isRemoved ? "—" : post}</span>
+          </div>
+        </div>
+      )}
+      {reason ? <div className="bs-cmp-val-reason muted">{reason}</div> : null}
+    </td>
+  );
+}
+
+function toggleInList(list: string[], name: string, on: boolean): string[] {
+  if (on) return list.includes(name) ? list : [...list, name];
+  return list.filter((x) => x !== name);
+}
+
+function sideDeviceName(side?: {
+  ne_name?: string;
+  ne_ip?: string;
+  label?: string;
+  batch_id?: string;
+} | null): string {
+  if (!side) return "—";
+  const name = String(side.ne_name || "").trim();
+  const ip = String(side.ne_ip || "").trim();
+  const label = String(side.label || "").trim();
+  // Prefer real device identity; ignore hex-ish fallbacks that look like batch ids
+  if (name) return name;
+  if (ip) return ip;
+  if (label && !/^[a-f0-9]{8,32}$/i.test(label)) return label;
+  return "—";
+}
+
+function sideCollectTime(side?: { started_at?: string | null } | null): string {
+  const raw = side?.started_at;
+  if (!raw) return "—";
+  const full = fmtTime(raw);
+  if (!full || full === raw) {
+    // Prefer compact local time when possible
+    try {
+      const d = new Date(/[zZ]$|[+-]\d{2}:\d{2}$/.test(String(raw)) ? raw : `${String(raw).replace(" ", "T")}Z`);
+      if (!Number.isNaN(d.getTime())) {
+        const m = d.getMonth() + 1;
+        const day = d.getDate();
+        const hh = String(d.getHours()).padStart(2, "0");
+        const mm = String(d.getMinutes()).padStart(2, "0");
+        return `${m}/${day} ${hh}:${mm}`;
+      }
+    } catch {
+      /* fall through */
+    }
+    return full || "—";
+  }
+  // Compact: drop seconds / year noise from locale string when long
+  // e.g. "2026/9/18 09:35:53" -> "9/18 09:35"
+  const m = String(full).match(/(?:\d{4}[/-])?(\d{1,2})[/-](\d{1,2})\s+(\d{2}):(\d{2})/);
+  if (m) return `${m[1]}/${m[2]} ${m[3]}:${m[4]}`;
+  return full;
+}
+
+type SideInfo = {
+  ne_name?: string;
+  ne_ip?: string;
+  label?: string;
+  batch_id?: string;
+  started_at?: string | null;
+};
+
+function enrichSide(
+  side: Record<string, unknown> | null | undefined,
+  taskId: string,
+  tasks: TaskOpt[],
+  batches: BatchOpt[],
+): SideInfo {
+  const base: SideInfo = { ...(side || {}) } as SideInfo;
+  const bid = String(base.batch_id || "").trim();
+  if (!base.started_at && bid) {
+    const batch = batches.find((b) => b.id === bid);
+    if (batch?.started_at) base.started_at = batch.started_at;
+  }
+  if (sideDeviceName(base) === "—") {
+    const task = tasks.find((t) => t.id === taskId);
+    if (task) {
+      base.ne_name = task.ne_name || base.ne_name;
+      base.ne_ip = task.ne_ip || base.ne_ip;
+      base.label = task.ne_name || task.ne_ip || base.label;
+    }
+  }
+  return base;
+}
+
+function taskLabel(row: TaskOpt) {
+  return `${row.ne_name || row.ne_ip || row.id} (${row.vendor || "-"})`;
+}
+
+function batchOptLabel(b: BatchOpt) {
+  const alias = String(b.alias || "").trim();
+  const when = fmtTime(b.started_at);
+  const tail = `${b.status} · rows=${b.row_count}`;
+  if (alias) return `${alias} · ${when} · ${tail}`;
+  return `${when} · ${tail}`;
+}
+
+function sheetIdentity(s: { sheet_id?: string; metric_id?: string } | null | undefined): string {
+  return String(s?.sheet_id || s?.metric_id || "").trim();
+}
+
+function sheetLabel(s: { title?: string; sheet_id?: string; metric_id?: string } | null | undefined): string {
+  return String(s?.title || s?.sheet_id || s?.metric_id || "").trim() || "—";
+}
+
+type RunProgressInfo = {
+  phase?: string;
+  sheet_index?: number;
+  sheet_total?: number;
+  sheet_title?: string;
+  sheet_id?: string;
+  elapsed_ms?: number;
+  load_side?: string;
+  rows_loaded?: number;
+  engine?: string;
+  engine_note?: string;
+  persisted?: number;
+  persist_total?: number;
+};
+
+function localizeRunPhase(phase: string | undefined, t: (key: string) => string): string {
+  const p = String(phase || "").trim().toLowerCase();
+  if (!p || p === "…") return "…";
+  if (p.startsWith("persisting")) {
+    if (p.includes("fail")) return t("bizCompare.phasePersistingFail");
+    if (p.includes("ok")) return t("bizCompare.phasePersistingOk");
+    return t("bizCompare.phasePersisting");
+  }
+  const map: Record<string, string> = {
+    queued: "bizCompare.phaseQueued",
+    loading: "bizCompare.phaseLoading",
+    sql_count: "bizCompare.phaseSqlCount",
+    sql_project: "bizCompare.phaseSqlProject",
+    sql_join: "bizCompare.phaseSqlJoin",
+    sql_fail_fetch: "bizCompare.phaseSqlFailFetch",
+    comparing: "bizCompare.phaseComparing",
+    done: "bizCompare.phaseDone",
+    failed: "bizCompare.phaseFailed",
+    cancelled: "bizCompare.phaseCancelled",
+  };
+  const key = map[p];
+  return key ? t(key) : String(phase);
+}
+
+function runProgressPercent(prog: RunProgressInfo): number {
+  const total = Number(prog.sheet_total || 0);
+  const idx = Number(prog.sheet_index || 0);
+  if (total <= 0) return 8;
+  const phase = String(prog.phase || "").toLowerCase();
+  if (phase === "queued") return 4;
+  if (phase === "done") return 100;
+  let base = Math.max(0, Math.min(idx, total)) / total;
+  const persistTotal = Number(prog.persist_total || 0);
+  const persisted = Number(prog.persisted || 0);
+  if (persistTotal > 0 && phase.startsWith("persisting")) {
+    const within = Math.min(1, persisted / persistTotal) * (1 / total);
+    base = Math.max(0, (idx - 1) / total) + within;
+  } else if (phase === "loading" || phase === "sql_count" || phase === "comparing") {
+    base = Math.max(0, (idx - 1) / total) + 0.35 / total;
+  }
+  return Math.max(4, Math.min(99, Math.round(base * 100)));
+}
+
+function runProgressMetaLine(
+  prog: RunProgressInfo,
+  t: (key: string, vars?: Record<string, string>) => string,
+): string {
+  const parts: string[] = [];
+  const phase = localizeRunPhase(prog.phase, t);
+  if (phase && phase !== "…") parts.push(phase);
+  const total = Number(prog.sheet_total || 0);
+  if (total > 0) {
+    parts.push(
+      t("bizCompare.runSheetProgress", {
+        i: String(prog.sheet_index || 0),
+        n: String(total),
+      }),
+    );
+  }
+  const title = String(prog.sheet_title || prog.sheet_id || "").trim();
+  if (title) parts.push(title);
+  const rows = Number(prog.rows_loaded || 0);
+  if (rows > 0) {
+    const eng = String(prog.engine || "").toLowerCase();
+    parts.push(
+      eng === "sql"
+        ? t("bizCompare.runRowsSqlCount", {
+            side: String(prog.load_side || "—"),
+            n: String(rows),
+          })
+        : t("bizCompare.runRowsLoaded", {
+            side: String(prog.load_side || "—"),
+            n: String(rows),
+          }),
+    );
+  }
+  const persistTotal = Number(prog.persist_total || 0);
+  if (String(prog.phase || "").startsWith("persisting") && persistTotal > 0) {
+    parts.push(
+      t("bizCompare.runPersisting", {
+        done: String(prog.persisted || 0),
+        total: String(persistTotal),
+      }),
+    );
+  }
+  return parts.join(" · ");
+}
+
+function templateSheets(tpl?: Template | null): MetricSheet[] {
+  if (!tpl) return [];
+  if (tpl.metrics?.length) return tpl.metrics;
+  if (tpl.metric_id) {
+    return [
+      {
+        sheet_id: tpl.metric_id,
+        title: tpl.metric_id,
+        metric_id: tpl.metric_id,
+        key_fields: [...(tpl.key_fields || [])],
+        iface_fields: [...(tpl.iface_fields || [])],
+        compare_fields: [...(tpl.compare_fields || [])],
+        display_fields: [...(tpl.key_fields || []), ...(tpl.compare_fields || [])],
+        row_filters: [],
+        field_rules: [],
+      },
+    ];
+  }
+  return [];
+}
+
+function defaultSheetForMetric(schema: MetricSchema | undefined, metricId: string): MetricSheet {
+  const fields = schema?.fields || [];
+  const key_fields = fields.filter((f) => f.is_key).map((f) => f.name);
+  const compare_fields = fields
+    .filter((f) => !f.is_key && (f.role === "state" || f.role === "meta"))
+    .map((f) => f.name);
+  const sheet: MetricSheet = {
+    sheet_id: metricId,
+    title: metricId,
+    metric_id: metricId,
+    key_fields,
+    iface_fields: fields.filter((f) => f.is_interface).map((f) => f.name),
+    compare_fields,
+    display_fields: [...key_fields, ...compare_fields],
+    row_filters: [],
+    field_rules: [],
+  };
+  // Match backend ARP defaults when adding from UI
+  if (metricId === "arp") {
+    sheet.row_filters = [
+      {
+        any: [
+          { field: "entry_type", op: "eq", value: "dynamic" },
+          {
+            all: [
+              { field: "entry_type", op: "empty" },
+              { field: "age", op: "age_timer" },
+            ],
+          },
+        ],
+      },
+    ];
+    if (fields.some((f) => f.name === "mac")) {
+      sheet.field_rules = [{ field: "mac", normalize: "mac" }];
+    }
+    const ctx = ["vrf", "entry_type", "age"].filter(
+      (n) => !key_fields.includes(n) && !compare_fields.includes(n) && fields.some((f) => f.name === n),
+    );
+    sheet.display_fields = [...key_fields, ...compare_fields, ...ctx];
+  }
+  return sheet;
+}
+
+function cloneSheet(s: MetricSheet): MetricSheet {
+  const keys = [...(s.key_fields || [])];
+  const compare = [...(s.compare_fields || [])];
+  const display =
+    s.display_fields && s.display_fields.length
+      ? [...s.display_fields]
+      : [...keys, ...compare];
+  return {
+    sheet_id: s.sheet_id || s.metric_id,
+    title: s.title || s.sheet_id || s.metric_id,
+    metric_id: s.metric_id,
+    key_fields: keys,
+    iface_fields: [...(s.iface_fields || [])],
+    compare_fields: compare,
+    display_fields: display,
+    row_filters: JSON.parse(JSON.stringify(s.row_filters || [])),
+    field_rules: JSON.parse(JSON.stringify(s.field_rules || [])),
+    ignore_port_changes: s.ignore_port_changes,
+  };
+}
+
+const TEMPLATE_EXPORT_FORMAT = "netx.biz_compare_template";
+const TEMPLATE_EXPORT_VERSION = 1;
+
+function templateExportPayload(tpl: Template) {
+  const metrics = templateSheets(tpl).map((s) => ({
+    sheet_id: s.sheet_id || s.metric_id,
+    title: s.title || s.sheet_id || s.metric_id,
+    metric_id: s.metric_id,
+    key_fields: [...(s.key_fields || [])],
+    iface_fields: [...(s.iface_fields || [])],
+    compare_fields: [...(s.compare_fields || [])],
+    display_fields:
+      s.display_fields && s.display_fields.length
+        ? [...s.display_fields]
+        : [...(s.key_fields || []), ...(s.compare_fields || [])],
+    row_filters: JSON.parse(JSON.stringify(s.row_filters || [])),
+    field_rules: JSON.parse(JSON.stringify(s.field_rules || [])),
+    ignore_port_changes: s.ignore_port_changes,
+  }));
+  return {
+    format: TEMPLATE_EXPORT_FORMAT,
+    version: TEMPLATE_EXPORT_VERSION,
+    exported_at: new Date().toISOString(),
+    name: tpl.name,
+    note: tpl.note || "",
+    iface_normalize_rules: [...(tpl.iface_normalize_rules || [])],
+    metrics,
+  };
+}
+
+function ifaceNormRulesToText(rules?: { from: string; to: string }[]): string {
+  return (rules || []).map((r) => `${r.from},${r.to}`).join("\n");
+}
+
+function downloadJsonFile(filename: string, data: unknown) {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function ruleForField(sheet: MetricSheet, field: string): FieldRule {
+  return (sheet.field_rules || []).find((r) => r.field === field) || { field };
+}
+
+function upsertFieldRule(sheet: MetricSheet, field: string, patch: Partial<FieldRule>): FieldRule[] {
+  const rules = [...(sheet.field_rules || [])];
+  const idx = rules.findIndex((r) => r.field === field);
+  const next: FieldRule = { ...(idx >= 0 ? rules[idx] : { field }), ...patch, field };
+  const norm = (next.normalize || "").toLowerCase();
+  const cmp = (next.compare || "").toLowerCase();
+  const empty =
+    !next.ignore &&
+    (!cmp || cmp === "eq") &&
+    (!norm || norm === "none" || norm === "strip") &&
+    (next.tolerance === undefined || next.tolerance === null);
+  if (empty) {
+    return rules.filter((r) => r.field !== field);
+  }
+  if (idx >= 0) rules[idx] = next;
+  else rules.push(next);
+  return rules;
+}
+
+function emptyLeaf(field = ""): RowFilter {
+  return { field, op: "eq", value: "" };
+}
+
+const FILTER_OPS = [
+  "eq",
+  "ne",
+  "in",
+  "not_in",
+  "contains",
+  "empty",
+  "not_empty",
+  "regex",
+  "age_timer",
+] as const;
+
+function TplRowFiltersEditor({
+  groups,
+  fieldOpts,
+  t,
+  onChange,
+}: {
+  groups: RowFilter[][];
+  fieldOpts: string[];
+  t: (k: string, vars?: Record<string, string | number>) => string;
+  onChange: (next: RowFilter[][]) => void;
+}) {
+  const setGroups = onChange;
+  return (
+    <div className="ct-filters">
+      <p className="muted ct-filters__hint">{t("bizCompare.rowFiltersHintShort")}</p>
+      <div className="ct-filters__actions">
+        <button
+          type="button"
+          className="mt-link-btn"
+          onClick={() => setGroups([...(groups.length ? groups : []), [emptyLeaf(fieldOpts[0] || "")]])}
+        >
+          {t("bizCompare.filterAddOrShort")}
+        </button>
+        {groups.length ? (
+          <button type="button" className="mt-link-btn" onClick={() => setGroups([])}>
+            {t("bizCompare.filterClear")}
+          </button>
+        ) : null}
+      </div>
+      {!groups.length ? <p className="muted ct-filters__empty">{t("bizCompare.rowFiltersEmpty")}</p> : null}
+      {groups.map((group, gi) => (
+        <div key={gi} className="mt-or-wrap">
+          {gi > 0 ? <div className="mt-logic-badge mt-logic-badge--or">{t("bizCompare.filterOr")}</div> : null}
+          <div className="mt-and-box">
+            <div className="mt-and-box__head">
+              <span className="muted">{t("bizCompare.filterGroupN", { n: String(gi + 1) })}</span>
+              <button
+                type="button"
+                className="mt-icon-btn"
+                aria-label={t("bizCompare.filterRemoveGroup")}
+                onClick={() => setGroups(groups.filter((_, i) => i !== gi))}
+              >
+                ×
+              </button>
+            </div>
+            {group.map((filt, fi) => (
+              <div key={fi}>
+                {fi > 0 ? (
+                  <div className="mt-logic-badge mt-logic-badge--and">{t("bizCompare.filterAnd")}</div>
+                ) : null}
+                <div className="ct-filter-row">
+                  <select
+                    className="mt-select"
+                    aria-label={`${t("bizCompare.filterField")} ${gi + 1}.${fi + 1}`}
+                    value={filt.field || ""}
+                    onChange={(e) => {
+                      const next = groups.map((g) => g.map((x) => ({ ...x })));
+                      next[gi][fi] = { ...next[gi][fi], field: e.target.value };
+                      setGroups(next);
+                    }}
+                  >
+                    <option value="">{t("bizCompare.filterField")}</option>
+                    {fieldOpts.map((name) => (
+                      <option key={name} value={name}>
+                        {name}
+                      </option>
+                    ))}
+                    {filt.field && !fieldOpts.includes(filt.field) ? <option value={filt.field}>{filt.field}</option> : null}
+                  </select>
+                  <select
+                    className="mt-select"
+                    aria-label={`${t("bizCompare.filterOperator")} ${gi + 1}.${fi + 1}`}
+                    value={filt.op || "eq"}
+                    onChange={(e) => {
+                      const next = groups.map((g) => g.map((x) => ({ ...x })));
+                      const op = e.target.value;
+                      const value = next[gi][fi].value;
+                      next[gi][fi] = { ...next[gi][fi], op, value: ["in", "not_in", "nin"].includes(op)
+                        ? (Array.isArray(value) ? value : String(value ?? "").split(",").map((x) => x.trim()).filter(Boolean))
+                        : (Array.isArray(value) ? value.join(",") : value) };
+                      setGroups(next);
+                    }}
+                  >
+                    {FILTER_OPS.map((op) => (
+                      <option key={op} value={op}>
+                        {op}
+                      </option>
+                    ))}
+                    {filt.op && !(FILTER_OPS as readonly string[]).includes(filt.op) ? <option value={filt.op}>{filt.op}</option> : null}
+                  </select>
+                  <Input
+                    value={
+                      Array.isArray(filt.value) ? filt.value.join(",") : String(filt.value ?? "")
+                    }
+                    placeholder={t("bizCompare.filterValue")}
+                    aria-label={`${t("bizCompare.filterValue")} ${gi + 1}.${fi + 1}`}
+                    disabled={["empty", "not_empty", "nonempty", "age_timer"].includes(filt.op || "")}
+                    onChange={(e) => {
+                      const next = groups.map((g) => g.map((x) => ({ ...x })));
+                      const op = next[gi][fi]?.op || "eq";
+                      let value: string | string[] = e.target.value;
+                      if (["in", "not_in", "nin"].includes(op)) {
+                        value = e.target.value
+                          .split(",")
+                          .map((x) => x.trim())
+                          .filter(Boolean);
+                      }
+                      next[gi][fi] = { ...next[gi][fi], value };
+                      setGroups(next);
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="mt-icon-btn"
+                    aria-label={t("bizCompare.filterRemoveGroup")}
+                    onClick={() => {
+                      const next = groups.map((g) => g.map((x) => ({ ...x })));
+                      next[gi].splice(fi, 1);
+                      setGroups(next.filter((g) => g.length));
+                    }}
+                  >
+                    ×
+                  </button>
+                </div>
+              </div>
+            ))}
+            <button
+              type="button"
+              className="mt-link-btn"
+              onClick={() => {
+                const next = groups.map((g) => g.map((x) => ({ ...x })));
+                next[gi].push(emptyLeaf(fieldOpts[0] || ""));
+                setGroups(next);
+              }}
+            >
+              {t("bizCompare.filterAddAndShort")}
+            </button>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export type BizComparePageMode = "jobs" | "templates" | "all";
+
+export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePageMode }) {
+  const { t } = useI18n();
+  const { showOk, showError } = useToast();
+
+  const [pageTab, setPageTab] = useState<PageTab>(pageMode === "templates" ? "templates" : "jobs");
+  // Route-bound modes must follow pageMode; internal tabs only when pageMode === "all".
+  // Without this, React reuses the same component instance across
+  // /biz-compare ↔ /compare-templates and pageTab stays stuck.
+  const activeTab: PageTab =
+    pageMode === "templates" ? "templates" : pageMode === "jobs" ? "jobs" : pageTab;
+  const showTabSwitch = pageMode === "all";
+  const [busy, setBusy] = useState(false);
+
+  const [tasks, setTasks] = useState<TaskOpt[]>([]);
+  const [metrics, setMetrics] = useState<MetricSchema[]>([]);
+  const [templates, setTemplates] = useState<Template[]>([]);
+  const [mappings, setMappings] = useState<Mapping[]>([]);
+  const [jobs, setJobs] = useState<Job[]>([]);
+  const [listKw, setListKw] = useState("");
+  const [listPage, setListPage] = useState(1);
+  const [listPageSize, setListPageSize] = useState(50);
+  const debouncedListKw = useDebouncedValue(listKw, 250);
+
+  // template editor
+  const [tplOpen, setTplOpen] = useState(false);
+  const [tplError, setTplError] = useState("");
+  const [tplEditId, setTplEditId] = useState("");
+  const [tplName, setTplName] = useState("");
+  const [tplNote, setTplNote] = useState("");
+  const [tplNormText, setTplNormText] = useState("");
+  const [tplSheets, setTplSheets] = useState<MetricSheet[]>([]);
+  const [tplSheetIdx, setTplSheetIdx] = useState(0);
+  const [tplPaneTab, setTplPaneTab] = useState<"fields" | "filters">("fields");
+  const [showMetricPicker, setShowMetricPicker] = useState(true);
+
+  // job create / detail
+  const [jobCreateOpen, setJobCreateOpen] = useState(false);
+  const [createStep, setCreateStep] = useState<CreateJobStep>(0);
+  const [jobId, setJobId] = useState("");
+  const [jobDetailTab, setJobDetailTab] = useState<JobDetailTab>("config");
+  const [name, setName] = useState("");
+  const [templateId, setTemplateId] = useState("");
+  const [enabledSheetIds, setEnabledSheetIds] = useState<string[]>([]);
+  const [mappingId, setMappingId] = useState("");
+  const [beforeTaskId, setBeforeTaskId] = useState("");
+  const [afterTaskId, setAfterTaskId] = useState("");
+  const [beforeBatches, setBeforeBatches] = useState<BatchOpt[]>([]);
+  const [afterBatches, setAfterBatches] = useState<BatchOpt[]>([]);
+  const [beforeBatchId, setBeforeBatchId] = useState("");
+  const [afterBatchId, setAfterBatchId] = useState("");
+  const [mode, setMode] = useState<"manual" | "auto">("manual");
+  const [storeUnchanged, setStoreUnchanged] = useState<StoreUnchanged>("auto");
+  const [mapName, setMapName] = useState("端口映射");
+  const [mapText, setMapText] = useState("");
+  const [validateOut, setValidateOut] = useState<any>(null);
+  const [runs, setRuns] = useState<RunRecord[]>([]);
+  const [runsLoading, setRunsLoading] = useState(false);
+  const [runsError, setRunsError] = useState("");
+  const [runDetail, setRunDetail] = useState<any>(null);
+  const [resultSheetId, setResultSheetId] = useState("");
+
+  // result filters (server-paged)
+  const [kindFilter, setKindFilter] = useState<KindFilter>("diff");
+  const [resultKw, setResultKw] = useState("");
+  const debouncedResultKw = useDebouncedValue(resultKw, 300);
+  const [resultKeyFilters, setResultKeyFilters] = useState<Record<string, string>>({});
+  const [keyFiltersOpen, setKeyFiltersOpen] = useState(false);
+  const [hideDisplayCols, setHideDisplayCols] = useState(true);
+  const debouncedKeyFiltersJson = useDebouncedValue(JSON.stringify(resultKeyFilters), 300);
+  const debouncedKeyFilters = useMemo(() => {
+    try {
+      const o = JSON.parse(debouncedKeyFiltersJson || "{}") as Record<string, string>;
+      const out: Record<string, string> = {};
+      for (const [k, v] of Object.entries(o || {})) {
+        if (String(k || "").trim() && String(v || "").trim()) out[String(k)] = String(v).trim();
+      }
+      return out;
+    } catch {
+      return {} as Record<string, string>;
+    }
+  }, [debouncedKeyFiltersJson]);
+  const hasResultSearch =
+    Boolean(debouncedResultKw.trim()) || Object.keys(debouncedKeyFilters).length > 0;
+  const activeKeyFilterCount = Object.keys(resultKeyFilters).filter((k) =>
+    String(resultKeyFilters[k] || "").trim(),
+  ).length;
+  const keyFiltersVisible = keyFiltersOpen || activeKeyFilterCount > 0;
+  const [resultPage, setResultPage] = useState(1);
+  const [resultPageSize, setResultPageSize] = useState(100);
+  const [resultTotal, setResultTotal] = useState(0);
+  const [pagedDiffs, setPagedDiffs] = useState<DiffRow[]>([]);
+  const [diffsLoading, setDiffsLoading] = useState(false);
+  const [diffsSource, setDiffsSource] = useState<DiffListSource>("");
+  const [diffsTruncated, setDiffsTruncated] = useState(false);
+  const [diffsError, setDiffsError] = useState("");
+  const [diffsRetry, setDiffsRetry] = useState(0);
+  const jobRequestRef = useRef(0);
+  const runRequestRef = useRef(0);
+  const listsRequestRef = useRef(0);
+  const diffFiltersRef = useRef("");
+  const boardRef = useRef<HTMLDivElement | null>(null);
+  const tableScrollRef = useRef<HTMLDivElement | null>(null);
+  const tableScrollPosRef = useRef({ top: 0, left: 0 });
+  const [boardFs, setBoardFs] = useState(false);
+  const [navCollapsed, setNavCollapsed] = useState(false);
+  const tplImportRef = useRef<HTMLInputElement | null>(null);
+
+  const refresh = useCallback(async (opts?: { force?: boolean }) => {
+    const request = ++listsRequestRef.current;
+    type Bundle = {
+      taskRes: Awaited<ReturnType<typeof bizStateListTasks>>;
+      tpl: Awaited<ReturnType<typeof bizCompareListTemplates>>;
+      maps: Awaited<ReturnType<typeof bizCompareListMappings>>;
+      j: Awaited<ReturnType<typeof bizCompareListJobs>>;
+      met: Awaited<ReturnType<typeof bizCompareListMetrics>>;
+    };
+    const fetchBundle = async (): Promise<Bundle> => {
+      const [taskRes, tpl, maps, j, met] = await Promise.all([
+        pageMode === "templates" ? Promise.resolve({items: []}) : bizStateListTasks(),
+        bizCompareListTemplates(),
+        pageMode === "templates" ? Promise.resolve({items: []}) : bizCompareListMappings(),
+        pageMode === "templates" ? Promise.resolve({items: []}) : bizCompareListJobs(),
+        cutoverCachedGet("bizCompare:metrics", () => bizCompareListMetrics(), {ttlMs: 60000}),
+      ]);
+      return { taskRes, tpl, maps, j, met };
+    };
+    const apply = (b: Bundle) => {
+      if (request !== listsRequestRef.current) return;
+      setTasks((b.taskRes.items || []) as TaskOpt[]);
+      setTemplates((b.tpl.items || []) as Template[]);
+      setMappings((b.maps.items || []) as Mapping[]);
+      setJobs((b.j.items || []) as Job[]);
+      setMetrics((b.met.items || []) as MetricSchema[]);
+    };
+    if (opts?.force) {
+      apply(await cutoverCachedGet(`bizCompare:lists:${pageMode}`, fetchBundle, { force: true }));
+      return;
+    }
+    apply(await cutoverCachedGetSWR(`bizCompare:lists:${pageMode}`, fetchBundle, apply));
+  }, [pageMode]);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        await refresh();
+      } catch (e) {
+        showError(formatErr(e));
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refresh]);
+
+  useEffect(() => () => { listsRequestRef.current += 1; }, []);
+
+  // Keep local tab + dismiss overlays when route mode flips (component may be reused).
+  useEffect(() => {
+    jobRequestRef.current += 1;
+    runRequestRef.current += 1;
+    if (pageMode === "templates") setPageTab("templates");
+    else if (pageMode === "jobs") setPageTab("jobs");
+    setTplOpen(false);
+    setJobCreateOpen(false);
+    setCreateStep(0);
+    setJobId("");
+    setRuns([]);
+    setRunsLoading(false);
+    setRunsError("");
+    setRunDetail(null);
+    setResultSheetId("");
+    if (document.fullscreenElement === boardRef.current) {
+      void document.exitFullscreen().catch(() => undefined);
+    }
+    setBoardFs(false);
+    return () => {
+      jobRequestRef.current += 1;
+      runRequestRef.current += 1;
+    };
+  }, [pageMode]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setBeforeBatches([]);
+    void (async () => {
+      if (!beforeTaskId) return;
+      try {
+        const b = await cutoverCachedGet(`bizCompare:batches:${beforeTaskId}`,
+          () => bizStateListBatches(beforeTaskId), { ttlMs: 5000 });
+        if (!cancelled) setBeforeBatches((b.items || []) as BatchOpt[]);
+      } catch (e) {
+        if (!cancelled) showError(formatErr(e));
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [beforeTaskId, showError]);
+
+  const effectiveAfterTaskId = afterTaskId || beforeTaskId;
+  useEffect(() => {
+    let cancelled = false;
+    setAfterBatches([]);
+    void (async () => {
+      if (!effectiveAfterTaskId) return;
+      try {
+        const b = await cutoverCachedGet(`bizCompare:batches:${effectiveAfterTaskId}`,
+          () => bizStateListBatches(effectiveAfterTaskId), { ttlMs: 5000 });
+        if (!cancelled) setAfterBatches((b.items || []) as BatchOpt[]);
+      } catch (e) {
+        if (!cancelled) showError(formatErr(e));
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [effectiveAfterTaskId, showError]);
+
+  const templatesById = useMemo(() => new Map(templates.map((x) => [x.id, x])), [templates]);
+
+  const filteredJobs = useMemo(() => {
+    const kw = debouncedListKw.trim().toLowerCase();
+    if (!kw) return jobs;
+    return jobs.filter((j) => {
+      const tpl = templatesById.get(j.template_id);
+      const mids = (tpl?.metric_ids || templateSheets(tpl).map((s) => s.metric_id)).join(" ");
+      return `${j.name} ${j.mode} ${j.status} ${tpl?.name || ""} ${mids}`.toLowerCase().includes(kw);
+    });
+  }, [jobs, templatesById, debouncedListKw]);
+
+  const filteredTemplates = useMemo(() => {
+    const kw = debouncedListKw.trim().toLowerCase();
+    if (!kw) return templates;
+    return templates.filter((x) => {
+      const mids = (x.metric_ids || templateSheets(x).map((s) => s.metric_id)).join(" ");
+      return `${x.name} ${mids} ${x.note}`.toLowerCase().includes(kw);
+    });
+  }, [templates, debouncedListKw]);
+  const listTotal = activeTab === "templates" ? filteredTemplates.length : filteredJobs.length;
+  const listPages = Math.max(1, Math.ceil(listTotal / listPageSize));
+  const visibleListPage = Math.min(listPage, listPages);
+
+  const selectedJobTemplate = useMemo(
+    () => templatesById.get(templateId) || null,
+    [templatesById, templateId],
+  );
+
+  const jobTemplateSheets = useMemo(
+    () => (selectedJobTemplate ? templateSheets(selectedJobTemplate) : []),
+    [selectedJobTemplate],
+  );
+
+  const jobSheetAllIds = useMemo(
+    () => jobTemplateSheets.map((s) => sheetIdentity(s)).filter(Boolean),
+    [jobTemplateSheets],
+  );
+
+  const isJobSheetOn = useCallback(
+    (sid: string) => {
+      if (!enabledSheetIds.length) return true;
+      return enabledSheetIds.includes(sid);
+    },
+    [enabledSheetIds],
+  );
+
+  const enabledJobSheetCount = useMemo(() => {
+    if (!jobSheetAllIds.length) return 0;
+    if (!enabledSheetIds.length) return jobSheetAllIds.length;
+    return jobSheetAllIds.filter((id) => enabledSheetIds.includes(id)).length;
+  }, [jobSheetAllIds, enabledSheetIds]);
+
+  const toggleJobSheet = useCallback(
+    (sid: string) => {
+      const all = jobSheetAllIds;
+      if (!all.length) return;
+      const currentlyOn = !enabledSheetIds.length
+        ? [...all]
+        : enabledSheetIds.filter((id) => all.includes(id));
+      const next = currentlyOn.includes(sid)
+        ? currentlyOn.filter((id) => id !== sid)
+        : [...currentlyOn, sid];
+      if (!next.length) {
+        showError(t("bizCompare.needSheets"));
+        return;
+      }
+      // Empty list means "all on" (new template sheets auto-included)
+      setEnabledSheetIds(next.length === all.length ? [] : next);
+    },
+    [jobSheetAllIds, enabledSheetIds, showError, t],
+  );
+
+  const setJobTemplateAndSheets = useCallback(
+    (nextTplId: string, presetIds?: string[] | null) => {
+      setTemplateId(nextTplId);
+      if (presetIds && presetIds.length) {
+        // Keep stale IDs visible as a configuration error; [] would enable every sheet.
+        setEnabledSheetIds([...presetIds]);
+      } else {
+        setEnabledSheetIds([]);
+      }
+    },
+    [],
+  );
+
+  const activeTplSheet = tplSheets[tplSheetIdx] || null;
+  const activeTplFields = useMemo(() => {
+    if (!activeTplSheet) return [];
+    const fields = [...(metrics.find((m) => m.metric_id === activeTplSheet.metric_id)?.fields || [])];
+    const seen = new Set(fields.map((f) => f.name));
+    for (const name of [...activeTplSheet.key_fields, ...activeTplSheet.iface_fields,
+      ...activeTplSheet.compare_fields, ...(activeTplSheet.display_fields || []),
+      ...(activeTplSheet.field_rules || []).map((r) => r.field)]) {
+      if (!seen.has(name)) {
+        fields.push({name, display_name: name, dtype: "string", is_key: false, is_interface: false, role: "meta"});
+        seen.add(name);
+      }
+    }
+    return fields;
+  }, [metrics, activeTplSheet]);
+  const activeTplFilterGroups = activeTplSheet ? toOrGroups(activeTplSheet.row_filters || []) : [];
+  const missingJobSheets = enabledSheetIds.filter((id) => !jobSheetAllIds.includes(id));
+
+  const runSheets: RunSheet[] = useMemo(() => {
+    const sheets = (runDetail?.sheets || []) as RunSheet[];
+    if (sheets.length) return sheets;
+    if (runDetail?.diffs) {
+      return [
+        {
+          metric_id: String(runDetail.metric_id || "result"),
+          key_fields: [],
+          iface_fields: [],
+          compare_fields: [],
+          mode: "fields",
+          summary: runDetail.summary,
+          diffs: runDetail.diffs,
+        },
+      ];
+    }
+    return [];
+  }, [runDetail]);
+
+  useEffect(() => {
+    if (!runSheets.length) {
+      setResultSheetId("");
+      return;
+    }
+    if (!resultSheetId || !runSheets.some((s) => sheetIdentity(s) === resultSheetId)) {
+      setResultSheetId(sheetIdentity(runSheets[0]));
+    }
+  }, [runSheets, resultSheetId]);
+
+  const activeRunSheet = useMemo(
+    () => runSheets.find((s) => sheetIdentity(s) === resultSheetId) || runSheets[0] || null,
+    [runSheets, resultSheetId],
+  );
+  const activeRunSheetId = sheetIdentity(activeRunSheet);
+  const activeRunSheetStatus = String(activeRunSheet?.status || "");
+
+  // Clear field filters when switching sheet
+  useEffect(() => {
+    setResultKeyFilters({});
+  }, [resultSheetId]);
+
+  useEffect(() => {
+    const runId = String(runDetail?.id || "");
+    const mid = resultSheetId || activeRunSheetId || "";
+    const sheetSt = activeRunSheetStatus;
+    // Block only while *this* sheet is still in flight — done sheets are readable mid-run
+    const sheetStillRunning = ["pending", "running", "queued"].includes(sheetSt);
+    if (!runId || !mid || jobDetailTab !== "result" || sheetStillRunning) {
+      setPagedDiffs([]);
+      setResultTotal(0);
+      setDiffsSource("");
+      setDiffsTruncated(false);
+      setDiffsLoading(false);
+      setDiffsError("");
+      return;
+    }
+    const filterKey = JSON.stringify([runId, mid, kindFilter, debouncedResultKw,
+      debouncedKeyFiltersJson, resultPageSize]);
+    if (diffFiltersRef.current !== filterKey) {
+      diffFiltersRef.current = filterKey;
+      if (resultPage !== 1) {
+        setPagedDiffs([]);
+        setResultTotal(0);
+        setDiffsLoading(true);
+        setResultPage(1);
+        return;
+      }
+    }
+    let cancelled = false;
+    void (async () => {
+      setDiffsLoading(true);
+      setDiffsError("");
+      setPagedDiffs([]);
+      setResultTotal(0);
+      setDiffsSource("");
+      setDiffsTruncated(false);
+      try {
+        const res = await bizCompareListRunDiffs({
+          runId,
+          metricId: mid,
+          kind: kindFilter,
+          kw: debouncedResultKw.trim(),
+          qf: debouncedKeyFilters,
+          page: resultPage,
+          pageSize: resultPageSize,
+        });
+        if (cancelled) return;
+        setPagedDiffs((res.items || []) as DiffRow[]);
+        setResultTotal(Number(res.total || 0));
+        setDiffsSource(
+          String((res as any).source || "").toLowerCase() === "live" ? "live" : "stored",
+        );
+        setDiffsTruncated(Boolean((res as any).truncated));
+        const pages = Math.max(
+          1,
+          Math.ceil(Number(res.total || 0) / Number(res.page_size || resultPageSize)),
+        );
+        if (resultPage > pages) setResultPage(pages);
+      } catch (e) {
+        if (!cancelled) {
+          setDiffsError(formatErr(e));
+        }
+      } finally {
+        if (!cancelled) setDiffsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    runDetail?.id,
+    runDetail?.status,
+    resultSheetId,
+    activeRunSheetId,
+    activeRunSheetStatus,
+    kindFilter,
+    debouncedResultKw,
+    debouncedKeyFiltersJson,
+    debouncedKeyFilters,
+    resultPage,
+    resultPageSize,
+    jobDetailTab,
+    diffsRetry,
+  ]);
+
+  const resultColumns = useMemo(() => {
+    const keys = activeRunSheet?.key_fields?.length
+      ? activeRunSheet.key_fields
+      : Object.keys((pagedDiffs[0]?.key as Record<string, unknown>) || {});
+    const compare = (activeRunSheet?.compare_fields || []).filter((f) => !keys.includes(f));
+    const compareSet = new Set(compare);
+    const keySet = new Set(keys);
+    let display = (activeRunSheet?.display_fields || []).filter(Boolean);
+    if (!display.length) {
+      display = [...keys, ...compare];
+    }
+    // Column order: Key → Compare → Display-only (context)
+    // Compare fields always appear (even if display unticked), matching backend.
+    const compareCols = [...compare];
+    const displayOnly = display.filter((f) => !keySet.has(f) && !compareSet.has(f));
+    let extras = [...compareCols, ...displayOnly];
+    // Presence / sparse display: if no value columns, pull fields from sample
+    // added/removed rows so 缺失/多余 still show side data.
+    if (!extras.length && pagedDiffs.length) {
+      const sample =
+        pagedDiffs.find((d) => d.kind === "added" || d.kind === "removed") || pagedDiffs[0];
+      const side = pickSideRow(
+        sample?.mapped_before as Record<string, unknown> | undefined,
+        sample?.before as Record<string, unknown> | undefined,
+        sample?.after as Record<string, unknown> | undefined,
+      );
+      extras = Object.keys(side).filter((f) => !keySet.has(f) && !f.startsWith("_"));
+    }
+    return {
+      keys,
+      compare: compareCols,
+      extras,
+      compareSet,
+      presence: !(activeRunSheet?.compare_fields || []).length,
+    };
+  }, [activeRunSheet, pagedDiffs]);
+
+  const kindLabel = (kind: string) => {
+    if (kind === "added") return t("bizCompare.kindAddedShort");
+    if (kind === "removed") return t("bizCompare.kindRemovedShort");
+    if (kind === "changed") return t("bizCompare.kindChangedShort");
+    if (kind === "unchanged") return t("bizCompare.kindUnchangedShort");
+    return kind;
+  };
+
+  /** Table verdict: fail = missing+mismatch; success = match; added is special. */
+  const rowVerdict = (kind: string): { label: string; tone: "fail" | "pass" | "added" } => {
+    if (kind === "added") return { label: t("bizCompare.kindAddedShort"), tone: "added" };
+    if (kind === "unchanged") return { label: t("bizCompare.kindSuccess"), tone: "pass" };
+    return { label: t("bizCompare.kindFail"), tone: "fail" };
+  };
+
+  const failFieldsLabel = (d: DiffRow) => {
+    if (d.kind === "added") return t("bizCompare.kindAddedShort");
+    if (d.kind === "removed") return t("bizCompare.failWholeRow");
+    const names = failFieldNames(d);
+    return names.length ? names.join(" · ") : t("bizCompare.failFieldsEmpty");
+  };
+
+  const sheetFailOf = (c: {
+    fail_count?: number;
+    diff_count?: number;
+    removed?: number;
+    changed?: number;
+    added?: number;
+  }) => {
+    // Always derive from removed+changed so "新增" never counts as fail
+    // (legacy diff_count used to include added).
+    if (c.removed !== undefined || c.changed !== undefined) {
+      return Number(c.removed || 0) + Number(c.changed || 0);
+    }
+    if (c.fail_count !== undefined) return Number(c.fail_count || 0);
+    const legacy = Number(c.diff_count || 0);
+    const added = Number(c.added || 0);
+    return Math.max(0, legacy - added);
+  };
+
+  const sheetSuccessOf = (c: { success_count?: number; unchanged?: number }) =>
+    Number(c.success_count ?? c.unchanged ?? 0);
+
+  const sheetPassRateOf = (c: {
+    pass_rate?: number | null;
+    status?: string;
+    fail_count?: number;
+    diff_count?: number;
+    removed?: number;
+    changed?: number;
+    success_count?: number;
+    unchanged?: number;
+    added?: number;
+  }): number | null => {
+    const st = String(c.status || "");
+    if (st === "pending" || st === "running" || st === "queued") return null;
+    if (c.pass_rate === null) return null;
+    // Always recompute from fail/success so added never skews pass rate
+    const fail = sheetFailOf(c);
+    const ok = sheetSuccessOf(c);
+    const judged = fail + ok;
+    if (!judged) return 100;
+    const rate = (ok / judged) * 100;
+    if (fail <= 0) return Math.round(rate * 10) / 10;
+    // 3 fails / 50k ≈ 99.994% — 1-decimal round becomes 100%; keep digits until < 100
+    for (const nd of [1, 2, 3, 4]) {
+      const r = Math.round(rate * 10 ** nd) / 10 ** nd;
+      if (r < 100) return r;
+    }
+    return 99.9999;
+  };
+
+  const formatPassRate = (rate: number | null | undefined) => {
+    if (rate === null || rate === undefined || Number.isNaN(rate)) return "…";
+    // Trim trailing zeros but keep enough precision for near-100 rates
+    const s = Number(rate).toFixed(4).replace(/\.?0+$/, "");
+    return `${s}%`;
+  };
+
+  const summary = runDetail?.summary || {};
+  const resultPages = Math.max(1, Math.ceil(resultTotal / Math.max(1, resultPageSize)));
+  const sheetCards = useMemo(() => {
+    const raw = (summary.sheet_cards || []) as Array<{
+      sheet_id?: string;
+      title?: string;
+      metric_id: string;
+      mode?: string;
+      status?: string;
+      added?: number;
+      removed?: number;
+      changed?: number;
+      unchanged?: number;
+      before_count?: number;
+      after_count?: number;
+      fail_count?: number;
+      success_count?: number;
+      diff_count?: number;
+      pass_rate?: number | null;
+    }>;
+    // Failures first; keep pending/running at the end so completed fails stay visible
+    return [...raw].sort((a, b) => {
+      const pa = ["pending", "running", "queued"].includes(String(a.status || "")) ? 1 : 0;
+      const pb = ["pending", "running", "queued"].includes(String(b.status || "")) ? 1 : 0;
+      if (pa !== pb) return pa - pb;
+      const da = sheetFailOf(a);
+      const db = sheetFailOf(b);
+      if (da !== db) return db - da;
+      return String(a.metric_id).localeCompare(String(b.metric_id));
+    });
+  }, [summary.sheet_cards]);
+  const activeSheetCard = sheetCards.find((c) => sheetIdentity(c) === resultSheetId) || sheetCards[0];
+  const activeFail = sheetFailOf(activeSheetCard || {});
+  const activeSuccess = sheetSuccessOf(activeSheetCard || {});
+  const activePassRate = sheetPassRateOf(activeSheetCard || {});
+  const activeSheetPending = ["pending", "running", "queued"].includes(
+    String(activeSheetCard?.status || ""),
+  );
+  const activeAdded = Number(activeSheetCard?.added || 0);
+  const activeRemoved = Number(activeSheetCard?.removed || 0);
+  const activeChanged = Number(activeSheetCard?.changed || 0);
+  const showFailCol =
+    kindFilter === "diff" ||
+    kindFilter === "all" ||
+    kindFilter === "added" ||
+    kindFilter === "removed" ||
+    kindFilter === "changed";
+  const isLiveSearch = diffsSource === "live" && hasResultSearch;
+  const resultSearchKeyFields = useMemo(() => {
+    const keys = (activeRunSheet?.key_fields || []).map((f) => String(f || "").trim()).filter(Boolean);
+    // Prefer BGP-ish fields first for compact UI
+    const prefer = ["direction", "neighbor", "network", "rd", "afi", "vrf", "local_as"];
+    const ranked = [
+      ...prefer.filter((p) => keys.includes(p)),
+      ...keys.filter((k) => !prefer.includes(k)),
+    ];
+    return ranked.slice(0, 8);
+  }, [activeRunSheet?.key_fields]);
+  const resultEmptyColSpan =
+    1 +
+    (showFailCol ? 1 : 0) +
+    resultColumns.keys.length +
+    Math.max(
+      resultColumns.extras.filter(
+        (f) => resultColumns.compareSet.has(f) || !hideDisplayCols,
+      ).length,
+      0,
+    );
+
+  const rememberTableScroll = useCallback(() => {
+    const wrap = tableScrollRef.current;
+    if (!wrap) return;
+    tableScrollPosRef.current = { top: wrap.scrollTop, left: wrap.scrollLeft };
+  }, []);
+
+  // Native Fullscreen escapes modal transform containing-block (CSS fixed fails inside dialog).
+  useEffect(() => {
+    const syncFs = () => {
+      const el = boardRef.current;
+      setBoardFs(Boolean(el && document.fullscreenElement === el));
+    };
+    document.addEventListener("fullscreenchange", syncFs);
+    return () => document.removeEventListener("fullscreenchange", syncFs);
+  }, []);
+
+  // CSS-fallback immersive: Esc exits without closing the job modal.
+  useEffect(() => {
+    if (!boardFs || document.fullscreenElement) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      rememberTableScroll();
+      setBoardFs(false);
+    };
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
+  }, [boardFs, rememberTableScroll]);
+
+  // Keep table scroll across fullscreen enter/exit (layout swap otherwise jumps to top).
+  useLayoutEffect(() => {
+    const wrap = tableScrollRef.current;
+    if (!wrap) return;
+    const { top, left } = tableScrollPosRef.current;
+    wrap.scrollTop = top;
+    wrap.scrollLeft = left;
+  }, [boardFs]);
+
+  const toggleBoardFullscreen = async () => {
+    const el = boardRef.current;
+    if (!el) return;
+    rememberTableScroll();
+    try {
+      if (document.fullscreenElement === el) {
+        await document.exitFullscreen();
+        return;
+      }
+      if (!document.fullscreenElement) {
+        await el.requestFullscreen();
+        return;
+      }
+    } catch {
+      // Native FS blocked — CSS immersive fallback
+    }
+    setBoardFs((v) => !v);
+  };
+
+  const downloadRunTables = async () => {
+    if (!runDetail?.id) return;
+    setBusy(true);
+    try {
+      await bizCompareDownloadRun(String(runDetail.id));
+      showOk(t("bizCompare.exportOk"));
+    } catch (e) {
+      showError(formatErr(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const updateActiveSheet = (patch: Partial<MetricSheet>) => {
+    setTplError("");
+    setTplSheets((prev) =>
+      prev.map((s, i) => {
+        if (i !== tplSheetIdx) return s;
+        const next = { ...s, ...patch };
+        // Keys are identity — drop from compare
+        if (patch.key_fields || patch.compare_fields) {
+          const keySet = new Set(next.key_fields);
+          next.compare_fields = next.compare_fields.filter((f) => !keySet.has(f));
+        }
+        if (patch.display_fields && !patch.key_fields && !patch.compare_fields) {
+          // Explicit display toggle: keys always forced on
+          const disp = new Set(patch.display_fields);
+          for (const k of next.key_fields) disp.add(k);
+          next.display_fields = [
+            ...next.key_fields,
+            ...[...disp].filter((f) => !next.key_fields.includes(f)),
+          ];
+        } else if (patch.key_fields || patch.compare_fields) {
+          const disp = new Set(next.display_fields || []);
+          for (const k of next.key_fields) disp.add(k);
+          if (patch.compare_fields) {
+            const prevCompare = new Set(s.compare_fields || []);
+            for (const f of next.compare_fields) {
+              if (!prevCompare.has(f)) disp.add(f);
+            }
+          }
+          next.display_fields = [
+            ...next.key_fields,
+            ...[...disp].filter((f) => !next.key_fields.includes(f)),
+          ];
+        }
+        return next;
+      }),
+    );
+  };
+
+  const openNewTemplate = () => {
+    setTplError("");
+    setTplEditId("");
+    setTplName("");
+    setTplNote("");
+    setTplNormText("XXVGE,xxvgei\nXGE,xgei\nCGE,cgei\nGE,gei\nSG,smartgroup");
+    setTplSheets([]);
+    setTplSheetIdx(0);
+    setTplPaneTab("fields");
+    setShowMetricPicker(true);
+    setTplOpen(true);
+  };
+
+  const openEditTemplate = (tpl: Template) => {
+    setTplError("");
+    const sheets = templateSheets(tpl);
+    setTplEditId(tpl.id);
+    setTplName(tpl.name);
+    setTplNote(tpl.note || "");
+    setTplNormText(ifaceNormRulesToText(tpl.iface_normalize_rules));
+    setTplSheets(sheets.length ? sheets.map(cloneSheet) : []);
+    setTplSheetIdx(0);
+    setTplPaneTab("fields");
+    setShowMetricPicker(!sheets.length);
+    setTplOpen(true);
+  };
+
+  const toggleTplMetric = (metricId: string, on: boolean) => {
+    if (on) {
+      const schema = metrics.find((m) => m.metric_id === metricId);
+      setTplSheets((prev) => {
+        const next = [...prev, defaultSheetForMetric(schema, metricId)];
+        setTplSheetIdx(next.length - 1);
+        if (!prev.length) setShowMetricPicker(false);
+        return next;
+      });
+      return;
+    }
+    // Uncheck removes ALL sheets of this source metric
+    setTplSheets((prev) => {
+      const next = prev.filter((s) => s.metric_id !== metricId);
+      setTplSheetIdx((cur) => {
+        if (!next.length) return 0;
+        if (cur >= next.length) return next.length - 1;
+        return cur;
+      });
+      return next;
+    });
+  };
+
+  const duplicateTplSheet = (idx: number) => {
+    setTplSheets((prev) => {
+      const src = prev[idx];
+      if (!src) return prev;
+      const baseId = sheetIdentity(src);
+      let n = 2;
+      let candidate = `${baseId}.${n}`;
+      const used = new Set(prev.map((s) => sheetIdentity(s)));
+      while (used.has(candidate)) {
+        n += 1;
+        candidate = `${baseId}.${n}`;
+      }
+      const copy = cloneSheet(src);
+      copy.sheet_id = candidate;
+      copy.title = `${sheetLabel(src)} (${n})`;
+      const next = [...prev];
+      next.splice(idx + 1, 0, copy);
+      setTplSheetIdx(idx + 1);
+      return next;
+    });
+  };
+
+  const removeTplMetric = (idx: number) => {
+    setTplSheets((prev) => {
+      const next = prev.filter((_, i) => i !== idx);
+      setTplSheetIdx((cur) => {
+        if (!next.length) return 0;
+        if (cur > idx) return cur - 1;
+        if (cur >= next.length) return next.length - 1;
+        return cur;
+      });
+      return next;
+    });
+  };
+
+  const saveTemplate = async () => {
+    setTplError("");
+    if (!tplSheets.length) {
+      showError(t("bizCompare.metricsRequired"));
+      return;
+    }
+    for (const s of tplSheets) {
+      if (!s.key_fields.length) {
+        showError(`${sheetLabel(s)}: ${t("bizCompare.keyRequired")}`);
+        return;
+      }
+      if (!sheetIdentity(s)) {
+        showError(`${s.metric_id}: ${t("bizCompare.sheetIdRequired")}`);
+        return;
+      }
+    }
+    const ids = tplSheets.map((s) => sheetIdentity(s));
+    if (new Set(ids).size !== ids.length) {
+      showError(t("bizCompare.duplicateSheetId"));
+      return;
+    }
+    setBusy(true);
+    try {
+      validateTemplateDraft(tplSheets);
+      const body = {
+        name: tplName || tplSheets.map((s) => sheetLabel(s)).join("+"),
+        note: tplNote,
+        iface_normalize_rules: parseIfaceNormText(tplNormText),
+        metrics: tplSheets.map((s) => ({
+          sheet_id: sheetIdentity(s),
+          title: s.title || sheetIdentity(s),
+          metric_id: s.metric_id,
+          key_fields: s.key_fields,
+          iface_fields: s.iface_fields,
+          compare_fields: s.compare_fields,
+          display_fields: s.display_fields || [...s.key_fields, ...s.compare_fields],
+          row_filters: s.row_filters || [],
+          field_rules: s.field_rules || [],
+          ignore_port_changes: s.ignore_port_changes,
+        })),
+      };
+      if (tplEditId) await bizCompareUpdateTemplate(tplEditId, body);
+      else await bizCompareCreateTemplate(body);
+      showOk(t("bizCompare.templateSaved"));
+      setTplOpen(false);
+      invalidateCutoverCache("bizMonitor:");
+      invalidateCutoverCache("bizMigration:");
+      await refresh({ force: true });
+    } catch (e) {
+      setTplError(formatErr(e));
+      showError(formatErr(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const removeTemplate = async (id: string) => {
+    if (!window.confirm(t("bizCompare.confirmDeleteTemplate"))) return;
+    setBusy(true);
+    try {
+      await bizCompareDeleteTemplate(id);
+      showOk(t("bizCompare.templateDeleted"));
+      invalidateCutoverCache("bizMonitor:");
+      invalidateCutoverCache("bizMigration:");
+      await refresh({ force: true });
+    } catch (e) {
+      showError(formatErr(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const exportTemplate = (tpl: Template) => {
+    const payload = templateExportPayload(tpl);
+    const safe = (tpl.name || "template").replace(/[^\w\u4e00-\u9fff.-]+/g, "_").slice(0, 64);
+    downloadJsonFile(`netx-compare-template-${safe}.json`, payload);
+    showOk(t("bizCompare.templateExported"));
+  };
+
+  const importTemplateFile = async (file: File) => {
+    setBusy(true);
+    try {
+      const text = await file.text();
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        showError(t("bizCompare.templateImportInvalid"));
+        return;
+      }
+      const body = parseTemplateImport(parsed);
+      if (!body) {
+        showError(t("bizCompare.templateImportInvalid"));
+        return;
+      }
+      await bizCompareCreateTemplate({
+        name: body.name,
+        note: body.note,
+        iface_normalize_rules: body.iface_normalize_rules || [],
+        metrics: body.metrics.map((s) => ({
+          sheet_id: sheetIdentity(s),
+          title: s.title || sheetIdentity(s),
+          metric_id: s.metric_id,
+          key_fields: s.key_fields,
+          iface_fields: s.iface_fields,
+          compare_fields: s.compare_fields,
+          display_fields: s.display_fields || [...s.key_fields, ...s.compare_fields],
+          row_filters: s.row_filters || [],
+          field_rules: s.field_rules || [],
+          ignore_port_changes: s.ignore_port_changes,
+        })),
+      });
+      showOk(t("bizCompare.templateImported"));
+      invalidateCutoverCache("bizMonitor:");
+      invalidateCutoverCache("bizMigration:");
+      await refresh({ force: true });
+      if (pageMode !== "jobs") setPageTab("templates");
+    } catch (e) {
+      showError(formatErr(e));
+    } finally {
+      setBusy(false);
+      if (tplImportRef.current) tplImportRef.current.value = "";
+    }
+  };
+
+  const removeJob = async (id: string) => {
+    if (!window.confirm(t("bizCompare.confirmDeleteJob"))) return;
+    setBusy(true);
+    try {
+      await bizCompareDeleteJob(id);
+      if (jobId === id) closeJob();
+      showOk(t("bizCompare.jobDeleted"));
+      await refresh({ force: true });
+    } catch (e) {
+      showError(formatErr(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const parseMapRows = () => {
+    const rows: { before_if: string; after_if: string }[] = [];
+    for (const line of mapText.split(/\r?\n/)) {
+      const s = line.trim();
+      if (!s || s.startsWith("#") || s.toLowerCase().startsWith("old") || s.toLowerCase().startsWith("before")) {
+        continue;
+      }
+      const parts = s.split(/[,|\t]+/).map((x) => x.trim());
+      if (parts.length >= 2 && parts[0] && parts[1]) {
+        rows.push({ before_if: parts[0], after_if: parts[1] });
+      }
+    }
+    return rows;
+  };
+
+  const loadMappingText = (id: string) => {
+    const m = mappings.find((x) => x.id === id);
+    if (!m) return;
+    setMappingId(id);
+    setMapName(m.name);
+    setMapText(m.rows.map((r) => `${r.before_if},${r.after_if}`).join("\n"));
+  };
+
+  const saveMapping = async () => {
+    setBusy(true);
+    try {
+      const rows = parseMapRows();
+      if (mappingId) await bizCompareUpdateMapping(mappingId, { name: mapName, rows });
+      else {
+        const m = await bizCompareCreateMapping({ name: mapName, rows });
+        setMappingId(String(m.id));
+      }
+      showOk(t("bizCompare.mappingSaved"));
+      await refresh({ force: true });
+    } catch (e) {
+      showError(formatErr(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const doValidate = async () => {
+    if (!mappingId || !beforeBatchId || !afterBatchId) {
+      showError(t("bizCompare.validateNeed"));
+      return;
+    }
+    setBusy(true);
+    try {
+      const v = await bizCompareValidateMapping({
+        mapping_id: mappingId,
+        before_batch_id: beforeBatchId,
+        after_batch_id: afterBatchId,
+        template_id: templateId,
+      });
+      setValidateOut(v);
+    } catch (e) {
+      showError(formatErr(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const resetJobForm = (preset?: Partial<Job>) => {
+    const tplId = preset?.template_id || templates[0]?.id || "";
+    setName(preset?.name || t("bizCompare.defaultJobName"));
+    setTemplateId(tplId);
+    const presetIds = (preset?.enabled_sheet_ids || []).map(String).filter(Boolean);
+    if (presetIds.length) {
+      setEnabledSheetIds(presetIds);
+    } else {
+      setEnabledSheetIds([]);
+    }
+    setMappingId(preset?.mapping_id || "");
+    setBeforeTaskId(preset?.before_task_id || "");
+    setAfterTaskId(preset?.after_task_id || "");
+    setBeforeBatchId(preset?.before_batch_id || "");
+    setAfterBatchId(preset?.after_batch_id || "");
+    setMode(preset?.mode === "auto" ? "auto" : "manual");
+    {
+      const su = String(preset?.store_unchanged || "auto");
+      setStoreUnchanged(
+        su === "always" || su === "never" || su === "sample" || su === "keys"
+          ? su
+          : "auto",
+      );
+    }
+    setValidateOut(null);
+    if (preset?.mapping_id) loadMappingText(preset.mapping_id);
+    else {
+      setMapName(t("bizCompare.mapping"));
+      setMapText("");
+    }
+  };
+
+  const jobConfigBody = () => ({
+    name,
+    template_id: templateId,
+    mapping_id: mappingId,
+    before_task_id: beforeTaskId,
+    after_task_id: afterTaskId || beforeTaskId,
+    before_batch_id: beforeBatchId,
+    after_batch_id: mode === "manual" ? afterBatchId : "",
+    mode,
+    enabled_sheet_ids: enabledSheetIds,
+    store_unchanged: storeUnchanged,
+  });
+
+  const renderStoreUnchangedField = () => (
+    <FieldSelect
+      label={t("bizCompare.storeUnchanged")}
+      value={storeUnchanged}
+      onChange={(e) => setStoreUnchanged(e.target.value as StoreUnchanged)}
+      fullWidth
+    >
+      <option value="auto">{t("bizCompare.storeUnchangedAuto")}</option>
+      <option value="sample">{t("bizCompare.storeUnchangedSample")}</option>
+      <option value="keys">{t("bizCompare.storeUnchangedKeys")}</option>
+      <option value="always">{t("bizCompare.storeUnchangedAlways")}</option>
+      <option value="never">{t("bizCompare.storeUnchangedNever")}</option>
+    </FieldSelect>
+  );
+
+  const closeCreateJob = () => {
+    setJobCreateOpen(false);
+    setCreateStep(0);
+  };
+
+  const openCreateJob = () => {
+    resetJobForm();
+    setCreateStep(0);
+    setJobCreateOpen(true);
+  };
+
+  const canAdvanceCreateStep = (step: CreateJobStep): boolean => {
+    if (step === 0) return Boolean(name.trim() && templateId);
+    if (step === 1) return enabledJobSheetCount > 0;
+    if (step === 2) {
+      if (!beforeTaskId || !beforeBatchId) return false;
+      if (mode === "manual" && !afterBatchId) return false;
+      return true;
+    }
+    return true;
+  };
+
+  const createStepBlockReason = (step: CreateJobStep): string | null => {
+    if (step === 0) {
+      if (!name.trim()) return t("bizCompare.needJobName");
+      if (!templateId) return t("bizCompare.needTemplate");
+      return null;
+    }
+    if (step === 1) {
+      if (!enabledJobSheetCount) return t("bizCompare.needSheets");
+      return null;
+    }
+    if (step === 2) {
+      if (!beforeTaskId || !beforeBatchId) return t("bizCompare.needBeforeBatch");
+      if (mode === "manual" && !afterBatchId) return t("bizCompare.needAfterBatch");
+      return null;
+    }
+    return null;
+  };
+
+  const onCreateNext = () => {
+    const reason = createStepBlockReason(createStep);
+    if (reason) {
+      showError(reason);
+      return;
+    }
+    setCreateStep((s) => Math.min(CREATE_JOB_STEPS - 1, (s + 1) as CreateJobStep) as CreateJobStep);
+  };
+
+  const onCreateBack = () => {
+    setCreateStep((s) => Math.max(0, s - 1) as CreateJobStep);
+  };
+
+  const createJob = async () => {
+    const reason =
+      createStepBlockReason(0) ||
+      createStepBlockReason(1) ||
+      createStepBlockReason(2);
+    if (reason) {
+      showError(reason);
+      return;
+    }
+    setBusy(true);
+    try {
+      const j = await bizCompareCreateJob(jobConfigBody());
+      showOk(t("bizCompare.created"));
+      closeCreateJob();
+      await refresh({ force: true });
+      await openJob(String(j.id));
+    } catch (e) {
+      showError(formatErr(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const openJob = async (id: string) => {
+    const request = ++jobRequestRef.current;
+    runRequestRef.current += 1;
+    setJobId(id);
+    setJobDetailTab("config");
+    setRunDetail(null);
+    setRuns([]);
+    setRunsLoading(true);
+    setRunsError("");
+    setResultSheetId("");
+    setKindFilter("diff");
+    setResultKw("");
+    const job = jobs.find((x) => x.id === id);
+    if (job) resetJobForm(job);
+    try {
+      const r = await bizCompareListRuns(id, 50);
+      if (request !== jobRequestRef.current) return;
+      const items = (r.items || []) as RunRecord[];
+      setRuns(items);
+      if (items.length) {
+        const latest = await bizCompareGetRun(items[0].id);
+        if (request !== jobRequestRef.current) return;
+        setRunDetail(latest);
+        // Land on batch list so stuck/cancelled runs are visible and actionable
+        setJobDetailTab("runs");
+      }
+    } catch (e) {
+      if (request === jobRequestRef.current) {
+        setRunsError(formatErr(e));
+        showError(formatErr(e));
+      }
+    } finally {
+      if (request === jobRequestRef.current) setRunsLoading(false);
+    }
+  };
+
+  const refreshRuns = async () => {
+    if (!jobId || runsLoading) return;
+    const request = jobRequestRef.current;
+    setRunsLoading(true);
+    setRunsError("");
+    try {
+      const response = await bizCompareListRuns(jobId, 50);
+      if (request === jobRequestRef.current) setRuns((response.items || []) as RunRecord[]);
+    } catch (e) {
+      if (request === jobRequestRef.current) setRunsError(formatErr(e));
+    } finally {
+      if (request === jobRequestRef.current) setRunsLoading(false);
+    }
+  };
+
+  const handleJobTabKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    const tabs: JobDetailTab[] = ["config", "runs", "result"];
+    const current = tabs.indexOf(jobDetailTab);
+    const next = event.key === "ArrowRight" ? (current + 1) % tabs.length
+      : event.key === "ArrowLeft" ? (current + tabs.length - 1) % tabs.length
+      : event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : -1;
+    if (next < 0) return;
+    event.preventDefault();
+    setJobDetailTab(tabs[next]);
+    if (tabs[next] === "runs") void refreshRuns();
+    event.currentTarget.querySelector<HTMLButtonElement>(`#compare-${tabs[next]}-tab`)?.focus();
+  };
+
+  const closeJob = () => {
+    jobRequestRef.current += 1;
+    runRequestRef.current += 1;
+    if (document.fullscreenElement === boardRef.current) {
+      void document.exitFullscreen().catch(() => undefined);
+    }
+    setBoardFs(false);
+    setJobId("");
+    setRuns([]);
+    setRunsLoading(false);
+    setRunsError("");
+    setRunDetail(null);
+    setResultSheetId("");
+  };
+
+  const saveJobConfig = async () => {
+    if (!jobId) return;
+    if (missingJobSheets.length) { showError(t("bizCompare.missingSheets")); return; }
+    if (!enabledJobSheetCount) {
+      showError(t("bizCompare.needSheets"));
+      return;
+    }
+    setBusy(true);
+    try {
+      await bizCompareUpdateJob(jobId, jobConfigBody());
+      showOk(t("bizCompare.jobSaved"));
+      await refresh({ force: true });
+    } catch (e) {
+      showError(formatErr(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const runStatus = String(runDetail?.status || "");
+  const runIsActive = runStatus === "running" || runStatus === "queued";
+  const jobHasActiveRun = runs.some((r) => {
+    const st = String(r.status || "");
+    return st === "running" || st === "queued";
+  });
+  const runCounts = useMemo(() => ({
+    total: runs.length,
+    active: runs.filter((r) => r.status === "running" || r.status === "queued").length,
+    completed: runs.filter((r) => r.status === "success").length,
+    stopped: runs.filter((r) => r.status === "failed" || r.status === "cancelled").length,
+  }), [runs]);
+
+  const runNow = async () => {
+    if (!jobId) return;
+    if (missingJobSheets.length) { showError(t("bizCompare.missingSheets")); return; }
+    if (!enabledJobSheetCount) {
+      showError(t("bizCompare.needSheets"));
+      return;
+    }
+    if (jobHasActiveRun) {
+      showError(t("bizCompare.compareAlreadyRunning"));
+      setJobDetailTab("runs");
+      return;
+    }
+    const request = jobRequestRef.current;
+    setBusy(true);
+    try {
+      await bizCompareUpdateJob(jobId, jobConfigBody());
+      // Async enqueue — returns immediately with status=running; poll below.
+      const run = await bizCompareRunJob(jobId);
+      if (request !== jobRequestRef.current) return;
+      runRequestRef.current += 1;
+      setRunDetail(run);
+      setJobDetailTab("runs");
+      showOk(t("bizCompare.runStarted"));
+      const r = await bizCompareListRuns(jobId, 50);
+      if (request !== jobRequestRef.current) return;
+      setRuns((r.items || []) as RunRecord[]);
+      await refresh({ force: true });
+    } catch (e) {
+      if (request === jobRequestRef.current) {
+        showError(formatErr(e));
+        setJobDetailTab("runs");
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+  const runProgress = (runDetail?.summary?.progress || {}) as RunProgressInfo;
+  const runEngine = String(runProgress.engine || "").toLowerCase();
+
+  // One poller; schedule the next tick after requests settle to prevent overlap.
+  useEffect(() => {
+    if (!jobId || (!runIsActive && !(jobHasActiveRun && jobDetailTab === "runs"))) return;
+    let cancelled = false;
+    let notified = false;
+    let timer: number | undefined;
+    const jobRequest = jobRequestRef.current;
+    const runId = String(runDetail?.id || "");
+    const tick = async () => {
+      const runRequest = runRequestRef.current;
+      try {
+        const [r, d] = await Promise.all([
+          bizCompareListRuns(jobId, 50),
+          runIsActive && runId ? bizCompareGetRun(runId) : Promise.resolve(null),
+        ]);
+        if (cancelled || jobRequest !== jobRequestRef.current) return;
+        setRuns((r.items || []) as RunRecord[]);
+        if (!d || runRequest !== runRequestRef.current) return;
+        setRunDetail((prev: typeof runDetail) => String(prev?.id || "") === runId ? d : prev);
+        const st = String(d.status || "");
+        if (!notified && st === "success") {
+          notified = true;
+          const ms = Number((d.summary as any)?.duration_ms || 0);
+          const sec = ms > 0 ? Math.round(ms / 1000) : 0;
+          showOk(sec > 0 ? t("bizCompare.ranWithDuration", { s: String(sec) }) : t("bizCompare.ran"));
+        } else if (!notified && st === "failed") {
+          notified = true;
+          showError(String(d.message || t("bizCompare.runFailed")));
+        } else if (!notified && st === "cancelled") {
+          notified = true;
+          showError(String(d.message || t("bizCompare.runCancelled")));
+        }
+      } catch (e) {
+        if (!cancelled) showError(formatErr(e));
+      } finally {
+        if (!cancelled) timer = window.setTimeout(() => void tick(), 2000);
+      }
+    };
+    void tick();
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [runDetail?.id, runIsActive, jobId, jobHasActiveRun, jobDetailTab, showOk, showError, t]);
+
+  const loadRun = async (runId: string) => {
+    const request = ++runRequestRef.current;
+    const jobRequest = jobRequestRef.current;
+    try {
+      const d = await bizCompareGetRun(runId);
+      if (request !== runRequestRef.current || jobRequest !== jobRequestRef.current) return;
+      setRunDetail(d);
+      setKindFilter("diff");
+      setResultKw("");
+      setResultKeyFilters({});
+      setJobDetailTab("result");
+    } catch (e) {
+      if (request === runRequestRef.current && jobRequest === jobRequestRef.current) showError(formatErr(e));
+    }
+  };
+
+  const cancelRun = async (runId: string) => {
+    if (!runId) return;
+    if (!window.confirm(t("bizCompare.confirmCancelRun"))) return;
+    const request = jobRequestRef.current;
+    setBusy(true);
+    try {
+      const d = await bizCompareCancelRun(runId);
+      if (request !== jobRequestRef.current) return;
+      setRunDetail((prev: typeof runDetail) => String(prev?.id || "") === runId ? d : prev);
+      if (jobId) {
+        const r = await bizCompareListRuns(jobId, 50);
+        if (request !== jobRequestRef.current) return;
+        setRuns((r.items || []) as RunRecord[]);
+      }
+      showOk(t("bizCompare.runCancelled"));
+    } catch (e) {
+      showError(formatErr(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const removeRun = async (runId: string) => {
+    if (!runId) return;
+    if (!window.confirm(t("bizCompare.confirmDeleteRun"))) return;
+    const request = jobRequestRef.current;
+    const runRequest = runRequestRef.current;
+    setBusy(true);
+    try {
+      const wasCurrent = String(runDetail?.id || "") === runId;
+      await bizCompareDeleteRun(runId);
+      if (request !== jobRequestRef.current) return;
+      let nextRuns: typeof runs = [];
+      if (jobId) {
+        const r = await bizCompareListRuns(jobId, 50);
+        if (request !== jobRequestRef.current) return;
+        nextRuns = (r.items || []) as RunRecord[];
+      } else {
+        nextRuns = (runs || []).filter((r) => String(r.id) !== runId);
+      }
+      setRuns(nextRuns);
+      if (wasCurrent && runRequest === runRequestRef.current) {
+        runRequestRef.current += 1;
+        setRunDetail(null);
+        setResultSheetId("");
+        setJobDetailTab("runs");
+      }
+      showOk(t("bizCompare.runDeleted"));
+    } catch (e) {
+      showError(formatErr(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const renderSheetChips = () => (
+    <div className="bs-cmp-scope">
+      <div className="bs-cmp-scope__heading">
+        {t("bizCompare.enabledSheets")}
+        <span className="bs-cmp-scope__count">
+          {enabledJobSheetCount}/{jobSheetAllIds.length || 0}
+        </span>
+      </div>
+      <p className="muted bm-hint">{t("bizCompare.enabledSheetsHint")}</p>
+      {missingJobSheets.length ? <div className="bs-cmp-error" role="alert"><span>{t("bizCompare.missingSheets")} · {missingJobSheets.join(", ")}</span><Button size="sm" variant="secondary" isDisabled={!jobSheetAllIds.length} onPress={() => setEnabledSheetIds([])}>{t("bizCompare.enableCurrentSheets")}</Button></div> : null}
+      <div className="bs-cmp-scope__items">
+        {jobTemplateSheets.map((s) => {
+          const sid = sheetIdentity(s);
+          const on = isJobSheetOn(sid);
+          return (
+            <button
+              key={sid}
+              type="button"
+              className={`bs-cmp-scope__item${on ? " is-on" : ""}`}
+              aria-pressed={on}
+              disabled={on && enabledJobSheetCount === 1}
+              onClick={() => toggleJobSheet(sid)}
+              title={s.metric_id !== sid ? s.metric_id : undefined}
+            >
+              <span className="bs-cmp-scope__check" aria-hidden="true">{on ? "✓" : ""}</span>
+              <span className="bs-cmp-scope__content">
+                <strong>{sheetLabel(s)}</strong>
+                <span>{s.compare_fields.length ? t("bizCompare.modeFieldsShort") : t("bizCompare.presenceShort")}</span>
+              </span>
+            </button>
+          );
+        })}
+      </div>
+      {!jobTemplateSheets.length ? (
+        <p className="muted bm-hint">{t("bizCompare.noTemplateSheets")}</p>
+      ) : null}
+      {jobTemplateSheets.length && !enabledJobSheetCount ? (
+        <p className="form-error bm-hint">{t("bizCompare.needSheets")}</p>
+      ) : null}
+    </div>
+  );
+
+  const renderMappingBlock = () => (
+    <div className="bs-cmp-mapping">
+      <p className="bs-cmp-config__hint">{t("bizCompare.mappingOptionalHint")}</p>
+      <div className="bs-cmp-mapping__fields">
+        <FieldSelect
+          label={t("bizCompare.selectMapping")}
+          value={mappingId}
+          onChange={(e) => {
+            const id = e.target.value;
+            if (id) loadMappingText(id);
+            else {
+              setMappingId("");
+              setMapText("");
+            }
+          }}
+        >
+          <option value="">{t("bizCompare.newMapping")}</option>
+          {mappings.map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.name}
+            </option>
+          ))}
+        </FieldSelect>
+        <label className="ui-field ui-field--full">
+          <span className="ui-field__label">{t("bizCompare.mapName")}</span>
+          <Input value={mapName} onChange={(e) => setMapName(e.target.value)} />
+        </label>
+      </div>
+      <label className="ui-field ui-field--full">
+        <span className="ui-field__label">{t("bizCompare.mappingPairs")}</span>
+        <textarea
+          className="bs-cmp-mapping__editor"
+          value={mapText}
+          onChange={(e) => setMapText(e.target.value)}
+          placeholder={t("bizCompare.mapHint")}
+          rows={4}
+          spellCheck={false}
+        />
+      </label>
+      <div className="bs-cmp-mapping__actions">
+        <Button size="sm" variant="secondary" isDisabled={busy} onPress={() => void saveMapping()}>
+          {t("bizCompare.saveMapping")}
+        </Button>
+        <Button size="sm" variant="secondary" isDisabled={busy} onPress={() => void doValidate()}>
+          {t("bizCompare.validateMapping")}
+        </Button>
+      </div>
+      {validateOut ? (
+        <pre className="muted" style={{ fontSize: 12, maxHeight: 120, overflow: "auto" }}>
+          {JSON.stringify(validateOut, null, 2)}
+        </pre>
+      ) : null}
+    </div>
+  );
+
+  const renderBatchFields = () => (
+    <div className="bs-cmp-sources">
+      <section className="bs-cmp-source" aria-label={t("bizCompare.sideBefore")}>
+        <header className="bs-cmp-source__head">
+          <span className="bs-cmp-source__tag" aria-hidden="true">PRE</span>
+          <strong>{t("bizCompare.sideBefore")}</strong>
+          <span>{t("bizCompare.sourceBaseline")}</span>
+        </header>
+        <FieldSelect
+          label={t("bizCompare.beforeTask")}
+          value={beforeTaskId}
+          onChange={(e) => {
+            setBeforeTaskId(e.target.value);
+            setBeforeBatchId("");
+            if (!afterTaskId) setAfterBatchId("");
+          }}
+          fullWidth
+        >
+          <option value="">{t("bizCompare.pick")}</option>
+          {tasks.map((row) => (
+            <option key={row.id} value={row.id}>
+              {taskLabel(row)}
+            </option>
+          ))}
+        </FieldSelect>
+        <FieldSelect
+          label={t("bizCompare.beforeBatch")}
+          value={beforeBatchId}
+          onChange={(e) => setBeforeBatchId(e.target.value)}
+          fullWidth
+        >
+          <option value="">{t("bizCompare.pick")}</option>
+          {beforeBatches.map((b) => (
+            <option key={b.id} value={b.id} disabled={b.status !== "success"}>
+              {batchOptLabel(b)}
+            </option>
+          ))}
+        </FieldSelect>
+        <div className="bs-cmp-source__meta">
+          <span>{tasks.find((row) => row.id === beforeTaskId)?.ne_ip || "—"}</span>
+          <span>{t("bizCompare.sourceRows", { n: beforeBatches.find((b) => b.id === beforeBatchId)?.row_count?.toLocaleString() ?? "—" })}</span>
+        </div>
+      </section>
+      <section className="bs-cmp-source is-after" aria-label={t("bizCompare.sideAfter")}>
+        <header className="bs-cmp-source__head">
+          <span className="bs-cmp-source__tag" aria-hidden="true">POST</span>
+          <strong>{t("bizCompare.sideAfter")}</strong>
+          <span>{mode === "auto" ? t("bizCompare.sourceLatest") : t("bizCompare.sourceTarget")}</span>
+        </header>
+        <FieldSelect
+          label={t("bizCompare.afterTask")}
+          value={afterTaskId}
+          onChange={(e) => {
+            setAfterTaskId(e.target.value);
+            setAfterBatchId("");
+          }}
+          fullWidth
+        >
+          <option value="">{t("bizCompare.sameAsBefore")}</option>
+          {tasks.map((row) => (
+            <option key={row.id} value={row.id}>
+              {taskLabel(row)}
+            </option>
+          ))}
+        </FieldSelect>
+        {mode === "manual" ? (
+          <FieldSelect
+            label={t("bizCompare.afterBatch")}
+            value={afterBatchId}
+            onChange={(e) => setAfterBatchId(e.target.value)}
+            fullWidth
+          >
+            <option value="">{t("bizCompare.pick")}</option>
+            {afterBatches.map((b) => (
+              <option key={b.id} value={b.id} disabled={b.status !== "success"}>
+                {batchOptLabel(b)}
+              </option>
+            ))}
+          </FieldSelect>
+        ) : (
+          <p className="bs-cmp-config__hint bs-cmp-source__auto">{t("bizCompare.autoSourceHint")}</p>
+        )}
+        <div className="bs-cmp-source__meta">
+          <span>{tasks.find((row) => row.id === (afterTaskId || beforeTaskId))?.ne_ip || "—"}</span>
+          <span>{mode === "auto" ? t("bizCompare.sourceLatest") : t("bizCompare.sourceRows", { n: afterBatches.find((b) => b.id === afterBatchId)?.row_count?.toLocaleString() ?? "—" })}</span>
+        </div>
+      </section>
+    </div>
+  );
+
+  const renderBasicFields = () => (
+    <div className="bs-cmp-config__fields">
+      <label className="ui-field ui-field--full">
+        <span className="ui-field__label">{t("bizCompare.jobName")}</span>
+        <Input value={name} onChange={(e) => setName(e.target.value)} />
+      </label>
+      <FieldSelect
+        label={t("bizCompare.template")}
+        value={templateId}
+        onChange={(e) => setJobTemplateAndSheets(e.target.value)}
+        fullWidth
+      >
+        {templates.map((tpl) => {
+          const n = templateSheets(tpl).length;
+          return (
+            <option key={tpl.id} value={tpl.id}>
+              {tpl.name} ({n} {t("bizCompare.sheetsUnit")})
+            </option>
+          );
+        })}
+      </FieldSelect>
+      <FieldSelect
+        label={t("bizCompare.mode")}
+        value={mode}
+        onChange={(e) => setMode(e.target.value as "manual" | "auto")}
+        fullWidth
+      >
+        <option value="manual">{t("bizCompare.modeManual")}</option>
+        <option value="auto">{t("bizCompare.modeAuto")}</option>
+      </FieldSelect>
+      {renderStoreUnchangedField()}
+      <p className="bs-cmp-config__hint is-wide">{t("bizCompare.storeUnchangedHint")}</p>
+    </div>
+  );
+
+  const renderJobForm = () => (
+    <div className="bs-cmp-form bs-cmp-config" role="tabpanel" id="compare-config-panel" aria-labelledby="compare-config-tab">
+      <section className="bs-cmp-config__section is-wide" aria-labelledby="compare-basic-title">
+        <h3 className="bs-cmp-config__title" id="compare-basic-title"><span>01</span>{t("bizCompare.configBasics")}</h3>
+        {renderBasicFields()}
+      </section>
+      <section className="bs-cmp-config__section is-wide" aria-labelledby="compare-source-title">
+        <h3 className="bs-cmp-config__title" id="compare-source-title"><span>02</span>{t("bizCompare.configSources")}</h3>
+        {renderBatchFields()}
+      </section>
+      <section className="bs-cmp-config__section" aria-labelledby="compare-scope-title">
+        <h3 className="bs-cmp-config__title" id="compare-scope-title"><span>03</span>{t("bizCompare.configScope")}</h3>
+        {renderSheetChips()}
+      </section>
+      <section className="bs-cmp-config__section" aria-labelledby="compare-mapping-title">
+        <h3 className="bs-cmp-config__title" id="compare-mapping-title"><span>04</span>{t("bizCompare.mapping")}</h3>
+        {renderMappingBlock()}
+      </section>
+    </div>
+  );
+
+  return (
+    <section className={`panel nm-page-panel bs-cmp-workspace${activeTab === "templates" ? " bs-template-workspace" : ""}`}>
+      <div className="panel__toolbar">
+        <h2>
+          {pageMode === "templates" ? t("bizCompare.templates") : t("bizCompare.title")}
+        </h2>
+        <div className="btn-row">
+          {activeTab === "templates" ? (
+            <>
+              <input
+                ref={tplImportRef}
+                type="file"
+                accept="application/json,.json"
+                style={{ display: "none" }}
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) void importTemplateFile(f);
+                }}
+              />
+              <Button
+                size="sm"
+                variant="secondary"
+                isDisabled={busy}
+                onPress={() => tplImportRef.current?.click()}
+              >
+                {t("bizCompare.importTemplate")}
+              </Button>
+              <Button size="sm" variant="primary" isDisabled={busy} onPress={openNewTemplate}>
+                {t("bizCompare.newTemplate")}
+              </Button>
+            </>
+          ) : (
+            <Button size="sm" variant="primary" onPress={openCreateJob}>
+              {t("bizCompare.createCompare")}
+            </Button>
+          )}
+        </div>
+      </div>
+
+      <div className="pt-list">
+        {showTabSwitch ? (
+          <div className="btn-row nm-config-modal__tabs" role="tablist">
+            <Button
+              size="sm"
+              variant={activeTab === "jobs" ? "primary" : "secondary"}
+              className={activeTab === "jobs" ? "is-active" : undefined}
+              onPress={() => setPageTab("jobs")}
+            >
+              {t("bizCompare.jobList")}
+            </Button>
+            <Button
+              size="sm"
+              variant={activeTab === "templates" ? "primary" : "secondary"}
+              className={activeTab === "templates" ? "is-active" : undefined}
+              onPress={() => setPageTab("templates")}
+            >
+              {t("bizCompare.templates")}
+            </Button>
+          </div>
+        ) : null}
+
+        <div className="filter-inline">
+          <Input
+            value={listKw}
+            aria-label={activeTab === "jobs" ? t("bizCompare.jobFilterPh") : t("bizCompare.templateFilterPh")}
+            placeholder={
+              activeTab === "jobs" ? t("bizCompare.jobFilterPh") : t("bizCompare.templateFilterPh")
+            }
+            onChange={(e) => { setListKw(e.target.value); setListPage(1); }}
+          />
+        </div>
+
+        {activeTab === "templates" ? (
+          <div className="pt-list-table-wrap">
+            <table className="data-table pt-list-table">
+              <thead>
+                <tr>
+                  <th>{t("bizCompare.colName")}</th>
+                  <th>{t("bizCompare.colSheets")}</th>
+                  <th>{t("bizCompare.note")}</th>
+                  <th>{t("bizCompare.colActions")}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredTemplates.slice((visibleListPage - 1) * listPageSize, visibleListPage * listPageSize).map((tpl) => {
+                  const sheets = templateSheets(tpl);
+                  return (
+                    <tr key={tpl.id}>
+                      <td>
+                        <div className="pt-list-task-name">{tpl.name}</div>
+                        {tpl.job_count ? <div className="muted">{t("bizCompare.templateUsage", {n: tpl.job_count})}</div> : null}
+                      </td>
+                      <td>
+                        <div className="bs-cmp-metric-chips">
+                          {sheets.map((s, i) => (
+                            <code key={`${sheetIdentity(s)}-${i}`} className="bs-cmp-metric-chip">
+                              {sheetLabel(s)}
+                              {!s.compare_fields?.length ? (
+                                <span className="muted"> · {t("bizCompare.presenceShort")}</span>
+                              ) : null}
+                            </code>
+                          ))}
+                          {!sheets.length ? "—" : null}
+                        </div>
+                      </td>
+                      <td className="muted">{tpl.note || "—"}</td>
+                      <td>
+                        <div className="pt-list-actions">
+                          <Button size="sm" variant="secondary" isDisabled={busy} onPress={() => openEditTemplate(tpl)}>
+                            {t("bizCompare.edit")}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            isDisabled={busy}
+                            onPress={() => exportTemplate(tpl)}
+                          >
+                            {t("bizCompare.exportTemplate")}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="danger"
+                            isDisabled={busy || Boolean(tpl.job_count) || jobs.some((j) => j.template_id === tpl.id)}
+                            onPress={() => void removeTemplate(tpl.id)}
+                          >
+                            {t("bizCompare.delete")}
+                          </Button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+                {!filteredTemplates.length ? (
+                  <tr>
+                    <td colSpan={4}>
+                      <div className="pt-list-empty">{t("bizCompare.emptyTemplates")}</div>
+                    </td>
+                  </tr>
+                ) : null}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="pt-list-table-wrap">
+            <table className="data-table pt-list-table">
+              <thead>
+                <tr>
+                  <th>{t("bizCompare.colName")}</th>
+                  <th>{t("bizCompare.template")}</th>
+                  <th>{t("bizCompare.colMode")}</th>
+                  <th>{t("bizCompare.colStatus")}</th>
+                  <th>{t("bizCompare.colActions")}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredJobs.slice((visibleListPage - 1) * listPageSize, visibleListPage * listPageSize).map((j) => {
+                  const tpl = templatesById.get(j.template_id);
+                  const n = templateSheets(tpl).length;
+                  return (
+                    <tr key={j.id}>
+                      <td>
+                        <div className="pt-list-task-name">{j.name}</div>
+                        <code className="bs-cmp-runs__id" title={j.id}>{j.id.slice(0, 12)}</code>
+                      </td>
+                      <td className="muted">
+                        {tpl?.name || j.template_id.slice(0, 8)}
+                        {n ? ` · ${n} ${t("bizCompare.sheetsUnit")}` : ""}
+                      </td>
+                      <td>{j.mode === "auto" ? t("bizCompare.modeAuto") : t("bizCompare.modeManual")}</td>
+                      <td>
+                        <NmStatusChip color={jobChipColor(j.status)}>
+                          {j.status === "ready" ? t("bizCompare.jobReady") : j.status === "auto" ? t("bizCompare.modeAuto") : j.status}
+                        </NmStatusChip>
+                      </td>
+                      <td>
+                        <div className="pt-list-actions">
+                          <Button size="sm" variant="primary" onPress={() => void openJob(j.id)}>
+                            {t("bizCompare.detail")}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="bs-cmp-runs__delete"
+                            isDisabled={busy}
+                            onPress={() => void removeJob(j.id)}
+                          >
+                            {t("bizCompare.deleteJob")}
+                          </Button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+                {!filteredJobs.length ? (
+                  <tr>
+                    <td colSpan={5}>
+                      <div className="pt-list-empty">{t("bizCompare.emptyJobs")}</div>
+                    </td>
+                  </tr>
+                ) : null}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <ListPager page={visibleListPage} pages={listPages} total={listTotal} pageSize={listPageSize} pageSizeOptions={[20, 50, 100, 200]} onPageChange={setListPage} onPageSizeChange={(n) => { setListPageSize(n); setListPage(1); }} />
+      </div>
+
+      {/* Template editor */}
+      <AppModalShell open={tplOpen} onClose={() => { if (!busy) setTplOpen(false); }} dismissible={!busy} size="cover" className="app-heroui-modal--xl bs-template-editor">
+        <Modal.Header>
+          <Modal.Heading>
+            {tplEditId ? t("bizCompare.editTemplate") : t("bizCompare.newTemplate")}
+          </Modal.Heading>
+          <Modal.CloseTrigger isDisabled={busy} />
+        </Modal.Header>
+        <Modal.Body className="flex flex-col gap-3 ct-editor" inert={busy}>
+          {tplError ? <div className="bs-cmp-error" role="alert">{t("bizCompare.templateValidationFailed")} · {tplError}</div> : null}
+          <div className="ct-editor__basics">
+            <Input
+              value={tplName}
+              onChange={(e) => setTplName(e.target.value)}
+              placeholder={t("bizCompare.colName")}
+              aria-label={t("bizCompare.colName")}
+            />
+            <Input
+              value={tplNote}
+              onChange={(e) => setTplNote(e.target.value)}
+              placeholder={t("bizCompare.note")}
+              aria-label={t("bizCompare.note")}
+            />
+          </div>
+
+          <details className="ct-editor__norm">
+            <summary className="ct-editor__pick-title">{t("bizCompare.ifaceNormalize")}</summary>
+            <p className="muted ct-editor__pick-hint">{t("bizCompare.ifaceNormalizeHint")}</p>
+            <textarea
+              className="ct-editor__norm-area"
+              rows={3}
+              value={tplNormText}
+              onChange={(e) => setTplNormText(e.target.value)}
+              placeholder={"GE,gei\nSG,smartgroup"}
+              aria-label={t("bizCompare.ifaceNormalize")}
+            />
+          </details>
+
+          <div className="ct-editor__pick">
+            <div className="ct-editor__pick-head">
+              <span className="ct-editor__pick-title">
+                {t("bizCompare.stepPickMetrics")}
+                <span className="muted" style={{ fontWeight: 400, marginLeft: 8 }}>
+                  {t("bizCompare.selectedCount", { n: String(tplSheets.length) })}
+                </span>
+              </span>
+              <Button size="sm" variant="ghost" onPress={() => setShowMetricPicker((v) => !v)}>
+                {showMetricPicker ? t("bizCompare.hideMetrics") : t("bizCompare.showMetrics")}
+              </Button>
+            </div>
+            {showMetricPicker ? (
+              <>
+                <p className="muted ct-editor__pick-hint">{t("bizCompare.pickMetricsHintShort")}</p>
+                <div className="ct-metric-chips">
+                  {metrics.map((m) => {
+                    const checked = tplSheets.some((s) => s.metric_id === m.metric_id);
+                    return (
+                      <button
+                        key={m.metric_id}
+                        type="button"
+                        className={`mt-chip${checked ? " is-on" : ""}`}
+                        aria-pressed={checked}
+                        onClick={() => toggleTplMetric(m.metric_id, !checked)}
+                      >
+                        {m.metric_id}
+                        <span className="ct-metric-chip__n">{m.fields?.length || 0}</span>
+                      </button>
+                    );
+                  })}
+                  {!metrics.length ? (
+                    <span className="muted">{t("bizCompare.noMetricFields")}</span>
+                  ) : null}
+                </div>
+              </>
+            ) : null}
+          </div>
+
+          {!tplSheets.length ? (
+            <div className="pt-list-empty">{t("bizCompare.noMetricsYet")}</div>
+          ) : (
+            <div className="ct-editor__main">
+              <aside className="ct-editor__nav" aria-label={t("bizCompare.colSheets")}>
+                <div className="ct-editor__nav-head">
+                  <span>{t("bizCompare.colSheets")}</span>
+                </div>
+                <div className="ct-editor__nav-list" role="tablist" aria-label={t("bizCompare.colSheets")} onKeyDown={(event) => {
+                  if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+                  event.preventDefault();
+                  const next = event.key === "Home" ? 0 : event.key === "End" ? tplSheets.length - 1 : (tplSheetIdx + (["ArrowUp", "ArrowLeft"].includes(event.key) ? -1 : 1) + tplSheets.length) % tplSheets.length;
+                  setTplSheetIdx(next);
+                  event.currentTarget.querySelectorAll<HTMLButtonElement>("[role=tab]")[next]?.focus();
+                }}>
+                  {tplSheets.map((s, i) => {
+                    const filterN = toOrGroups(s.row_filters || [])?.length ?? (s.row_filters || []).length;
+                    return (
+                      <button
+                        key={`${sheetIdentity(s)}-${i}`}
+                        type="button"
+                        role="tab"
+                        aria-selected={tplSheetIdx === i}
+                        tabIndex={tplSheetIdx === i ? 0 : -1}
+                        className={`ct-editor__nav-item${tplSheetIdx === i ? " is-active" : ""}`}
+                        onClick={() => {
+                          setTplSheetIdx(i);
+                          setTplPaneTab("fields");
+                        }}
+                      >
+                        <span className="ct-editor__nav-name">{sheetLabel(s)}</span>
+                        <span className="ct-editor__nav-tag">
+                          {!s.compare_fields.length
+                            ? t("bizCompare.presenceShort")
+                            : t("bizCompare.tagCompareN", { n: String(s.compare_fields.length) })}
+                          {filterN ? ` · F${filterN}` : ""}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </aside>
+
+              {activeTplSheet ? (
+                <div className="ct-editor__pane">
+                  <div className="ct-editor__pane-head">
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div className="ct-editor__metric-edit" style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                        <Input
+                          value={activeTplSheet.title || ""}
+                          placeholder={t("bizCompare.sheetTitle")}
+                          aria-label={t("bizCompare.sheetTitle")}
+                          onChange={(e) => updateActiveSheet({ title: e.target.value })}
+                          style={{ maxWidth: 220 }}
+                        />
+                        <Input
+                          value={activeTplSheet.sheet_id || activeTplSheet.metric_id}
+                          placeholder={t("bizCompare.sheetId")}
+                          aria-label={t("bizCompare.sheetId")}
+                          onChange={(e) => updateActiveSheet({ sheet_id: e.target.value.trim() })}
+                          style={{ maxWidth: 220 }}
+                        />
+                      </div>
+                      <div className="ct-editor__meta muted">
+                        {activeTplSheet.metric_id}
+                        {" · "}
+                        {activeTplSheet.compare_fields.length
+                          ? t("bizCompare.modeFieldsShort")
+                          : t("bizCompare.presenceShort")}
+                        {" · "}
+                        Key {(activeTplSheet.key_fields || []).join(" · ") || "—"}
+                      </div>
+                    </div>
+                    <div className="btn-row" style={{ gap: 6 }}>
+                      <Button size="sm" variant="secondary" onPress={() => duplicateTplSheet(tplSheetIdx)}>
+                        {t("bizCompare.splitSheet")}
+                      </Button>
+                      <Button size="sm" variant="ghost" onPress={() => removeTplMetric(tplSheetIdx)}>
+                        {t("bizCompare.removeSheet")}
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div className="mt-rule-tabs" role="tablist" aria-label={t("bizCompare.editTemplate")} onKeyDown={(event) => {
+                    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+                    event.preventDefault();
+                    const next = event.key === "Home" ? "fields" : event.key === "End" ? "filters" : tplPaneTab === "fields" ? "filters" : "fields";
+                    setTplPaneTab(next);
+                    event.currentTarget.querySelectorAll<HTMLButtonElement>("[role=tab]")[next === "fields" ? 0 : 1]?.focus();
+                  }}>
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={tplPaneTab === "fields"}
+                      tabIndex={tplPaneTab === "fields" ? 0 : -1}
+                      className={`mt-rule-tab${tplPaneTab === "fields" ? " is-active" : ""}`}
+                      onClick={() => setTplPaneTab("fields")}
+                    >
+                      {t("bizCompare.tabFields")}
+                      <span className="mt-rule-tab__n">{activeTplFields.length}</span>
+                    </button>
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={tplPaneTab === "filters"}
+                      tabIndex={tplPaneTab === "filters" ? 0 : -1}
+                      className={`mt-rule-tab${tplPaneTab === "filters" ? " is-active" : ""}`}
+                      onClick={() => setTplPaneTab("filters")}
+                    >
+                      {t("bizCompare.tabFilters")}
+                      <span className="mt-rule-tab__n">
+                        {activeTplFilterGroups?.length ?? (activeTplSheet.row_filters || []).length}
+                      </span>
+                    </button>
+                  </div>
+
+                  <FieldSelect label={t("bizCompare.portPolicy")} value={activeTplSheet.ignore_port_changes == null ? "auto" : activeTplSheet.ignore_port_changes ? "ignore" : "strict"} onChange={(e) => updateActiveSheet({ignore_port_changes: e.target.value === "auto" ? null : e.target.value === "ignore"})} hint={t("bizCompare.portPolicyHint")}>
+                    <option value="auto">{t("bizCompare.portPolicyAuto")}</option><option value="strict">{t("bizCompare.portPolicyStrict")}</option><option value="ignore">{t("bizCompare.portPolicyIgnore")}</option>
+                  </FieldSelect>
+                  {tplPaneTab === "filters" ? (activeTplFilterGroups === null ? <div className="ct-complex-filters"><p className="muted">{t("bizCompare.complexFiltersPreserved")}</p><pre aria-label={t("bizCompare.tabFilters")}>{JSON.stringify(activeTplSheet.row_filters, null, 2)}</pre></div> : (
+                    <TplRowFiltersEditor
+                      groups={activeTplFilterGroups}
+                      fieldOpts={activeTplFields.map((f) => f.name)}
+                      t={t}
+                      onChange={(next) => updateActiveSheet({ row_filters: fromOrGroups(next) })}
+                    />
+                  )) : (
+                    <>
+                      <p className="muted ct-field-hint">{t("bizCompare.fieldsHintShort")}</p>
+                      <div className="pt-list-table-wrap ct-field-table-wrap">
+                        <table className="data-table pt-list-table ct-field-table">
+                          <thead>
+                            <tr>
+                              <th>{t("bizCompare.field")}</th>
+                              <th title={t("bizCompare.keyFields")}>{t("bizCompare.keyFields")}</th>
+                              <th title={t("bizCompare.ifaceFields")}>{t("bizCompare.ifaceFields")}</th>
+                              <th title={t("bizCompare.compareFields")}>{t("bizCompare.compareFields")}</th>
+                              <th>{t("bizCompare.compareMode")}</th>
+                              <th>{t("bizCompare.tolerance")}</th>
+                              <th>{t("bizCompare.displayField")}</th>
+                              <th>{t("bizCompare.normalizeField")}</th>
+                            </tr>
+                          </thead>
+                        <tbody>
+                          {activeTplFields.map((f) => {
+                            const isKey = activeTplSheet.key_fields.includes(f.name);
+                            const isCompare =
+                              !isKey && activeTplSheet.compare_fields.includes(f.name);
+                            const isDisplay = (activeTplSheet.display_fields || []).includes(f.name);
+                            const rule = ruleForField(activeTplSheet, f.name);
+                            const rawMode = (rule.compare || "eq").trim().toLowerCase();
+                            const cmpMode = ["number", "int", "float"].includes(rawMode) ? "numeric" : ["pct", "rel"].includes(rawMode) ? "percent" : ["ignore", "skip", "off"].includes(rawMode) ? "eq" : rawMode;
+                            const rawNorm = (rule.normalize || "none").trim().toLowerCase();
+                            const norm = rawNorm === "strip" ? "none" : rawNorm;
+                            const needsTol = cmpMode === "numeric" || cmpMode === "percent";
+                            return (
+                              <tr key={f.name}>
+                                <td>
+                                  <code className="ct-field-name">{f.name}</code>
+                                </td>
+                                <td>
+                                  <input
+                                    type="checkbox"
+                                    checked={isKey}
+                                    onChange={(e) =>
+                                      updateActiveSheet({
+                                        key_fields: toggleInList(
+                                          activeTplSheet.key_fields,
+                                          f.name,
+                                          e.target.checked,
+                                        ),
+                                      })
+                                    }
+                                  />
+                                </td>
+                                <td>
+                                  <input
+                                    type="checkbox"
+                                    checked={activeTplSheet.iface_fields.includes(f.name)}
+                                    onChange={(e) =>
+                                      updateActiveSheet({
+                                        iface_fields: toggleInList(
+                                          activeTplSheet.iface_fields,
+                                          f.name,
+                                          e.target.checked,
+                                        ),
+                                      })
+                                    }
+                                  />
+                                </td>
+                                <td>
+                                  <input
+                                    type="checkbox"
+                                    disabled={isKey}
+                                    title={isKey ? t("bizCompare.keyIsIdentity") : undefined}
+                                    checked={isCompare}
+                                    onChange={(e) =>
+                                      updateActiveSheet({
+                                        compare_fields: toggleInList(
+                                          activeTplSheet.compare_fields,
+                                          f.name,
+                                          e.target.checked,
+                                        ),
+                                        field_rules: e.target.checked ? upsertFieldRule(activeTplSheet, f.name, {ignore: false,
+                                          compare: ["ignore", "skip", "off"].includes(rawMode) ? "eq" : rule.compare}) : activeTplSheet.field_rules,
+                                      })
+                                    }
+                                  />
+                                </td>
+                                <td>
+                                  <select
+                                    className="mt-select"
+                                    value={cmpMode === "ignore" ? "eq" : cmpMode}
+                                    aria-label={`${f.name} ${t("bizCompare.compareMode")}`}
+                                    disabled={!isCompare}
+                                    onChange={(e) =>
+                                      updateActiveSheet({
+                                        field_rules: upsertFieldRule(activeTplSheet, f.name, {
+                                          compare: e.target.value,
+                                          tolerance:
+                                            e.target.value === "eq" ? undefined : rule.tolerance ?? 0,
+                                        }),
+                                      })
+                                    }
+                                  >
+                                    <option value="eq">{t("bizCompare.modeEq")}</option>
+                                    <option value="numeric">{t("bizCompare.modeNumeric")}</option>
+                                    <option value="percent">{t("bizCompare.modePercent")}</option>
+                                  </select>
+                                </td>
+                                <td>
+                                  <Input
+                                    type="number"
+                                    min={0}
+                                    step="any"
+                                    aria-label={`${f.name} ${t("bizCompare.tolerance")}`}
+                                    value={
+                                      needsTol &&
+                                      rule.tolerance !== undefined &&
+                                      rule.tolerance !== null
+                                        ? String(rule.tolerance)
+                                        : ""
+                                    }
+                                    placeholder={cmpMode === "percent" ? "%" : ""}
+                                    disabled={!isCompare || !needsTol}
+                                    onChange={(e) => {
+                                      const raw = e.target.value.trim();
+                                      const tol = raw === "" ? undefined : Number(raw);
+                                      updateActiveSheet({
+                                        field_rules: upsertFieldRule(activeTplSheet, f.name, {
+                                          compare: cmpMode,
+                                          tolerance: Number.isFinite(tol as number)
+                                            ? (tol as number)
+                                            : undefined,
+                                        }),
+                                      });
+                                    }}
+                                  />
+                                </td>
+                                <td>
+                                  <input
+                                    type="checkbox"
+                                    disabled={isKey}
+                                    title={isKey ? t("bizCompare.keyAlwaysDisplay") : undefined}
+                                    checked={isKey || isDisplay}
+                                    onChange={(e) =>
+                                      updateActiveSheet({
+                                        display_fields: toggleInList(
+                                          activeTplSheet.display_fields || [],
+                                          f.name,
+                                          e.target.checked,
+                                        ),
+                                      })
+                                    }
+                                  />
+                                </td>
+                                <td>
+                                  <select
+                                    className="mt-select"
+                                    value={norm}
+                                    aria-label={`${f.name} ${t("bizCompare.normalizeField")}`}
+                                    disabled={!isCompare}
+                                    onChange={(e) =>
+                                      updateActiveSheet({
+                                        field_rules: upsertFieldRule(activeTplSheet, f.name, {
+                                          normalize: e.target.value,
+                                        }),
+                                      })
+                                    }
+                                  >
+                                    <option value="none">{t("bizCompare.normalizeNone")}</option>
+                                    <option value="lower">{t("bizCompare.normalizeLower")}</option>
+                                    <option value="upper">{t("bizCompare.normalizeUpper")}</option>
+                                    <option value="mac">{t("bizCompare.normalizeMac")}</option>
+                                    <option value="empty_as_blank">
+                                      {t("bizCompare.normalizeEmpty")}
+                                    </option>
+                                  </select>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                            {!activeTplFields.length ? (
+                              <tr>
+                                <td colSpan={8}>
+                                  <div className="pt-list-empty">{t("bizCompare.noMetricFields")}</div>
+                                </td>
+                              </tr>
+                            ) : null}
+                          </tbody>
+                        </table>
+                      </div>
+                    </>
+                  )}
+                </div>
+              ) : null}
+            </div>
+          )}
+        </Modal.Body>
+        <Modal.Footer>
+          <Button size="sm" variant="secondary" isDisabled={busy} onPress={() => setTplOpen(false)}>
+            {t("bizState.cancel")}
+          </Button>
+          <Button size="sm" variant="primary" isDisabled={busy} onPress={() => void saveTemplate()}>
+            {t("bizCompare.saveTemplate")}
+          </Button>
+        </Modal.Footer>
+      </AppModalShell>
+
+      {/* Create job — guided steps */}
+      <AppModalShell
+        open={jobCreateOpen}
+        onClose={closeCreateJob}
+        size="lg"
+        className="bm-create-modal bs-cmp-create"
+      >
+        <Modal.Header>
+          <Modal.Heading>{t("bizCompare.createCompare")}</Modal.Heading>
+          <Modal.CloseTrigger />
+        </Modal.Header>
+        <Modal.Body className="flex flex-col gap-3 bm-create">
+          <nav className="bm-steps" aria-label={t("bizCompare.createSteps")}>
+            {(
+              [
+                t("bizCompare.stepBasics"),
+                t("bizCompare.stepSheets"),
+                t("bizCompare.stepBatches"),
+                t("bizCompare.stepMapping"),
+              ] as const
+            ).map((label, i) => {
+              const done = i < createStep;
+              const active = i === createStep;
+              return (
+                <button
+                  key={label}
+                  type="button"
+                  className={`bm-steps__item${active ? " is-active" : ""}${done ? " is-done" : ""}`}
+                  onClick={() => {
+                    if (i <= createStep) {
+                      setCreateStep(i as CreateJobStep);
+                      return;
+                    }
+                    let ok = true;
+                    for (let s = 0; s < i; s++) {
+                      if (!canAdvanceCreateStep(s as CreateJobStep)) {
+                        ok = false;
+                        break;
+                      }
+                    }
+                    if (ok) setCreateStep(i as CreateJobStep);
+                  }}
+                >
+                  <span className="bm-steps__num">{done ? "✓" : i + 1}</span>
+                  <span className="bm-steps__label">{label}</span>
+                </button>
+              );
+            })}
+          </nav>
+
+          {createStep === 0 ? <div className="bm-create__pane">{renderBasicFields()}</div> : null}
+
+          {createStep === 1 ? <div className="bm-create__pane">{renderSheetChips()}</div> : null}
+
+          {createStep === 2 ? (
+            <div className="bm-create__pane bs-cmp-form">
+              {renderBatchFields()}
+            </div>
+          ) : null}
+
+          {createStep === 3 ? <div className="bm-create__pane">{renderMappingBlock()}</div> : null}
+        </Modal.Body>
+        <Modal.Footer>
+          <Button size="sm" variant="secondary" onPress={closeCreateJob}>
+            {t("bizState.cancel")}
+          </Button>
+          <div className="bm-create__footer-spacer" />
+          {createStep > 0 ? (
+            <Button size="sm" variant="secondary" onPress={onCreateBack}>
+              {t("bizCompare.back")}
+            </Button>
+          ) : null}
+          {createStep < CREATE_JOB_STEPS - 1 ? (
+            <Button size="sm" variant="primary" onPress={onCreateNext}>
+              {t("bizCompare.next")}
+            </Button>
+          ) : (
+            <Button size="sm" variant="primary" isDisabled={busy} onPress={() => void createJob()}>
+              {t("bizCompare.createCompare")}
+            </Button>
+          )}
+        </Modal.Footer>
+      </AppModalShell>
+
+      {/* Job detail */}
+      <AppModalShell
+        open={Boolean(jobId)}
+        onClose={closeJob}
+        dismissible={!boardFs}
+        size={jobDetailTab === "result" ? "cover" : "lg"}
+        className={`app-heroui-modal--xl bs-cmp-job-modal${jobDetailTab === "result" ? " bs-cmp-board-modal" : ""}`}
+      >
+        <Modal.Header className="bs-cmp-job-header">
+          <Modal.Heading className="bs-cmp-job-heading">
+            <span className="bs-cmp-job-heading__id" title={jobId}>JOB / {jobId.slice(0, 12)}</span>
+            <span>{name || t("bizCompare.detail")}</span>
+          </Modal.Heading>
+          <Modal.CloseTrigger />
+        </Modal.Header>
+        <Modal.Body className="flex flex-col gap-3 bs-cmp-job-body">
+          <div className="btn-row nm-config-modal__tabs bs-cmp-job-tabs" role="tablist" aria-label={t("bizCompare.detailTabs")} onKeyDown={handleJobTabKeyDown}>
+            <button
+              type="button"
+              role="tab"
+              id="compare-config-tab"
+              aria-selected={jobDetailTab === "config"}
+              aria-controls="compare-config-panel"
+              tabIndex={jobDetailTab === "config" ? 0 : -1}
+              className={`button${jobDetailTab === "config" ? " is-active" : ""}`}
+              onClick={() => setJobDetailTab("config")}
+            >
+              <span className="bs-cmp-job-tabs__index" aria-hidden="true">01</span>{t("bizCompare.tabConfig")}
+            </button>
+            <button
+              type="button"
+              role="tab"
+              id="compare-runs-tab"
+              aria-label={t("bizCompare.tabRuns")}
+              aria-selected={jobDetailTab === "runs"}
+              aria-controls="compare-runs-panel"
+              tabIndex={jobDetailTab === "runs" ? 0 : -1}
+              className={`button${jobDetailTab === "runs" ? " is-active" : ""}`}
+              onClick={() => {
+                setJobDetailTab("runs");
+                void refreshRuns();
+              }}
+            >
+              <span className="bs-cmp-job-tabs__index" aria-hidden="true">02</span>{t("bizCompare.tabRuns")}
+              {runs.length ? <span className="bs-cmp-job-tabs__count">{runs.length}</span> : null}
+            </button>
+            <button
+              type="button"
+              role="tab"
+              id="compare-result-tab"
+              aria-selected={jobDetailTab === "result"}
+              aria-controls="compare-result-panel"
+              tabIndex={jobDetailTab === "result" ? 0 : -1}
+              className={`button${jobDetailTab === "result" ? " is-active" : ""}`}
+              onClick={() => setJobDetailTab("result")}
+            >
+              <span className="bs-cmp-job-tabs__index" aria-hidden="true">03</span>{t("bizCompare.tabResult")}
+            </button>
+          </div>
+
+          {jobDetailTab === "config" ? (
+            renderJobForm()
+          ) : jobDetailTab === "runs" ? (
+            <div className="bs-cmp-runs" role="tabpanel" id="compare-runs-panel" aria-labelledby="compare-runs-tab" aria-busy={runsLoading}>
+              <div className="bs-cmp-runs__toolbar">
+                <div className="bs-cmp-runs__intro">
+                  <h3>{t("bizCompare.runHistoryTitle")}</h3>
+                  <p className="bs-cmp-runs__hint">{t("bizCompare.runHistoryHint")}</p>
+                </div>
+                <div className="btn-row">
+                  <Button size="sm" variant="secondary" isDisabled={busy || runsLoading} isPending={runsLoading} onPress={() => void refreshRuns()}>
+                    {t("bizCompare.refreshRuns")}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    isDisabled={busy || jobHasActiveRun}
+                    onPress={() => void runNow()}
+                  >
+                    {jobHasActiveRun ? t("bizCompare.runStatusRunning") : t("bizCompare.runNow")}
+                  </Button>
+                </div>
+              </div>
+              <dl className="bs-cmp-run-stats">
+                <div><dt>{t("bizCompare.loadedRuns")}</dt><dd>{runCounts.total}</dd></div>
+                <div className={runCounts.active ? "is-active" : ""}><dt>{t("bizCompare.activeRuns")}</dt><dd>{runCounts.active}</dd></div>
+                <div><dt>{t("bizCompare.completedRuns")}</dt><dd>{runCounts.completed}</dd></div>
+                <div className={runCounts.stopped ? "is-stopped" : ""}><dt>{t("bizCompare.stoppedRuns")}</dt><dd>{runCounts.stopped}</dd></div>
+              </dl>
+              {runsError ? (
+                <div className="bs-cmp-runs__error" role="alert">
+                  <span>{t("bizCompare.runsLoadError")} · {runsError}</span>
+                  <Button size="sm" variant="secondary" isDisabled={runsLoading} onPress={() => void refreshRuns()}>{t("bizCompare.retry")}</Button>
+                </div>
+              ) : null}
+              {!runs.length ? (
+                runsLoading ? <div className="pt-list-empty" role="status">{t("bizCompare.runsLoading")}</div>
+                  : !runsError ? <div className="pt-list-empty">{t("bizCompare.noRuns")}</div> : null
+              ) : (
+                <div className="pt-list-table-wrap">
+                  <table className="data-table pt-list-table bs-cmp-runs__table">
+                    <thead>
+                      <tr>
+                        <th>{t("bizCompare.colStatus")}</th>
+                        <th>{t("bizCompare.colTime")}</th>
+                        <th>{t("bizCompare.sidesTitle")}</th>
+                        <th>{t("bizCompare.colProgress")}</th>
+                        <th>{t("bizCompare.colActions")}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {runs.map((r) => {
+                        const st = String(r.status || "");
+                        const active = st === "running" || st === "queued";
+                        const selected = String(runDetail?.id || "") === String(r.id);
+                        const before = enrichSide(
+                          r.before,
+                          beforeTaskId,
+                          tasks,
+                          beforeBatches,
+                        );
+                        const after = enrichSide(
+                          r.after,
+                          afterTaskId || beforeTaskId,
+                          tasks,
+                          afterBatches.length ? afterBatches : beforeBatches,
+                        );
+                        const when = formatSystemTime(r.created_at) || "—";
+                        const sum = r.summary || {};
+                        const fail =
+                          Number(sum.removed || 0) + Number(sum.changed || 0);
+                        const ok = Number(sum.unchanged || 0);
+                        const durMs = Number(sum.duration_ms || 0);
+                        const prog = (r.progress ||
+                          r.summary?.progress ||
+                          {}) as RunProgressInfo;
+                        const pct = active ? runProgressPercent(prog) : 100;
+                        const elapsedSec = Math.round(Number(prog.elapsed_ms || 0) / 1000);
+                        const stLabel =
+                          st === "queued" ? t("bizCompare.runStatusQueued")
+                            : st === "running" ? t("bizCompare.runStatusRunning")
+                            : st === "failed"
+                              ? t("bizCompare.runStatusFailed")
+                              : st === "cancelled"
+                                ? t("bizCompare.runStatusCancelled")
+                                : st === "success" ? t("bizCompare.runFinished") : st || "—";
+                        const chipColor = active
+                          ? "accent"
+                          : st === "cancelled"
+                            ? "warning"
+                            : st === "failed" ? "danger" : "default";
+                        const meta = active ? runProgressMetaLine(prog, t) : "";
+                        return (
+                          <tr key={String(r.id)} className={selected ? "is-selected" : undefined} data-status={st} aria-selected={selected}>
+                            <td>
+                              <NmStatusChip color={chipColor}>{stLabel}</NmStatusChip>
+                              {(active && elapsedSec > 0) || (!active && durMs > 0) ? (
+                                <div className="bs-cmp-runs__elapsed">
+                                  {t("bizCompare.runElapsed", { s: String(active ? elapsedSec : Math.round(durMs / 1000)) })}
+                                </div>
+                              ) : null}
+                            </td>
+                            <td className="pt-list-time">
+                              <span>{when}</span>
+                              <code className="bs-cmp-runs__id" title={r.id}>{r.id.slice(0, 12)}</code>
+                            </td>
+                            <td>
+                              <div className="bs-cmp-runs__sides" title={`${sideDeviceName(before)} → ${sideDeviceName(after)}`}>
+                                <div><span className="bs-cmp-runs__side-tag">{t("bizCompare.sideBefore")}</span><strong>{sideDeviceName(before)}</strong><time>{sideCollectTime(before)}</time></div>
+                                <div><span className="bs-cmp-runs__side-tag">{t("bizCompare.sideAfter")}</span><strong>{sideDeviceName(after)}</strong><time>{sideCollectTime(after)}</time></div>
+                              </div>
+                            </td>
+                            <td>
+                              {active ? (
+                                <div className="bs-cmp-run-prog">
+                                  <div
+                                    className="bs-cmp-run-prog__track"
+                                    role="progressbar"
+                                    aria-label={t("bizCompare.colProgress")}
+                                    aria-valuenow={Number(prog.sheet_total || 0) > 0 ? pct : undefined}
+                                    aria-valuemin={0}
+                                    aria-valuemax={100}
+                                  >
+                                    <div
+                                      className={`bs-cmp-run-prog__fill${
+                                        Number(prog.sheet_total || 0) <= 0 ? " is-indeterminate" : ""
+                                      }`}
+                                      style={
+                                        Number(prog.sheet_total || 0) > 0
+                                          ? { width: `${pct}%` }
+                                          : undefined
+                                      }
+                                    />
+                                  </div>
+                                  <div className="bs-cmp-run-prog__meta" title={meta}>
+                                    {meta || "…"}
+                                  </div>
+                                </div>
+                              ) : (
+                                st === "failed" || st === "cancelled" ? (
+                                  <div className="bs-cmp-runs__summary is-stopped" title={r.message}>{String(r.message || stLabel).slice(0, 160)}</div>
+                                ) : (
+                                  <div className="bs-cmp-run-verdict">
+                                    <span className={fail ? "is-fail" : ""}>{t("bizCompare.kindDiff")}<strong>{fail.toLocaleString()}</strong></span>
+                                    <span className="is-pass">{t("bizCompare.kindUnchanged")}<strong>{ok.toLocaleString()}</strong></span>
+                                    <span>{t("bizCompare.kindAdded")}<strong>{Number(sum.added || 0).toLocaleString()}</strong></span>
+                                  </div>
+                                )
+                              )}
+                            </td>
+                            <td>
+                              <div className="pt-list-actions">
+                                <Button
+                                  size="sm"
+                                  variant={selected ? "primary" : "secondary"}
+                                  isDisabled={busy || active}
+                                  onPress={() => void loadRun(String(r.id))}
+                                >
+                                  {t("bizCompare.viewResult")}
+                                </Button>
+                                {active ? (
+                                  <Button
+                                    size="sm"
+                                    variant="danger"
+                                    isDisabled={busy}
+                                    onPress={() => void cancelRun(String(r.id))}
+                                  >
+                                    {t("bizCompare.cancelRun")}
+                                  </Button>
+                                ) : (
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    className="bs-cmp-runs__delete"
+                                    isDisabled={busy}
+                                    onPress={() => void removeRun(String(r.id))}
+                                  >
+                                    {t("bizCompare.deleteRun")}
+                                  </Button>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div
+              ref={boardRef}
+              role="tabpanel"
+              id="compare-result-panel"
+              aria-labelledby="compare-result-tab"
+              className={`bs-cmp-board${boardFs ? " is-fullscreen" : ""}`}
+            >
+              <div className="bs-cmp-board__toolbar">
+                <div className="bs-cmp-board__meta">
+                  {runDetail ? (
+                    <div className="bs-cmp-sides" aria-label={t("bizCompare.sidesTitle")}>
+                      {(() => {
+                        const before = enrichSide(
+                          runDetail.before,
+                          beforeTaskId,
+                          tasks,
+                          beforeBatches,
+                        );
+                        const after = enrichSide(
+                          runDetail.after,
+                          afterTaskId || beforeTaskId,
+                          tasks,
+                          afterBatches.length ? afterBatches : beforeBatches,
+                        );
+                        const beforeName = sideDeviceName(before);
+                        const afterName = sideDeviceName(after);
+                        const beforeTime = sideCollectTime(before);
+                        const afterTime = sideCollectTime(after);
+                        return (
+                          <>
+                            <div className="bs-cmp-sides__side is-before">
+                              <span className="bs-cmp-sides__tag">{t("bizCompare.sideBefore")}</span>
+                              <strong className="bs-cmp-sides__name" title={`${beforeName} ${beforeTime}`}>
+                                {beforeName}
+                              </strong>
+                              <span className="bs-cmp-sides__meta" title={beforeTime}>
+                                {beforeTime}
+                              </span>
+                            </div>
+                            <span className="bs-cmp-sides__arrow" aria-hidden>
+                              →
+                            </span>
+                            <div className="bs-cmp-sides__side is-after">
+                              <span className="bs-cmp-sides__tag">{t("bizCompare.sideAfter")}</span>
+                              <strong className="bs-cmp-sides__name" title={`${afterName} ${afterTime}`}>
+                                {afterName}
+                              </strong>
+                              <span className="bs-cmp-sides__meta" title={afterTime}>
+                                {afterTime}
+                              </span>
+                            </div>
+                          </>
+                        );
+                      })()}
+                    </div>
+                  ) : null}
+                  {runDetail ? (
+                    <span
+                      className={`bs-cmp-board__config${runDetail.config_snapshot_version ? "" : " is-legacy"}`}
+                      title={t(runDetail.config_snapshot_version
+                        ? "bizCompare.configSnapshotHint"
+                        : "bizCompare.configLegacyHint")}
+                    >
+                      {t(runDetail.config_snapshot_version
+                        ? "bizCompare.configSnapshot"
+                        : "bizCompare.configLegacy")}
+                    </span>
+                  ) : null}
+                  {!boardFs ? (
+                    <>
+                      <select
+                        className="ui-field__select bs-cmp-board__run-select"
+                        aria-label={t("bizCompare.pickBatchRun")}
+                        value={runDetail?.id || ""}
+                        onChange={(e) => {
+                          const id = e.target.value;
+                          if (id) void loadRun(id);
+                        }}
+                      >
+                        <option value="">{t("bizCompare.pickRun")}</option>
+                        {runs.map((r) => {
+                          const before = enrichSide(
+                            (r as any).before,
+                            beforeTaskId,
+                            tasks,
+                            beforeBatches,
+                          );
+                          const after = enrichSide(
+                            (r as any).after,
+                            afterTaskId || beforeTaskId,
+                            tasks,
+                            afterBatches.length ? afterBatches : beforeBatches,
+                          );
+                          const bl = sideDeviceName(before);
+                          const al = sideDeviceName(after);
+                          const when = formatSystemTime((r as any).created_at) || "";
+                          const st = String((r as any).status || "");
+                          const durMs = Number((r as any).summary?.duration_ms || 0);
+                          const stLabel =
+                            st === "running" || st === "queued"
+                              ? t("bizCompare.runStatusRunning")
+                              : st === "failed"
+                                ? t("bizCompare.runStatusFailed")
+                                : st === "cancelled"
+                                  ? t("bizCompare.runStatusCancelled")
+                                  : durMs > 0
+                                    ? t("bizCompare.runStatusDoneSec", {
+                                        s: String(Math.round(durMs / 1000)),
+                                      })
+                                    : "";
+                          return (
+                            <option key={r.id} value={r.id}>
+                              {stLabel ? `[${stLabel}] ` : ""}
+                              {when ? `${when} · ` : ""}
+                              {bl} {sideCollectTime(before)} → {al} {sideCollectTime(after)}
+                            </option>
+                          );
+                        })}
+                      </select>
+                      {runs.length ? (
+                        <span className="muted bs-cmp-board__run-count">
+                          {t("bizCompare.runCount", { n: String(runs.length) })}
+                        </span>
+                      ) : null}
+                    </>
+                  ) : null}
+                </div>
+                <div className="btn-row bs-cmp-board__actions">
+                  {!boardFs ? (
+                    <>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        isDisabled={busy || runIsActive || !runDetail?.id}
+                        onPress={() => void downloadRunTables()}
+                      >
+                        {t("bizCompare.exportTables")}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="danger"
+                        isDisabled={busy || runIsActive || !runDetail?.id}
+                        onPress={() => void removeRun(String(runDetail?.id || ""))}
+                      >
+                        {t("bizCompare.deleteRun")}
+                      </Button>
+                    </>
+                  ) : null}
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    isDisabled={!runDetail}
+                    onPress={() => void toggleBoardFullscreen()}
+                  >
+                    {boardFs ? t("bizCompare.exitFullscreen") : t("bizCompare.fullscreen")}
+                  </Button>
+                </div>
+              </div>
+
+              {runDetail && runIsActive ? (
+                <div className="bs-cmp-progress is-compact" role="status" aria-live="polite">
+                  <div className="bs-cmp-progress__head">
+                    <NmStatusChip color="accent">{t("bizCompare.runStatusRunning")}</NmStatusChip>
+                    {runEngine === "sql" || runEngine === "python" ? (
+                      <span className="muted bs-cmp-progress__engine">
+                        {runEngine === "sql"
+                          ? t("bizCompare.runEngineSql")
+                          : t("bizCompare.runEnginePython")}
+                        {runProgress.engine_note
+                          ? ` · ${t("bizCompare.runEngineNote", {
+                              note: String(runProgress.engine_note),
+                            })}`
+                          : ""}
+                      </span>
+                    ) : null}
+                    <span className="muted bs-cmp-progress__elapsed">
+                      {t("bizCompare.runElapsed", {
+                        s: String(Math.round(Number(runProgress.elapsed_ms || 0) / 1000)),
+                      })}
+                    </span>
+                    <div className="bs-cmp-progress__actions">
+                      <Button
+                        size="sm"
+                        variant="danger"
+                        isDisabled={busy}
+                        onPress={() => void cancelRun(String(runDetail.id))}
+                      >
+                        {t("bizCompare.cancelRun")}
+                      </Button>
+                    </div>
+                  </div>
+                  <div
+                    className="bs-cmp-progress__track"
+                    role="progressbar"
+                    aria-valuenow={runProgressPercent(runProgress)}
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                  >
+                    <div
+                      className={`bs-cmp-progress__fill${
+                        Number(runProgress.sheet_total || 0) <= 0 ? " is-indeterminate" : ""
+                      }`}
+                      style={
+                        Number(runProgress.sheet_total || 0) > 0
+                          ? { width: `${runProgressPercent(runProgress)}%` }
+                          : undefined
+                      }
+                    />
+                  </div>
+                  <div className="bs-cmp-progress__meta">
+                    {runProgressMetaLine(runProgress, t)}
+                  </div>
+                </div>
+              ) : null}
+              {runDetail && runStatus === "failed" ? (
+                <div className="bs-cmp-progress is-failed" role="alert">
+                  <div className="bs-cmp-progress__head">
+                    <NmStatusChip color="danger">{t("bizCompare.runStatusFailed")}</NmStatusChip>
+                  </div>
+                  <div className="bs-cmp-progress__meta">{String(runDetail.message || "")}</div>
+                </div>
+              ) : null}
+              {runDetail && runStatus === "cancelled" ? (
+                <div className="bs-cmp-progress is-cancelled" role="status">
+                  <div className="bs-cmp-progress__head">
+                    <NmStatusChip color="warning">{t("bizCompare.runStatusCancelled")}</NmStatusChip>
+                  </div>
+                  <div className="bs-cmp-progress__meta">
+                    {String(runDetail.message || t("bizCompare.runCancelled"))}
+                  </div>
+                </div>
+              ) : null}
+              {runDetail ? (
+                <div
+                  className={`bs-cmp-board__body${navCollapsed ? " is-nav-collapsed" : ""}`}
+                >
+                  <aside
+                    className={`bs-cmp-nav${navCollapsed ? " is-collapsed" : ""}`}
+                    aria-label={t("bizCompare.sheetNavTitle")}
+                  >
+                    <div className="bs-cmp-nav__head">
+                      <button
+                        type="button"
+                        className="bs-cmp-nav__toggle"
+                        aria-expanded={!navCollapsed}
+                        title={
+                          navCollapsed
+                            ? t("bizCompare.expandSheetNav")
+                            : t("bizCompare.collapseSheetNav")
+                        }
+                        onClick={() => setNavCollapsed((v) => !v)}
+                      >
+                        {navCollapsed ? "»" : "«"}
+                      </button>
+                      {!navCollapsed ? (
+                        <>
+                          <span className="bs-cmp-nav__head-main">
+                            <span className="bs-cmp-nav__title">{t("bizCompare.sheetNavTitle")}</span>
+                            <span
+                              className="bs-cmp-nav__count"
+                              title={t("bizCompare.sheetNavHint", {
+                                n: String(sheetCards.length || runSheets.length),
+                              })}
+                            >
+                              {sheetCards.length || runSheets.length}
+                            </span>
+                          </span>
+                          <span className="bs-cmp-nav__legend" aria-hidden>
+                            <span
+                              className="bs-cmp-nav__num bs-cmp-nav__num--fail is-hot"
+                              title={t("bizCompare.kindFail")}
+                            >
+                              {t("bizCompare.kindFail")}
+                            </span>
+                            <span
+                              className="bs-cmp-nav__num bs-cmp-nav__num--ok is-hot"
+                              title={t("bizCompare.kindSuccess")}
+                            >
+                              {t("bizCompare.kindSuccess")}
+                            </span>
+                            <span
+                              className="bs-cmp-nav__num bs-cmp-nav__num--rate"
+                              title={t("bizCompare.passRateShort")}
+                            >
+                              %
+                            </span>
+                          </span>
+                        </>
+                      ) : null}
+                    </div>
+                    <div className="bs-cmp-nav__list" role="tablist">
+                      {(sheetCards.length
+                        ? sheetCards
+                        : [...runSheets]
+                            .map((s) => {
+                              const removed = Number(s.summary?.removed || 0);
+                              const changed = Number(s.summary?.changed || 0);
+                              const unchanged = Number(s.summary?.unchanged || 0);
+                              const fail = removed + changed;
+                              const judged = fail + unchanged;
+                              const st = String((s as any).status || "done");
+                              const pending = ["pending", "running", "queued"].includes(st);
+                              return {
+                                sheet_id: sheetIdentity(s),
+                                title: sheetLabel(s),
+                                metric_id: s.metric_id,
+                                mode: s.mode,
+                                status: st,
+                                added: s.summary?.added,
+                                removed,
+                                changed,
+                                unchanged,
+                                before_count: s.summary?.before_count,
+                                after_count: s.summary?.after_count,
+                                fail_count: fail,
+                                success_count: unchanged,
+                                diff_count: fail,
+                                pass_rate: pending
+                                  ? null
+                                  : judged
+                                    ? (() => {
+                                        const rate = (unchanged / judged) * 100;
+                                        if (fail <= 0) return Math.round(rate * 10) / 10;
+                                        for (const nd of [1, 2, 3, 4]) {
+                                          const r = Math.round(rate * 10 ** nd) / 10 ** nd;
+                                          if (r < 100) return r;
+                                        }
+                                        return 99.9999;
+                                      })()
+                                    : 100,
+                              };
+                            })
+                            .sort((a, b) => {
+                              const pa = ["pending", "running", "queued"].includes(
+                                String(a.status || ""),
+                              )
+                                ? 1
+                                : 0;
+                              const pb = ["pending", "running", "queued"].includes(
+                                String(b.status || ""),
+                              )
+                                ? 1
+                                : 0;
+                              if (pa !== pb) return pa - pb;
+                              const da = Number(a.fail_count || 0);
+                              const db = Number(b.fail_count || 0);
+                              if (da !== db) return db - da;
+                              return String(a.metric_id).localeCompare(String(b.metric_id));
+                            })
+                      ).map((c) => {
+                        const fail = sheetFailOf(c);
+                        const ok = sheetSuccessOf(c);
+                        const rate = sheetPassRateOf(c);
+                        const id = sheetIdentity(c);
+                        const label = sheetLabel(c);
+                        const active = resultSheetId === id;
+                        const pending = ["pending", "running", "queued"].includes(
+                          String((c as any).status || ""),
+                        );
+                        return (
+                          <button
+                            key={id}
+                            type="button"
+                            role="tab"
+                            aria-selected={active}
+                            className={`bs-cmp-nav__item${active ? " is-active" : ""}${
+                              pending ? " is-pending" : fail > 0 ? " has-diff" : " is-clean"
+                            }`}
+                            onClick={() => {
+                              setResultSheetId(id);
+                              // Cutover default: land on fails when switching sheets
+                              if (fail > 0 && kindFilter === "unchanged") {
+                                setKindFilter("diff");
+                              }
+                            }}
+                            title={
+                              pending
+                                ? `${label} · ${t("bizCompare.sheetPending")}`
+                                : `${label} · ${t("bizCompare.kindFail")} ${fail} · ${t("bizCompare.kindSuccess")} ${ok} · ${t("bizCompare.passRateShort")} ${formatPassRate(rate)}`
+                            }
+                          >
+                            <span className="bs-cmp-nav__dot" aria-hidden />
+                            <span className="bs-cmp-nav__name">{label}</span>
+                            <span className="bs-cmp-nav__stats">
+                              <span
+                                className={`bs-cmp-nav__num bs-cmp-nav__num--fail${
+                                  fail > 0 ? " is-hot" : ""
+                                }`}
+                              >
+                                {pending ? "—" : fail}
+                              </span>
+                              <span className="bs-cmp-nav__num bs-cmp-nav__num--ok is-hot">
+                                {pending ? "—" : ok}
+                              </span>
+                              <span className="bs-cmp-nav__num bs-cmp-nav__num--rate">
+                                {pending || rate === null ? "…" : formatPassRate(rate)}
+                              </span>
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </aside>
+
+                  <div className="bs-cmp-main">
+                    <div
+                      className={`bs-cmp-strip${
+                        activeSheetPending
+                          ? " is-pending"
+                          : activeFail > 0
+                            ? " is-warn"
+                            : " is-ok"
+                      }`}
+                    >
+                      <div className="bs-cmp-strip__sheet">
+                        <span className="bs-cmp-strip__sheet-tag">
+                          {t("bizCompare.sheetCurrent")}
+                        </span>
+                        <strong
+                          className="bs-cmp-strip__sheet-name"
+                          title={sheetLabel(activeSheetCard)}
+                        >
+                          {sheetLabel(activeSheetCard)}
+                        </strong>
+                        <span className="muted bs-cmp-strip__sheet-mode">
+                          {activeSheetPending
+                            ? t("bizCompare.sheetPending")
+                            : activeFail > 0
+                              ? t("bizCompare.kindFail")
+                              : t("bizCompare.kindPass")}
+                          {activeSheetCard?.mode === "presence"
+                            ? ` · ${t("bizCompare.presenceShort")}`
+                            : ""}
+                          {activeSheetPending
+                            ? ""
+                            : ` · ${activeSheetCard?.before_count ?? 0}→${activeSheetCard?.after_count ?? 0}`}
+                        </span>
+                      </div>
+                      <div
+                        className="bs-cmp-strip__pass"
+                        title={`${t("bizCompare.passRate")} · ${t("bizCompare.passRateScope")}`}
+                      >
+                        <span className="bs-cmp-strip__pass-label">
+                          {t("bizCompare.passRate")}
+                          <span className="bs-cmp-strip__pass-scope">
+                            {t("bizCompare.passRateScope")}
+                          </span>
+                        </span>
+                        <span className="bs-cmp-strip__pass-value">
+                          {activeSheetPending || activePassRate === null
+                            ? "…"
+                            : formatPassRate(activePassRate)}
+                        </span>
+                      </div>
+                      <div className="bs-cmp-strip__kinds" role="group">
+                        {(
+                          [
+                            ["diff", activeFail, "diff"],
+                            ["removed", activeRemoved, "removed"],
+                            ["changed", activeChanged, "changed"],
+                            ["added", activeAdded, "added"],
+                            ["unchanged", activeSuccess, "unchanged"],
+                            ["all", null, "all"],
+                          ] as const
+                        ).map(([id, n, cls]) => (
+                          <button
+                            key={id}
+                            type="button"
+                            className={`bs-cmp-strip__kind bs-cmp-strip__kind--${cls}${
+                              kindFilter === id ? " is-active" : ""
+                            }`}
+                            aria-pressed={kindFilter === id}
+                            onClick={() => setKindFilter(id as KindFilter)}
+                          >
+                            {id === "diff"
+                              ? t("bizCompare.kindDiff")
+                              : id === "all"
+                                ? t("bizCompare.kindAll")
+                                : id === "added"
+                                  ? t("bizCompare.kindAddedShort")
+                                  : id === "removed"
+                                    ? t("bizCompare.kindRemovedShort")
+                                    : id === "changed"
+                                      ? t("bizCompare.kindChangedShort")
+                                      : t("bizCompare.kindSuccess")}
+                            {n !== null ? (
+                              <>
+                                {" "}
+                                <b>{n}</b>
+                              </>
+                            ) : null}
+                          </button>
+                        ))}
+                      </div>
+                      <div className="bs-cmp-filter-bar">
+                        <Input
+                          value={resultKw}
+                          aria-label={t("bizCompare.resultFilterPh")}
+                          placeholder={t("bizCompare.resultFilterPh")}
+                          onChange={(e) => setResultKw(e.target.value)}
+                        />
+                        <span className="muted bs-sheet-count" role="status" aria-live="polite">
+                          {diffsLoading ? "…" : t("bizCompare.resultRange", {
+                            from: resultTotal ? (resultPage - 1) * resultPageSize + 1 : 0,
+                            to: Math.min(resultPage * resultPageSize, resultTotal),
+                            total: resultTotal,
+                          })}
+                        </span>
+                        {resultSearchKeyFields.length ? (
+                          <button
+                            type="button"
+                            className={`bs-cmp-strip__toggle${keyFiltersVisible ? " is-active" : ""}`}
+                            aria-expanded={keyFiltersVisible}
+                            onClick={() => setKeyFiltersOpen((v) => !v)}
+                          >
+                            {t("bizCompare.keyFiltersToggle")}
+                            {activeKeyFilterCount
+                              ? ` (${activeKeyFilterCount})`
+                              : ""}
+                          </button>
+                        ) : null}
+                        <button
+                          type="button"
+                          className={`bs-cmp-strip__toggle${!hideDisplayCols ? " is-active" : ""}`}
+                          title={t("bizCompare.hideDisplayColsHint")}
+                          aria-pressed={!hideDisplayCols}
+                          onClick={() => setHideDisplayCols((v) => !v)}
+                        >
+                          {t("bizCompare.displayColsToggle")}
+                        </button>
+                      {(resultKw.trim() || activeKeyFilterCount > 0) ? (
+                        <Button size="sm" variant="ghost" onPress={() => {
+                          setResultKw("");
+                          setResultKeyFilters({});
+                        }}>
+                          {t("bizCompare.clearSearch")}
+                        </Button>
+                      ) : null}
+                      </div>
+                      {resultSearchKeyFields.length && keyFiltersVisible ? (
+                        <div className="bs-cmp-key-filters">
+                          {resultSearchKeyFields.map((f) => (
+                            <label key={f} className="bs-cmp-key-filter">
+                              <span className="muted">{f}</span>
+                              <Input
+                                value={resultKeyFilters[f] || ""}
+                                placeholder={
+                                  f === "direction"
+                                    ? "in / out"
+                                    : f === "network"
+                                      ? "1.1.1.1"
+                                      : ""
+                                }
+                                onChange={(e) =>
+                                  setResultKeyFilters((prev) => {
+                                    const next = { ...prev };
+                                    const v = e.target.value;
+                                    if (!v.trim()) delete next[f];
+                                    else next[f] = v;
+                                    return next;
+                                  })
+                                }
+                              />
+                            </label>
+                          ))}
+                          {activeKeyFilterCount ? (
+                            <button
+                              type="button"
+                              className="linkish"
+                              onClick={() => setResultKeyFilters({})}
+                            >
+                              {t("bizCompare.clearKeyFilters")}
+                            </button>
+                          ) : null}
+                        </div>
+                      ) : null}
+                      {isLiveSearch ? (
+                        <p className="muted bm-hint bs-cmp-strip__hint">
+                          {diffsTruncated
+                            ? t("bizCompare.liveSearchTruncatedHint")
+                            : t("bizCompare.liveSearchHint")}
+                        </p>
+                      ) : null}
+                      {!isLiveSearch &&
+                      kindFilter === "unchanged" &&
+                      (activeRunSheet?.summary?.unchanged_truncated ||
+                        (Number(
+                          (activeRunSheet?.summary as any)?.unchanged ??
+                            runDetail?.summary?.unchanged ??
+                            0,
+                        ) >
+                          Number(
+                            (activeRunSheet?.summary as any)?.unchanged_listed ??
+                              runDetail?.summary?.unchanged_listed ??
+                              0,
+                          ) &&
+                          Number(
+                            (activeRunSheet?.summary as any)?.unchanged_listed ??
+                              runDetail?.summary?.unchanged_listed ??
+                              0,
+                          ) > 0)) ? (
+                        <p className="muted bm-hint bs-cmp-strip__hint">
+                          {t("bizCompare.unchangedSampleHint", {
+                            listed: String(
+                              Number(
+                                (activeRunSheet?.summary as any)?.unchanged_listed ??
+                                  runDetail?.summary?.unchanged_listed ??
+                                  resultTotal,
+                              ),
+                            ),
+                            total: String(
+                              Number(
+                                (activeRunSheet?.summary as any)?.unchanged ??
+                                  runDetail?.summary?.unchanged ??
+                                  0,
+                              ),
+                            ),
+                          })}
+                        </p>
+                      ) : null}
+                    </div>
+
+                    <div
+                      ref={tableScrollRef}
+                      onScroll={rememberTableScroll}
+                      className={`pt-list-table-wrap bs-sheet-table bs-cmp-result-table${
+                        diffsLoading ? " is-loading" : ""
+                      }`}
+                      aria-busy={diffsLoading}
+                    >
+                      <table className="data-table pt-list-table bs-cmp-diff-table">
+                        <thead>
+                          {(() => {
+                            const keyCols = resultColumns.keys;
+                            const compareCols = resultColumns.extras.filter((f) =>
+                              resultColumns.compareSet.has(f),
+                            );
+                            const displayCols = hideDisplayCols
+                              ? []
+                              : resultColumns.extras.filter(
+                                  (f) => !resultColumns.compareSet.has(f),
+                                );
+                            const verdictColSpan = showFailCol ? 2 : 1;
+                            const hasGroups =
+                              keyCols.length + compareCols.length + displayCols.length > 0;
+                            return (
+                              <>
+                                <tr className="bs-cmp-group-row">
+                                  <th
+                                    colSpan={verdictColSpan}
+                                    className="bs-cmp-group bs-cmp-group--verdict"
+                                  >
+                                    {t("bizCompare.colKind")}
+                                  </th>
+                                  {keyCols.length ? (
+                                    <th
+                                      colSpan={keyCols.length}
+                                      className="bs-cmp-group bs-cmp-group--key"
+                                    >
+                                      {t("bizCompare.keyFields")}
+                                    </th>
+                                  ) : null}
+                                  {compareCols.length ? (
+                                    <th
+                                      colSpan={compareCols.length}
+                                      className="bs-cmp-group bs-cmp-group--compare"
+                                    >
+                                      {t("bizCompare.compareFields")}
+                                    </th>
+                                  ) : null}
+                                  {displayCols.length ? (
+                                    <th
+                                      colSpan={displayCols.length}
+                                      className="bs-cmp-group bs-cmp-group--display"
+                                    >
+                                      {t("bizCompare.displayField")}
+                                    </th>
+                                  ) : null}
+                                </tr>
+                                <tr className="bs-cmp-field-row">
+                                  <th className="bs-cmp-col-kind bs-cmp-sticky-kind bs-cmp-zone-start">
+                                    <span className="bs-cmp-th__name">
+                                      {t("bizCompare.colResult")}
+                                    </span>
+                                  </th>
+                                  {showFailCol ? (
+                                    <th className="bs-cmp-col-fail">
+                                      <span className="bs-cmp-th__name">
+                                        {t("bizCompare.colDetail")}
+                                      </span>
+                                    </th>
+                                  ) : null}
+                                  {hasGroups
+                                    ? keyCols.map((k, ki) => (
+                                        <th
+                                          key={k}
+                                          className={`bs-cmp-col-key${
+                                            ki === 0 ? " bs-cmp-zone-start" : ""
+                                          }`}
+                                        >
+                                          <span className="bs-cmp-th__name">{k}</span>
+                                        </th>
+                                      ))
+                                    : null}
+                                  {hasGroups
+                                    ? compareCols.map((f, fi) => (
+                                        <th
+                                          key={f}
+                                          className={`bs-cmp-col-compare${
+                                            fi === 0 ? " bs-cmp-zone-start" : ""
+                                          }`}
+                                        >
+                                          <span className="bs-cmp-th__name">{f}</span>
+                                        </th>
+                                      ))
+                                    : null}
+                                  {hasGroups
+                                    ? displayCols.map((f, fi) => (
+                                        <th
+                                          key={f}
+                                          className={`bs-cmp-col-display${
+                                            fi === 0 ? " bs-cmp-zone-start" : ""
+                                          }`}
+                                        >
+                                          <span className="bs-cmp-th__name">{f}</span>
+                                        </th>
+                                      ))
+                                    : null}
+                                </tr>
+                              </>
+                            );
+                          })()}
+                        </thead>
+                        <tbody>
+                          {diffsLoading || diffsError ? (
+                            <tr>
+                              <td colSpan={resultEmptyColSpan}>
+                                <div className={`bs-cmp-result-state${diffsError ? " is-error" : ""}`}
+                                  role={diffsError ? "alert" : "status"}>
+                                  <strong>{t(diffsError ? "bizCompare.resultLoadFailed" : "bizCompare.resultLoading")}</strong>
+                                  {diffsError ? <>
+                                    <span>{diffsError}</span>
+                                    <Button size="sm" variant="secondary" onPress={() => setDiffsRetry((n) => n + 1)}>
+                                      {t("bizCompare.retry")}
+                                    </Button>
+                                  </> : null}
+                                </div>
+                              </td>
+                            </tr>
+                          ) : null}
+                          {pagedDiffs.map((d, i) => {
+                            const pre = pickSideRow(
+                              d.mapped_before as Record<string, unknown> | null | undefined,
+                              d.before as Record<string, unknown> | null | undefined,
+                            );
+                            const post = pickSideRow(
+                              d.after as Record<string, unknown> | null | undefined,
+                            );
+                            const verdict = rowVerdict(d.kind);
+                            const isFail = verdict.tone === "fail";
+                            return (
+                              <tr key={i} className={`bs-cmp-row bs-cmp-row--${d.kind}`}>
+                                <td className="bs-cmp-col-kind bs-cmp-sticky-kind">
+                                  <span className={`bs-cmp-verdict bs-cmp-verdict--${verdict.tone}`}>
+                                    {verdict.label}
+                                  </span>
+                                  {isFail ? (
+                                    <span className="bs-cmp-verdict__sub">
+                                      {kindLabel(d.kind)}
+                                    </span>
+                                  ) : null}
+                                </td>
+                                {showFailCol ? (
+                                  <td className="bs-cmp-fail-cell">
+                                    {verdict.tone === "pass"
+                                      ? t("bizCompare.failFieldsEmpty")
+                                      : failFieldsLabel(d)}
+                                  </td>
+                                ) : null}
+                                {resultColumns.keys.map((k, ki) => (
+                                  <td
+                                    key={k}
+                                    className={`bs-cmp-key-cell${
+                                      ki === 0 ? " bs-cmp-zone-start" : ""
+                                    }`}
+                                  >
+                                    {cellText(d.key?.[k] ?? pre[k] ?? post[k]) || "—"}
+                                  </td>
+                                ))}
+                                {resultColumns.extras
+                                  .filter(
+                                    (f) =>
+                                      resultColumns.compareSet.has(f) || !hideDisplayCols,
+                                  )
+                                  .map((f, fi, visibleExtras) => {
+                                    const pv = cellText(pre[f]);
+                                    const av = cellText(post[f]);
+                                    const ch = d.changes?.[f];
+                                    const isCmp = resultColumns.compareSet.has(f);
+                                    const prev = visibleExtras[fi - 1];
+                                    const prevCmp = prev
+                                      ? resultColumns.compareSet.has(prev)
+                                      : null;
+                                    const zoneStart = fi === 0 || prevCmp !== isCmp;
+                                    const mismatch =
+                                      d.kind === "added" || d.kind === "removed"
+                                        ? Boolean(pv || av)
+                                        : isCmp
+                                          ? Boolean(ch)
+                                          : pv !== av;
+                                    return (
+                                      <PairCell
+                                        key={f}
+                                        beforeText={pv}
+                                        afterText={av}
+                                        kind={d.kind}
+                                        mismatch={mismatch}
+                                        reason={ch?.reason}
+                                        beforeLabel={t("bizCompare.pairBefore")}
+                                        afterLabel={t("bizCompare.pairAfter")}
+                                        zoneStart={zoneStart}
+                                      />
+                                    );
+                                  })}
+                              </tr>
+                            );
+                          })}
+                          {runDetail && !diffsLoading && !diffsError && !pagedDiffs.length ? (
+                            <tr>
+                              <td colSpan={resultEmptyColSpan}>
+                                <div className="pt-list-empty">
+                                  {hasResultSearch ? t("bizCompare.searchEmpty") : kindFilter === "unchanged"
+                                    ? Number(activeRunSheet?.summary?.unchanged || 0) > 0 &&
+                                      !Number(activeRunSheet?.summary?.unchanged_listed || 0)
+                                      ? t("bizCompare.unchangedNotStored")
+                                      : t("bizCompare.resultEmpty")
+                                    : activeSheetPending
+                                      ? t("bizCompare.runStatusRunning")
+                                      : t("bizCompare.resultEmpty")}
+                                </div>
+                              </td>
+                            </tr>
+                          ) : null}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    <ListPager
+                      page={resultPage}
+                      pages={resultPages}
+                      total={resultTotal}
+                      pageSize={resultPageSize}
+                      pageSizeOptions={[50, 100, 200, 500]}
+                      onPageChange={setResultPage}
+                      onPageSizeChange={(n) => {
+                        setResultPageSize(n);
+                        setResultPage(1);
+                      }}
+                      disabled={diffsLoading || !runDetail}
+                    />
+                  </div>
+                </div>
+              ) : (
+                <div className="pt-list-empty">{t("bizCompare.noRuns")}</div>
+              )}
+            </div>
+          )}
+        </Modal.Body>
+        <Modal.Footer className="bs-cmp-job-footer">
+          {jobDetailTab === "config" ? (
+            <>
+              <Button size="sm" variant="primary" isDisabled={busy || Boolean(missingJobSheets.length)} onPress={() => void saveJobConfig()}>
+                {t("bizCompare.saveJob")}
+              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                isDisabled={busy || jobHasActiveRun || Boolean(missingJobSheets.length)}
+                onPress={() => void runNow()}
+              >
+                {jobHasActiveRun ? t("bizCompare.runStatusRunning") : t("bizCompare.runNow")}
+              </Button>
+              {jobId ? (
+                <Button size="sm" variant="ghost" className="bs-cmp-runs__delete" isDisabled={busy || jobHasActiveRun} onPress={() => void removeJob(jobId)}>
+                  {t("bizCompare.deleteJob")}
+                </Button>
+              ) : null}
+            </>
+          ) : jobDetailTab === "runs" ? null : (
+            <>
+              <Button
+                size="sm"
+                variant="secondary"
+                isDisabled={busy || runIsActive || !runDetail?.id}
+                onPress={() => void downloadRunTables()}
+              >
+                {t("bizCompare.exportTables")}
+              </Button>
+              <Button
+                size="sm"
+                variant="danger"
+                isDisabled={busy || !runDetail?.id}
+                onPress={() => void removeRun(String(runDetail?.id || ""))}
+              >
+                {t("bizCompare.deleteRun")}
+              </Button>
+              <Button
+                size="sm"
+                variant="primary"
+                isDisabled={busy || jobHasActiveRun}
+                onPress={() => void runNow()}
+              >
+                {jobHasActiveRun ? t("bizCompare.runStatusRunning") : t("bizCompare.runNow")}
+              </Button>
+            </>
+          )}
+          <Button size="sm" variant="ghost" onPress={closeJob}>
+            {t("bizState.cancel")}
+          </Button>
+        </Modal.Footer>
+      </AppModalShell>
+    </section>
+  );
+}

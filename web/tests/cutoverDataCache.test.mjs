@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { beforeEach, test } from "node:test";
-import { cutoverCachedGet, cutoverCachedGetSWR, invalidateCutoverCache } from "../src/pages/network/cutoverDataCache.ts";
+import { cutoverCachedGet, cutoverCachedGetSWR, invalidateCutoverCache } from "../src/features/cutover/lib/cutoverDataCache.ts";
 
 const deferred = () => {
   let resolve, reject;

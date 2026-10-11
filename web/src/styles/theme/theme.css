@@ -1,0 +1,833 @@
+/*
+ * NetX design language — loaded last. Modern blue.
+ *
+ *   Deep navy surfaces with soft gradients, 8/12px rounded shapes, a vivid blue
+ *   accent for primary actions and focus, gentle glows, lift-on-hover.
+ *
+ * Palette comes from theme/tokens.css. This layer re-shapes primitives that
+ * legacy page CSS styled inconsistently. Prefer editing the owning
+ * component/page file; add here only for cross-cutting visual language.
+ *
+ * Sections: 1 base · 2 header · 3 workbench · 4 nav/panels · 5 buttons ·
+ *           6 fields/forms · 7 tables · 8 tags · 9 modals · 10 login
+ */
+
+/* ------------------------------------------------------------------ 1. Base */
+html {
+  scrollbar-color: var(--nx-line-strong) transparent;
+}
+
+*::-webkit-scrollbar-track,
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--nx-line-strong);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: #64748b;
+  background-clip: padding-box;
+}
+
+body {
+  background: var(--nx-bg);
+  color: var(--nx-text);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: rgb(var(--nx-accent-rgb) / 0.35);
+  color: #fff;
+}
+
+:where(a, button, [role="button"], summary, [tabindex]):focus-visible {
+  outline: none;
+  box-shadow: var(--nx-ring);
+}
+
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--nx-accent-strong);
+}
+
+table,
+.wb-stat__value,
+.wb-fleet__row strong,
+.pt-list-kpi__value {
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ----------------------------------------------------------------- 2. Header */
+/* Height stays 48px: several pages use calc(100vh - 48px). */
+.app--shell .app-brand {
+  background: linear-gradient(180deg, var(--nx-surface-2) 0%, var(--nx-surface-1) 100%);
+  border-bottom: 1px solid var(--nx-line);
+  box-shadow: 0 1px 0 rgb(var(--nx-accent-rgb) / 0.06);
+}
+
+.app--shell .app-brand__logo {
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: 0.22em;
+  background: linear-gradient(90deg, #ffffff 0%, #9fcbff 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.app--shell .app-brand__sep {
+  background: var(--nx-line-strong);
+}
+
+.app--shell .app-brand__module-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--nx-text);
+}
+
+.app--shell .app-brand .app-brand__apps {
+  border-radius: var(--nx-radius-sm);
+  color: var(--nx-text-muted);
+}
+
+.app--shell .app-brand .app-brand__apps:hover,
+.app--shell .app-brand .app-brand__apps:focus-visible {
+  background: var(--nx-accent-soft);
+  color: #fff;
+}
+
+.app--shell .app-brand .conn-pill.conn-pill--on-brand,
+.app--shell .app-brand .header-menu__trigger.header-menu__trigger--on-brand {
+  height: 26px;
+  border-radius: 999px;
+  border-color: var(--nx-line-strong);
+  background: rgb(255 255 255 / 0.05);
+  color: var(--nx-text-muted);
+  font-size: 12px;
+  transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease;
+}
+
+.app--shell .app-brand .conn-pill.conn-pill--on-brand.conn-pill--user {
+  color: var(--nx-text);
+  font-weight: 500;
+}
+
+.app--shell .app-brand .conn-pill.conn-pill--on-brand:hover,
+.app--shell .app-brand .header-menu__trigger.header-menu__trigger--on-brand:hover {
+  background: var(--nx-accent-soft);
+  border-color: rgb(var(--nx-accent-rgb) / 0.6);
+  color: #fff;
+}
+
+/* -------------------------------------------------------------- 3. Workbench */
+.app--shell .app-main:has(> .workbench) {
+  background:
+    radial-gradient(900px 380px at 12% -8%, rgb(var(--nx-accent-rgb) / 0.1), transparent 65%),
+    radial-gradient(700px 320px at 100% 0%, rgb(52 211 153 / 0.05), transparent 60%),
+    var(--nx-bg);
+}
+
+.app--shell .workbench {
+  gap: 16px;
+}
+
+/* Soft gradient plate instead of the corner-bracket HUD frame. */
+.app--shell .wb-panel {
+  border: 1px solid var(--nx-line);
+  border-radius: var(--nx-radius-lg);
+  background: linear-gradient(180deg, var(--nx-surface-2) 0%, var(--nx-surface-1) 100%);
+  box-shadow: var(--nx-shadow-panel);
+}
+
+.app--shell .wb-head__title {
+  font-family: var(--nx-font-sans);
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: var(--nx-text-strong);
+}
+
+.app--shell .wb-head__health {
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-family: var(--nx-font-sans);
+  font-size: 12px;
+  letter-spacing: 0;
+}
+
+/* Section captions: sans, readable, with a small gradient bar. */
+.app--shell .wb-section__title,
+.app--shell .wb-fleet__title,
+.app--shell .wb-rail__title,
+.app--shell .wb-fleet__card-label {
+  font-family: var(--nx-font-sans);
+  font-size: 13px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  color: var(--nx-text);
+}
+
+.app--shell .wb-section__title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.app--shell .wb-section__title::before {
+  content: "";
+  width: 3px;
+  height: 14px;
+  border-radius: 2px;
+  background: var(--nx-gradient-accent);
+}
+
+.app--shell .wb-strip__tag,
+.app--shell .wb-strip__tag--soft {
+  font-size: 11px;
+  color: var(--nx-text-faint);
+}
+
+.app--shell .wb-stat__label {
+  font-size: 12px;
+  color: var(--nx-text-muted);
+}
+
+.app--shell .wb-stat__value {
+  font-size: 13px;
+}
+
+.app--shell .wb-stat__track {
+  height: 3px;
+  border-radius: 2px;
+}
+
+/* Content-height layout: no stretched empty panel above/below the tiles. */
+.app--shell .wb-body {
+  flex: 0 0 auto;
+  grid-template-columns: minmax(0, 1fr) clamp(320px, 26vw, 400px);
+  gap: 16px;
+}
+
+.app--shell .wb-main {
+  height: auto;
+  gap: 16px;
+}
+
+.app--shell .wb-modules {
+  flex: 0 0 auto;
+  justify-content: flex-start;
+  gap: 22px;
+  padding: 20px 22px 24px;
+}
+
+.app--shell .wb-tiles {
+  grid-template-columns: repeat(auto-fill, minmax(176px, 1fr));
+  gap: 12px;
+}
+
+.app--shell .app-main .wb-tile {
+  min-height: 72px;
+  padding: 14px 16px;
+  gap: 14px;
+  border: 1px solid var(--nx-line);
+  border-radius: 10px;
+  background: var(--nx-surface-2);
+  transition: border-color 0.16s ease, background 0.16s ease, transform 0.16s ease, box-shadow 0.16s ease;
+}
+
+.app--shell .app-main .wb-tile:hover,
+.app--shell .app-main .wb-tile:focus-visible {
+  border-color: rgb(var(--nx-accent-rgb) / 0.6);
+  background: linear-gradient(180deg, rgb(var(--nx-accent-rgb) / 0.16), var(--nx-surface-2));
+  box-shadow: 0 6px 18px rgb(0 0 0 / 0.3);
+  transform: translateY(-2px);
+}
+
+.app--shell .wb-tile__label {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--nx-text);
+}
+
+.app--shell .wb-card__icon {
+  --wb-icon: var(--nx-text-muted);
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  color: var(--wb-icon);
+  background: color-mix(in oklab, var(--wb-icon) 14%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--wb-icon) 28%, transparent);
+}
+
+.app--shell .wb-card__icon svg {
+  width: 20px;
+  height: 20px;
+}
+
+.app--shell .wb-card__icon--blue {
+  --wb-icon: var(--nx-accent);
+}
+
+.app--shell .wb-card__icon--green {
+  --wb-icon: #34d399;
+}
+
+.app--shell .wb-card__icon--amber {
+  --wb-icon: var(--nx-warn);
+}
+
+.app--shell .wb-card__icon--slate {
+  --wb-icon: var(--nx-text-soft);
+}
+
+.app--shell .wb-fleet {
+  padding: 14px 16px 16px;
+  gap: 12px;
+}
+
+.app--shell .wb-fleet__head {
+  padding-bottom: 8px;
+  border-bottom-color: var(--nx-line-soft);
+}
+
+.app--shell .wb-fleet__grid {
+  gap: 12px;
+}
+
+.app--shell .wb-fleet__card {
+  padding: 12px 12px 10px;
+  border: 1px solid var(--nx-line);
+  border-radius: 10px;
+  background: rgb(var(--nx-ink-deep-rgb) / 0.45);
+}
+
+.app--shell button.wb-fleet__card:hover,
+.app--shell button.wb-fleet__card:focus-visible,
+.app--shell .wb-fleet__card--sched:hover,
+.app--shell .wb-fleet__card--sched:focus-visible {
+  border-color: rgb(var(--nx-accent-rgb) / 0.55);
+  background: rgb(var(--nx-accent-rgb) / 0.1);
+}
+
+.app--shell .wb-fleet__card-badge,
+.app--shell .wb-fleet__donut-unit,
+.app--shell .wb-fleet__foot,
+.app--shell .wb-fleet__row-age,
+.app--shell .wb-fleet__sched-age,
+.app--shell .wb-rail__meta,
+.app--shell .wb-rail__progress,
+.app--shell .wb-rail__empty {
+  color: var(--nx-text-faint);
+}
+
+.app--shell .wb-fleet__card-badge,
+.app--shell .wb-fleet__foot {
+  font-size: 11px;
+}
+
+.app--shell .wb-rail {
+  padding: 16px 16px 14px;
+}
+
+.app--shell .wb-rail__count {
+  border-radius: 999px;
+  min-width: 20px;
+  height: 20px;
+  background: var(--nx-accent-soft);
+  color: var(--nx-accent-text);
+}
+
+.app--shell .wb-rail__list {
+  gap: 8px;
+}
+
+.app--shell .app-main button.wb-rail__item,
+.app--shell .wb-rail__item {
+  padding: 11px 12px;
+  border: 1px solid var(--nx-line);
+  border-radius: 10px;
+  background: rgb(var(--nx-ink-deep-rgb) / 0.45);
+}
+
+.app--shell .app-main button.wb-rail__item:hover,
+.app--shell .app-main button.wb-rail__item:focus-visible {
+  background: var(--nx-accent-soft);
+  border-color: rgb(var(--nx-accent-rgb) / 0.5);
+}
+
+.app--shell .wb-rail__item-title {
+  font-size: 13px;
+}
+
+.app--shell .wb-rail__item-meta {
+  font-size: 12px;
+  color: var(--nx-text-muted);
+}
+
+/* ---------------------------------------------------------- 4. Nav + panels */
+.app--shell .network-nav {
+  width: 236px;
+  background: linear-gradient(180deg, var(--nx-surface-1) 0%, rgb(var(--nx-ink-deep-rgb) / 0.55) 100%);
+  border-right: 1px solid var(--nx-line);
+}
+
+.app--shell .network-nav__scroll {
+  padding: 12px 10px 18px;
+}
+
+.app--shell .network-nav__group-toggle,
+.app--shell .app-main .network-nav__group-toggle,
+.app--shell .network-nav .accordion__trigger.network-nav__group-toggle {
+  padding: 9px 10px;
+  border-radius: var(--nx-radius);
+  font-size: 12.5px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  color: var(--nx-text-muted);
+  transition: background 0.14s ease, color 0.14s ease;
+}
+
+.app--shell .network-nav__group-toggle:hover,
+.app--shell .app-main .network-nav__group-toggle:hover,
+.app--shell .network-nav .accordion__trigger.network-nav__group-toggle:hover {
+  background: var(--nx-surface-2);
+  color: var(--nx-text);
+}
+
+.app--shell .network-nav__group.is-active-group .network-nav__group-toggle,
+.app--shell .network-nav__group.is-active-group .accordion__trigger.network-nav__group-toggle {
+  color: var(--nx-accent);
+}
+
+.app--shell .network-nav__list {
+  gap: 2px;
+  margin-left: 18px;
+  padding-left: 8px;
+  border-left-color: var(--nx-line);
+}
+
+/* Single-level menus (audit) are not a tree: no indent, no guide line. */
+.app--shell .network-nav__list--flat {
+  margin-left: 0;
+  padding-left: 0;
+  border-left: 0;
+  gap: 4px;
+}
+
+.app--shell .network-nav__link {
+  padding: 8px 12px;
+  border-radius: var(--nx-radius);
+  font-size: 13px;
+  color: var(--nx-text-muted);
+}
+
+.app--shell .network-nav__link:hover {
+  background: var(--nx-surface-2);
+  color: var(--nx-text);
+}
+
+.app--shell .network-nav__link.is-active {
+  background: rgb(var(--nx-accent-rgb) / 0.14);
+  color: #fff;
+  font-weight: 600;
+  box-shadow: inset 0 0 0 1px rgb(var(--nx-accent-rgb) / 0.3);
+}
+
+.app--shell .network-main {
+  background:
+    radial-gradient(1100px 420px at 0% 0%, rgb(var(--nx-accent-rgb) / 0.08), transparent 60%),
+    var(--nx-bg);
+}
+
+.app--shell .network-main > .panel,
+.app--shell .network-main .page-stack > .panel,
+.app--shell .network-main > .nm-page-panel,
+.app--shell .app-main .card,
+.app--shell .app-main .panel {
+  border: 1px solid var(--nx-line);
+  border-radius: var(--nx-radius-lg);
+  background: var(--nx-surface-1);
+  box-shadow: var(--nx-shadow-panel);
+}
+
+.app--shell .network-main .panel__toolbar {
+  border-bottom-color: var(--nx-line-soft);
+}
+
+.app--shell .network-main .panel__toolbar h2,
+.app--shell .app-main .panel > h2 {
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0;
+  color: var(--nx-text-strong);
+}
+
+.app--shell .network-main .filter-inline,
+.app--shell .app-main .filter-inline {
+  border-radius: 10px !important;
+  background: rgb(var(--nx-ink-deep-rgb) / 0.5) !important;
+  border-color: var(--nx-line) !important;
+}
+
+.muted,
+.app-main .muted {
+  color: var(--nx-text-muted);
+}
+
+/* Links on dark surfaces. */
+a,
+.link-btn,
+.system-page button.linkish {
+  color: var(--nx-accent);
+}
+
+.system-page button.linkish:hover,
+.link-btn:hover {
+  color: var(--nx-accent-text);
+}
+
+/* ---------------------------------------------------------------- 5. Buttons */
+/* :where() keeps specificity at (0,1,1): enough to beat `.app-main button`,
+   while any component class (.wb-tile, .wb-rail__all …) still wins. */
+:where(.app-main, .app-heroui-modal, .topo-heroui-modal) button.button {
+  border-radius: var(--nx-radius);
+  font-weight: 550;
+  transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease, box-shadow 0.14s ease,
+    transform 0.1s ease;
+}
+
+:where(.app-main, .app-heroui-modal, .topo-heroui-modal) button.button:where(:active:not(:disabled)) {
+  transform: translateY(1px);
+}
+
+:where(.app-main, .app-heroui-modal, .topo-heroui-modal) button.button:where(:disabled, [data-disabled="true"]) {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+:where(.app-main, .app-heroui-modal, .topo-heroui-modal) button.button--secondary {
+  background: var(--nx-surface-3);
+  border-color: var(--nx-line);
+  color: var(--nx-text);
+}
+
+:where(.app-main, .app-heroui-modal, .topo-heroui-modal) button.button--secondary:where(:hover:not(:disabled)) {
+  background: #1f3250;
+  border-color: rgb(var(--nx-accent-rgb) / 0.55);
+}
+
+:where(.app-main, .app-heroui-modal, .topo-heroui-modal) button.button--primary {
+  background: var(--nx-gradient-accent);
+  border-color: var(--nx-accent-strong);
+  color: #fff;
+  box-shadow: 0 1px 0 rgb(255 255 255 / 0.2) inset, 0 2px 10px rgb(37 99 235 / 0.3);
+}
+
+:where(.app-main, .app-heroui-modal, .topo-heroui-modal) button.button--primary:where(:hover:not(:disabled)) {
+  background: linear-gradient(180deg, #5b9bf8 0%, #3a74eb 100%);
+}
+
+:where(.app-main, .app-heroui-modal, .topo-heroui-modal) button.button--danger {
+  background: rgb(248 113 113 / 0.1);
+  border-color: rgb(248 113 113 / 0.38);
+  color: #fda4a4;
+}
+
+:where(.app-main, .app-heroui-modal, .topo-heroui-modal) button.button--danger:where(:hover:not(:disabled)) {
+  background: rgb(248 113 113 / 0.2);
+  border-color: rgb(248 113 113 / 0.65);
+  color: #fecaca;
+}
+
+:where(.app-main, .app-heroui-modal, .topo-heroui-modal) :is(button.button--tertiary, button.button--ghost) {
+  background: rgb(255 255 255 / 0.03);
+  border-color: var(--nx-line);
+  color: var(--nx-text);
+}
+
+:where(.app-main, .app-heroui-modal, .topo-heroui-modal)
+  :is(button.button--tertiary, button.button--ghost):where(:hover:not(:disabled)) {
+  background: var(--nx-surface-3);
+  border-color: rgb(var(--nx-accent-rgb) / 0.45);
+}
+
+/* ------------------------------------------------------------ 6. Fields/forms */
+:where(.app-main, .app-heroui-modal, .topo-heroui-modal)
+  :is(input:not([type="checkbox"], [type="radio"], [type="range"], [type="file"]), select, textarea) {
+  border-color: var(--nx-line);
+  border-radius: var(--nx-radius);
+  transition: border-color 0.14s ease, box-shadow 0.14s ease;
+}
+
+:where(.app-main, .app-heroui-modal, .topo-heroui-modal)
+  :is(input:not([type="checkbox"], [type="radio"], [type="range"]), select, textarea):where(:hover:not(:disabled)) {
+  border-color: #42597a;
+}
+
+:is(.app-main, .app-heroui-modal, .topo-heroui-modal)
+  :is(input:not([type="checkbox"], [type="radio"], [type="range"]), select, textarea):focus {
+  outline: none;
+  border-color: var(--nx-accent) !important;
+  box-shadow: var(--nx-ring);
+}
+
+:where(.app-main, .app-heroui-modal, .topo-heroui-modal) :is(input, textarea)::placeholder {
+  color: var(--nx-text-faint);
+}
+
+.ui-field__label,
+.ui-field__hint {
+  color: var(--nx-text-muted);
+}
+
+.ui-field__select {
+  border-radius: var(--nx-radius);
+}
+
+/* HeroUI TextField (.textfield) and native .ui-field share one grid.
+   `.form-grid label { flex-direction: column }` stacked the required-star
+   ::after under the label text; keep labels inline and give every control the
+   same label gap + height so both columns line up. */
+.form-grid {
+  align-items: start;
+  gap: 14px 16px;
+}
+
+.form-grid > :is(.textfield, .ui-field) {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.form-grid label.label,
+.form-grid .ui-field__label {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: baseline;
+  gap: 4px;
+  font-size: 12.5px;
+  font-weight: 550;
+  color: var(--nx-text-muted);
+}
+
+.form-grid .label--required::after {
+  color: var(--nx-bad);
+}
+
+.form-grid :is(input:not([type="checkbox"], [type="radio"], [type="range"], [type="file"]), select) {
+  height: 38px;
+  min-height: 38px;
+  padding: 0 12px;
+  font-size: 14px;
+}
+
+.form-field-hint,
+.form-hint,
+.help-hint__trigger,
+.app-main .help-hint__trigger {
+  color: var(--nx-text-faint);
+}
+
+.form-field-hint,
+.form-hint {
+  font-size: 12px;
+}
+
+.form-fieldset {
+  border-color: var(--nx-line);
+  border-radius: 10px;
+}
+
+/* ----------------------------------------------------------------- 7. Tables */
+:is(.app-main, .app-heroui-modal) .pt-list-table-wrap {
+  border-radius: 10px;
+  overflow-x: auto;
+  background: rgb(var(--nx-ink-deep-rgb) / 0.35);
+}
+
+:is(.app-main, .app-heroui-modal) .pt-list-table thead th,
+:is(.app-main, .app-heroui-modal) .data-table thead th {
+  padding: 10px 12px;
+  background: var(--nx-surface-3) !important;
+  color: var(--nx-text-muted) !important;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  border-bottom: 1px solid var(--nx-line-strong);
+  white-space: nowrap;
+}
+
+:is(.app-main, .app-heroui-modal) .pt-list-table tbody td,
+:is(.app-main, .app-heroui-modal) .data-table tbody td {
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.45;
+  vertical-align: middle;
+  border-bottom: 1px solid var(--nx-line-soft);
+  color: var(--nx-text);
+}
+
+:is(.app-main, .app-heroui-modal) .pt-list-table tbody tr:last-child td,
+:is(.app-main, .app-heroui-modal) .data-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+:is(.app-main, .app-heroui-modal) .pt-list-table tbody tr:hover td,
+:is(.app-main, .app-heroui-modal) .data-table tbody tr:hover td {
+  background: rgb(var(--nx-accent-rgb) / 0.09) !important;
+}
+
+/* ------------------------------------------------------------------- 8. Tags */
+.conn-pill,
+.ne-stats-pill,
+.pt-list-status,
+.pill {
+  border-radius: 999px;
+}
+
+.chip {
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+.ne-stats-pill {
+  font-weight: 600;
+}
+
+/* ---------------------------------------------------------------- 9. Modals */
+.app-heroui-modal .modal__dialog,
+.app-heroui-modal__dialog,
+.topo-heroui-modal .modal__dialog,
+.topo-heroui-modal__dialog {
+  background: var(--nx-surface-1);
+  border: 1px solid var(--nx-line-strong);
+  border-radius: 14px;
+  box-shadow: var(--nx-shadow-pop);
+}
+
+.modal-backdrop,
+.token-scopes-modal__backdrop,
+.topo-modal__backdrop {
+  background: rgb(var(--nx-ink-deep-rgb) / 0.7) !important;
+  backdrop-filter: blur(3px);
+}
+
+.modal,
+.app-main .modal,
+.token-scopes-modal__panel,
+.topo-modal__panel {
+  background: var(--nx-surface-1) !important;
+  border-color: var(--nx-line-strong) !important;
+  border-radius: 14px !important;
+}
+
+.toast,
+.app-toast {
+  border-radius: 10px;
+  background: var(--nx-surface-2);
+  border-color: var(--nx-line-strong);
+}
+
+/* ------------------------------------------------------------------ 10. Login */
+.login-page {
+  --login-accent: var(--nx-accent-strong);
+  --login-muted: var(--nx-text-muted);
+}
+
+.login-card {
+  max-width: 372px;
+  gap: 18px;
+  padding: 32px 30px 30px;
+  border-radius: 20px;
+  border-color: rgb(255 255 255 / 0.12);
+  background: rgb(var(--nx-ink-rgb) / 0.78);
+  backdrop-filter: blur(14px) saturate(1.15);
+  -webkit-backdrop-filter: blur(14px) saturate(1.15);
+}
+
+.login-card__head {
+  flex-direction: column-reverse;
+  align-items: flex-start;
+  gap: 4px;
+  margin-bottom: 4px;
+}
+
+.login-card__brand {
+  font-size: 2rem;
+  font-weight: 800;
+  letter-spacing: 0.28em;
+  background: linear-gradient(90deg, #ffffff 0%, #8fc2ff 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  text-shadow: none;
+}
+
+.login-card__title {
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: var(--nx-text-muted);
+}
+
+/* The username TextField sits outside .login-card__label/__password, so it
+   rendered with HeroUI defaults and did not match the password field. */
+.login-card__form input {
+  width: 100%;
+  height: 46px;
+  padding: 0 14px;
+  border: 1px solid var(--login-field-border);
+  border-radius: 12px;
+  background: var(--login-field);
+  color: #fff;
+  font: inherit;
+  font-size: 15px;
+  box-sizing: border-box;
+  transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
+}
+
+.login-card__form input::placeholder {
+  color: rgb(255 255 255 / 0.45);
+}
+
+.login-card__form input:focus {
+  outline: none;
+  border-color: rgb(var(--nx-accent-rgb) / 0.8);
+  box-shadow: 0 0 0 3px rgb(var(--nx-accent-rgb) / 0.25);
+  background: rgb(255 255 255 / 0.1);
+}
+
+.login-card__form {
+  gap: 14px;
+}
+
+.login-card__submit {
+  height: 46px;
+  border-radius: 12px;
+  letter-spacing: 0.08em;
+}

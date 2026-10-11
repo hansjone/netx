@@ -1,0 +1,26 @@
+const layout = {
+  title: "UME 对接",
+  titleUme: "UME同步",
+  titleNetwork: "网络管理",
+  titleManagedNe: "网元管理",
+  titleCollect: "批量采集",
+  titleWebcrt: "WebCRT",
+  titleTopology: "拓扑管理",
+  titlePortTrafficWall: "流量大屏",
+  titleUsers: "用户管理",
+  titleAudit: "操作审计",
+  titleApiKeys: "API Key",
+  titleSessions: "登录会话",
+  navUme: "UME 对接",
+  netxApi: "netx api",
+  oclawBridge: "oclaw WSS",
+  activeTasks: "活跃任务 {{count}}",
+  activeTasksHint: "打开操作审计 · 任务概览",
+  language: "语言",
+  switchLanguage: "切换语言 / Switch language",
+  moreMenu: "更多",
+  langZh: "中文",
+  langEn: "English",
+};
+
+export default layout;

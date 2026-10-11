@@ -7,7 +7,7 @@ import App from "./App.tsx";
 import { ErrorBoundary } from "./layout/ErrorBoundary";
 import { I18nProvider } from "./i18n";
 import { ToastProvider } from "./hooks/useToast";
-import { AuthProvider } from "./auth/AuthContext";
+import { AuthProvider } from "./features/auth/AuthContext";
 
 const queryClient = new QueryClient({
   defaultOptions: {

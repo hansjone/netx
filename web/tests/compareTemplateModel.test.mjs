@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { parseTemplateImport, parseIfaceNormText, toOrGroups, fromOrGroups, validateTemplateDraft } from "../src/pages/network/compareTemplateModel.ts";
+import { parseTemplateImport, parseIfaceNormText, toOrGroups, fromOrGroups, validateTemplateDraft } from "../src/features/cutover/lib/compareTemplateModel.ts";
 
 const sheet = () => ({ metric_id: "custom", sheet_id: "s", key_fields: ["id"], iface_fields: ["port"], compare_fields: ["count"], field_rules: [], row_filters: [] });
 const template = (metrics = [sheet()]) => ({ name: "验收", metrics });
