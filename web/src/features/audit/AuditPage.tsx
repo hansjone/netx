@@ -1,10 +1,26 @@
 import { Button, Input } from "@heroui/react";
-import { Fragment, useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { Fragment, useEffect, useMemo, useState } from "react";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { ListPager } from "../../components/ListPager";
 import { useAuth } from "../auth/AuthContext";
 import { useI18n } from "../../i18n";
 import { apiGet } from "../../services/api";
+import { pageCount } from "../../utils/display";
 import { formatSystemTime } from "../../utils/time";
+
+/** Backend caps audit-logs at 200 rows per page. */
+const PAGE_SIZE_OPTIONS = [10, 20, 50, 100, 200];
+const DEFAULT_PAGE_SIZE = 20;
+const PAGE_SIZE_KEY = "netx.audit.pageSize";
+
+function loadPageSize(): number {
+  try {
+    const n = Number(localStorage.getItem(PAGE_SIZE_KEY));
+    return PAGE_SIZE_OPTIONS.includes(n) ? n : DEFAULT_PAGE_SIZE;
+  } catch {
+    return DEFAULT_PAGE_SIZE;
+  }
+}
 
 type AuditItem = {
   id: string;
@@ -119,6 +135,7 @@ export function AuditPage() {
   const { t } = useI18n();
   const { ready, isAdmin } = useAuth();
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(loadPageSize);
   const [username, setUsername] = useState("");
   const [action, setAction] = useState("");
   const [quick, setQuick] = useState<QuickFilter>("business");
@@ -129,11 +146,11 @@ export function AuditPage() {
   const excludeNoise = action.trim() ? false : derived.excludeNoise;
 
   const query = useQuery({
-    queryKey: ["auditLogs", page, username, effectiveAction, excludeNoise],
+    queryKey: ["auditLogs", page, pageSize, username, effectiveAction, excludeNoise],
     queryFn: () => {
       const p = new URLSearchParams();
       p.set("page", String(page));
-      p.set("page_size", "10");
+      p.set("page_size", String(pageSize));
       p.set("exclude_noise", excludeNoise ? "true" : "false");
       if (username.trim()) p.set("username", username.trim());
       if (effectiveAction) p.set("action", effectiveAction);
@@ -142,11 +159,29 @@ export function AuditPage() {
       );
     },
     enabled: ready,
+    // Keep the current rows on screen while the next page loads (no flicker).
+    placeholderData: keepPreviousData,
   });
 
   const items = useMemo(() => query.data?.items || [], [query.data]);
   const total = query.data?.total || 0;
-  const pages = Math.max(1, Math.ceil(total / 10));
+  const pages = pageCount(total, pageSize);
+
+  // Total shrank (filters / purge): never sit on a page past the end.
+  useEffect(() => {
+    if (!query.isPlaceholderData && page > pages) setPage(pages);
+  }, [page, pages, query.isPlaceholderData]);
+
+  const changePageSize = (size: number) => {
+    setPageSize(size);
+    setPage(1);
+    setExpanded(null);
+    try {
+      localStorage.setItem(PAGE_SIZE_KEY, String(size));
+    } catch {
+      /* ignore */
+    }
+  };
   const hasFilters = Boolean(username.trim() || action.trim() || quick !== "business");
 
   const setQuickFilter = (next: QuickFilter) => {
@@ -298,33 +333,19 @@ export function AuditPage() {
             </div>
           )}
 
-          <div className="pager pt-list-pager">
-            <span className="muted">
-              {t("common.pagerMeta", {
-                total: String(total),
-                page: String(page),
-                pages: String(pages),
-              })}
-            </span>
-            <div className="btn-row">
-              <Button
-                size="sm"
-                variant="secondary"
-                isDisabled={page <= 1}
-                onPress={() => setPage((p) => Math.max(1, p - 1))}
-              >
-                {t("common.prevPage")}
-              </Button>
-              <Button
-                size="sm"
-                variant="secondary"
-                isDisabled={page >= pages}
-                onPress={() => setPage((p) => Math.min(pages, p + 1))}
-              >
-                {t("common.nextPage")}
-              </Button>
-            </div>
-          </div>
+          <ListPager
+            page={page}
+            pages={pages}
+            total={total}
+            pageSize={pageSize}
+            pageSizeOptions={PAGE_SIZE_OPTIONS}
+            onPageChange={(next) => {
+              setExpanded(null);
+              setPage(next);
+            }}
+            onPageSizeChange={changePageSize}
+            disabled={query.isLoading}
+          />
         </div>
       </section>
     </div>
