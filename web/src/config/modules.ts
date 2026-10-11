@@ -145,8 +145,8 @@ export function moduleIdFromPath(pathname: string): string | null {
 }
 
 export function getPageTitleKey(pathname: string): string {
-  if (pathname.startsWith("/audit/tasks")) return "audit.tasks.title";
-  if (pathname.startsWith("/audit/logs") || pathname === "/audit") return "audit.logsTitle";
+  // Module windows show the module name in the header (same as Network Management),
+  // not the leaf page title — leaf titles live in the page toolbar / left nav.
   const moduleId = moduleIdFromPath(pathname);
   if (moduleId) {
     const mod = getModuleById(moduleId);

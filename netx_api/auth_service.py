@@ -667,6 +667,18 @@ def revoke_api_token(db: Session, *, token_id: str, actor: AppUser) -> ApiToken:
     return row
 
 
+def delete_api_token(db: Session, *, token_id: str, actor: AppUser) -> ApiToken:
+    """Permanently remove an API key row (revoked or active)."""
+    row = db.query(ApiToken).filter(ApiToken.id == str(token_id)).one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="api_token_not_found")
+    if actor.role != "admin" and row.user_id != actor.id:
+        raise HTTPException(status_code=403, detail="forbidden")
+    db.delete(row)
+    db.commit()
+    return row
+
+
 def update_api_token(
     db: Session,
     *,

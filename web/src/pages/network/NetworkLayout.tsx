@@ -55,7 +55,6 @@ export function NetworkLayout() {
   return (
     <div className="network-shell">
       <aside className="network-nav" aria-label={t("network.title")}>
-        <div className="network-nav__brand">{t("network.title")}</div>
         <nav className="network-nav__scroll">
           <Accordion
             className="network-nav__accordion"

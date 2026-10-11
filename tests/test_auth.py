@@ -440,6 +440,32 @@ class AuthApiTests(unittest.TestCase):
         )
         self.assertEqual(empty.status_code, 400)
 
+    def test_api_token_purge_removes_row(self) -> None:
+        token = self._login()
+        created = self.client.post(
+            "/v1/api-tokens",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"name": "to-purge", "expires_in_days": 7, "scopes": ["ne:read"]},
+        )
+        self.assertEqual(created.status_code, 200, created.text)
+        tid = created.json()["token"]["id"]
+        revoked = self.client.delete(
+            f"/v1/api-tokens/{tid}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self.assertEqual(revoked.status_code, 200, revoked.text)
+        listed = self.client.get("/v1/api-tokens", headers={"Authorization": f"Bearer {token}"})
+        self.assertEqual(listed.status_code, 200, listed.text)
+        self.assertTrue(any(r["id"] == tid and r.get("revoked") for r in listed.json().get("items") or []))
+        purged = self.client.delete(
+            f"/v1/api-tokens/{tid}/purge",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self.assertEqual(purged.status_code, 200, purged.text)
+        listed2 = self.client.get("/v1/api-tokens", headers={"Authorization": f"Bearer {token}"})
+        self.assertEqual(listed2.status_code, 200, listed2.text)
+        self.assertFalse(any(r["id"] == tid for r in listed2.json().get("items") or []))
+
     def test_api_token_max_count(self) -> None:
         token = self._login()
         with patch("netx_api.auth_service.settings.auth_api_token_max_count", 2):

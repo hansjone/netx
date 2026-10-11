@@ -173,6 +173,16 @@ export function ApiTokensPage() {
     onError: (e) => showError(String(e instanceof Error ? e.message : e)),
   });
 
+  const deleteMut = useMutation({
+    mutationFn: (id: string) => apiDelete(`/v1/api-tokens/${encodeURIComponent(id)}/purge`),
+    onSuccess: async () => {
+      showOk(t("auth.tokenDeleted"));
+      setEditingRow(null);
+      await qc.invalidateQueries({ queryKey: ["apiTokens"] });
+    },
+    onError: (e) => showError(String(e instanceof Error ? e.message : e)),
+  });
+
   const onCreate = (e: FormEvent) => {
     e.preventDefault();
     setCreatedPlain("");
@@ -366,6 +376,16 @@ export function ApiTokensPage() {
                             }}
                           >
                             {t("auth.revokeToken")}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="danger"
+                            isDisabled={deleteMut.isPending}
+                            onPress={() => {
+                              if (window.confirm(t("auth.deleteConfirm"))) deleteMut.mutate(row.id);
+                            }}
+                          >
+                            {t("auth.deleteToken")}
                           </Button>
                         </div>
                       </td>

@@ -8,7 +8,6 @@ export function AuditLayout() {
   return (
     <div className="network-shell audit-shell">
       <aside className="network-nav" aria-label={t("audit.title")}>
-        <div className="network-nav__brand">{t("audit.title")}</div>
         <nav className="network-nav__scroll">
           <ul className="network-nav__list network-nav__list--flat">
             {AUDIT_NAV.map((item) => (
@@ -16,6 +15,7 @@ export function AuditLayout() {
                 <NavLink
                   to={item.path}
                   className={({ isActive }) => `network-nav__link${isActive ? " is-active" : ""}`}
+                  end={item.path === "/audit/tasks"}
                 >
                   {t(item.labelKey)}
                 </NavLink>

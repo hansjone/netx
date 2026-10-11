@@ -30,6 +30,7 @@ from .auth_service import (
     list_users,
     login_issue_token,
     refresh_login_tokens,
+    delete_api_token,
     revoke_api_token,
     revoke_auth_session_for_user,
     revoke_auth_sessions,
@@ -531,6 +532,30 @@ def api_revoke_token(
         actor_username=ctx.user.username,
         method="DELETE",
         path=f"/v1/api-tokens/{token_id}",
+        status_code=200,
+        client_ip=ip,
+        user_agent=ua,
+        detail={"token_id": row.id, "name": row.name},
+    )
+    return {"ok": True, "id": row.id}
+
+
+@router.delete("/v1/api-tokens/{token_id}/purge")
+def api_purge_token(
+    token_id: str,
+    request: Request,
+    ctx: Annotated[AuthContext, Depends(require_user)],
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    row = delete_api_token(db, token_id=token_id, actor=ctx.user)
+    ip, ua = _client_meta(request)
+    write_audit(
+        db,
+        action="api_tokens.purge",
+        actor_user_id=ctx.user.id,
+        actor_username=ctx.user.username,
+        method="DELETE",
+        path=f"/v1/api-tokens/{token_id}/purge",
         status_code=200,
         client_ip=ip,
         user_agent=ua,
