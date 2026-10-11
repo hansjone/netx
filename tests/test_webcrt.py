@@ -94,6 +94,10 @@ class WebcrtServiceTests(unittest.TestCase):
         telnet = _FakeConn()
         telnet.RETURN = "\r\n"
         self.assertEqual(svc.map_network_cli_enter("\r", telnet), "\r\n")  # type: ignore[arg-type]
+        self.assertEqual(svc.map_network_cli_enter("show clock\r\n\r\n", telnet), "show clock\r\n\r\n")
+        self.assertEqual(svc.map_network_cli_enter("a\nb\rc\r\n", telnet), "a\r\nb\r\nc\r\n")
+        telnet.RETURN = "\r"
+        self.assertEqual(svc.map_network_cli_enter("a\r\nb\n", telnet), "a\rb\r")
         self.assertEqual(svc.normalize_cli_transcript("R2#R2#\nR2#"), "R2#")
         self.assertEqual(svc.normalize_cli_transcript("banner\nR2#R2#"), "banner\nR2#")
         self.assertEqual(svc.prepare_bootstrap_output("login\nR2#\nR2#"), "login\nR2#")
@@ -153,6 +157,47 @@ class WebcrtServiceTests(unittest.TestCase):
         self.assertIn("IOSv BANNER", text)
         self.assertIn("R2#", text)
         self.assertNotIn("MagicMock", text)
+
+    @patch.object(reg, "_audit")
+    @patch.object(reg, "get_cli_hop_guard", return_value=None)
+    @patch.object(reg, "_capture_raw_channel", return_value="")
+    @patch.object(reg, "_prime_interactive_channel", return_value="")
+    @patch.object(reg, "open_netmiko_connection")
+    def test_first_prompt_arriving_after_reader_start_is_preserved(self, mock_open, *_mocks) -> None:
+        sess = svc.WebcrtSession(
+            session_id="late-first-prompt", ne_id="lab", ne_name="lab",
+            ne_ip="192.0.2.1", protocol="telnet", cols=80, rows=24,
+        )
+        mock_open.return_value = _FakeConn()
+        # Auth banner has been streamed, but the VM has not sent its first prompt yet.
+        sess.push_connect_echo("Login successful\r\n")
+        with patch.object(sess, "start_reader", side_effect=lambda: sess.out_queue.put(b"<r1>")), \
+             patch.object(sess, "open_session_log"), patch.object(sess, "append_session_log"):
+            reg._finish_connect(sess, creds={}, device={}, connect_timeout=30, client="test")
+        self.assertEqual(sess.state, "ready")
+        self.assertEqual(sess.out_queue.get_nowait(), b"<r1>")
+        self.assertFalse(sess.needs_live_prompt)
+
+    def test_quick_connect_honors_async_authentication(self) -> None:
+        from netx_api.webcrt_router import WebcrtQuickConnectBody, api_quick_connect
+
+        ne = MagicMock()
+        ne.id = "lab"
+        ctx = MagicMock()
+        ctx.user.id = "user"
+        ctx.user.username = "operator"
+        with patch("netx_api.ne_service.upsert_webcrt_session_host", return_value=(ne, "reused")), \
+             patch("netx_api.webcrt_router.create_session", return_value={"session_id": "pending"}) as create, \
+             patch("netx_api.webcrt_router._client_label", return_value="test"):
+            for async_connect in (True, False):
+                body = WebcrtQuickConnectBody(
+                    ip_address="192.0.2.1", protocol="ssh", username="operator",
+                    password="one-shot", save_password=False, async_connect=async_connect,
+                )
+                result = api_quick_connect(body, request=MagicMock(), db=MagicMock(), ctx=ctx)
+                self.assertEqual(result["session_id"], "pending")
+                self.assertEqual(create.call_args.kwargs["async_connect"], async_connect)
+                self.assertEqual(create.call_args.kwargs["password_override"], "one-shot")
 
     @patch.object(reg, "_audit")
     @patch.object(reg, "open_netmiko_connection")

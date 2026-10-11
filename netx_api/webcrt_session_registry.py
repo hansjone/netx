@@ -453,8 +453,12 @@ def _finish_connect(
             text = _decode_bytes(chunk, sess.encoding)
         except Exception:
             text = ""
-        if _is_prompt_only_echo(text, prompt_hint):
+        # A slow VM may emit its FIRST prompt after the reader starts.
+        # Only drop duplicates when a prompt was already delivered during login.
+        if _looks_like_cli_prompt(final_view) and _is_prompt_only_echo(text, prompt_hint):
             continue
+        if _looks_like_cli_prompt(text):
+            sess.needs_live_prompt = False
         # Non-prompt data: put back and stop settling.
         sess.out_queue.put(chunk)
         break

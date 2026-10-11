@@ -17,7 +17,7 @@ export type WebTerminalHandle = {
   copySelection: () => Promise<string>;
   getText: () => string;
   fit: () => void;
-  focus: () => void;
+  focus: (opts?: { force?: boolean }) => void;
   sendBreak: () => void;
   sendText: (data: string, opts?: { throttle?: boolean }) => void;
   findNext: (term: string) => void;
@@ -74,6 +74,7 @@ type Props = {
   themeName?: "dark" | "light";
   pasteDelayMs?: number;
   copyOnSelect?: boolean;
+  rightClickPaste?: boolean;
   keywordHighlight?: KeywordHighlightConfig;
   onStatus?: (
     state: string,
@@ -147,7 +148,7 @@ export function isAuditableCommandLine(line: string): boolean {
 
 function currentCommandLine(term: Terminal): string {
   const buf = term.buffer.active;
-  const y = buf.cursorY;
+  const y = buf.baseY + buf.cursorY;
   const curText = normalizeAuditLine(buf.getLine(y)?.translateToString(true) ?? "");
 
   // Sitting on a bare prompt / blank row after output — never walk up into the
@@ -267,7 +268,7 @@ function loadPrefs(): { copyOnSelect: boolean; pasteDelayMs: number } {
     const j = JSON.parse(raw) as Partial<{ copyOnSelect: boolean; pasteDelayMs: number }>;
     return {
       copyOnSelect: j.copyOnSelect !== false,
-      pasteDelayMs: Math.max(0, Math.min(200, Number(j.pasteDelayMs) || 40)),
+      pasteDelayMs: Math.max(0, Math.min(200, Number(j.pasteDelayMs ?? 40) || 0)),
     };
   } catch {
     return { copyOnSelect: true, pasteDelayMs: 40 };
@@ -287,6 +288,7 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
     themeName = "dark",
     pasteDelayMs,
     copyOnSelect,
+    rightClickPaste = true,
     keywordHighlight,
     onStatus,
     onReady,
@@ -316,6 +318,7 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
   const termColorsRef = useRef<TermColors>(resolvedColors);
   const pasteDelayRef = useRef(pasteDelayMs ?? loadPrefs().pasteDelayMs);
   const copyOnSelectRef = useRef(copyOnSelect ?? loadPrefs().copyOnSelect);
+  const rightClickPasteRef = useRef(rightClickPaste);
   const pasteQueueRef = useRef<Promise<void>>(Promise.resolve());
   /** Updated whenever device stdout arrives; used to pace paste by echo, not fixed sleep. */
   const lastStdoutAtRef = useRef(0);
@@ -332,10 +335,6 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
   const pasteBridgeOpenRef = useRef(false);
   pasteBridgeOpenRef.current = pasteBridgeOpen;
   const findInputRef = useRef<HTMLInputElement | null>(null);
-  /** Suppress duplicate Enter frames (keydown + xterm onData both fire). */
-  const enterHandledAtRef = useRef(0);
-  /** Last Tab keystroke — Enter soon after must wait for device completion redraw. */
-  const lastTabAtRef = useRef(0);
 
   useEffect(() => {
     onStatusRef.current = onStatus;
@@ -378,9 +377,16 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
     if (copyOnSelect != null) copyOnSelectRef.current = copyOnSelect;
   }, [copyOnSelect]);
 
+  rightClickPasteRef.current = rightClickPaste;
+
   keywordHighlightRef.current = keywordHighlight;
 
-  const focusTerminal = () => {
+  const focusTerminal = (force = false) => {
+    const host = hostRef.current;
+    if (!autoFocusRef.current || !host || host.closest("[hidden]")) return;
+    if (document.querySelector('[role="dialog"], [role="alertdialog"]')) return;
+    const active = document.activeElement;
+    if (!force && active && active !== document.body && !host.contains(active)) return;
     try {
       termRef.current?.focus();
     } catch {
@@ -403,27 +409,6 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
       if (auditLine) payload.audit_line = auditLine.slice(0, 512);
     }
     sendJson(payload);
-  };
-
-  const sendEnterStdin = (term: Terminal, explicitAuditLine?: string) => {
-    const recentTab = performance.now() - lastTabAtRef.current < 450;
-    if (recentTab) {
-      // Re-read xterm after device Tab redraw; ignore any stale snapshot.
-      // Mark Enter handled now so onData duplicate frame is suppressed while we wait.
-      enterHandledAtRef.current = performance.now();
-      window.setTimeout(() => {
-        enterHandledAtRef.current = performance.now();
-        sendStdinWithAudit("\r", auditLineForEnter(term));
-      }, 100);
-      return;
-    }
-    enterHandledAtRef.current = performance.now();
-    sendStdinWithAudit("\r", explicitAuditLine ?? auditLineForEnter(term));
-  };
-
-  const isDuplicateEnterFrame = (data: string): boolean => {
-    if (!/^[\r\n]+$/.test(data)) return false;
-    return performance.now() - enterHandledAtRef.current < 120;
   };
 
   const sendStdinImmediate = (data: string) => {
@@ -508,7 +493,7 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
         /* ignore */
       }
     },
-    focus: focusTerminal,
+    focus: (opts) => focusTerminal(opts?.force !== false),
     sendBreak: () => sendJson({ type: "break" }),
     sendText: (data: string, opts?: { throttle?: boolean }) => {
       if (opts?.throttle) sendStdinThrottled(data);
@@ -546,8 +531,9 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
       disableStdin: !live,
       fontSize: fontSizeRef.current,
       fontFamily: 'Consolas, "Courier New", monospace',
-      // Lower than CRT-style 10k: remounts + multi-tab stay lighter; server replays log tail on attach.
-      scrollback: 4000,
+      scrollback: 10000,
+      cursorStyle: "block",
+      scrollOnUserInput: true,
       theme: xtermThemeFromColors(termColorsRef.current),
       convertEol: true,
     });
@@ -656,14 +642,12 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
         if (!isActiveSocket()) return;
         if (ev.data instanceof ArrayBuffer) {
           writeStdout(decodeBytes(ev.data, encodingRef.current));
-          maybeFocus();
           return;
         }
         if (typeof Blob !== "undefined" && ev.data instanceof Blob) {
           void ev.data.arrayBuffer().then((buf) => {
             if (!isActiveSocket()) return;
             writeStdout(decodeBytes(buf, encodingRef.current));
-            maybeFocus();
           });
           return;
         }
@@ -679,7 +663,6 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
           };
           if (msg.type === "stdout" && typeof msg.data === "string") {
             writeStdout(msg.data);
-            maybeFocus();
             return;
           }
           if (msg.type === "status") {
@@ -793,23 +776,7 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
 
     const dataDisposable = term.onData((data) => {
       const normalized = data.replace(/\x7f/g, "\x08");
-      if (normalized.includes("\t")) {
-        lastTabAtRef.current = performance.now();
-      }
-      if (isDuplicateEnterFrame(normalized)) return;
-
       const isEnter = normalized.includes("\r") || normalized.includes("\n");
-      if (isEnter) {
-        enterHandledAtRef.current = performance.now();
-        const recentTab = performance.now() - lastTabAtRef.current < 450;
-        // After Tab, wait briefly so Huawei/ZTE redraw lands in xterm before we snapshot.
-        if (recentTab && /^[\r\n]+$/.test(normalized)) {
-          window.setTimeout(() => {
-            sendStdinWithAudit("\r", auditLineForEnter(term));
-          }, 100);
-          return;
-        }
-      }
 
       const auditLine = isEnter ? auditLineForEnter(term) : undefined;
       // Large pastes from xterm arrive as one onData blob.
@@ -830,6 +797,9 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
       if (!autoFocusRef.current) return;
       if (host.closest("[hidden]")) return;
       if (isSidebarSearchTarget(e.target)) return;
+      if (document.querySelector('[role="dialog"], [role="alertdialog"]')) return;
+      if (!host.contains(e.target as Node) && e.target !== document.body) return;
+      if (e.isComposing) return;
 
       if ((e.ctrlKey || e.metaKey) && (e.key === "f" || e.key === "F")) {
         e.preventDefault();
@@ -869,12 +839,7 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
         return;
       }
 
-      if (e.key === "Backspace") {
-        e.preventDefault();
-      }
-
       if (isXtermTextarea(e.target)) {
-        maybeFocus();
         return;
       }
 
@@ -885,7 +850,7 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
       e.stopPropagation();
       maybeFocus();
       if (e.key === "Enter") {
-        sendEnterStdin(term);
+        sendStdinWithAudit("\r", auditLineForEnter(term));
         return;
       }
       sendStdinWithAudit(data);
@@ -894,6 +859,10 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
 
     const onContextMenu = (e: MouseEvent) => {
       e.preventDefault();
+      if (live && rightClickPasteRef.current && !e.shiftKey) {
+        void pasteFromClipboard();
+        return;
+      }
       menuSelectionRef.current = term.getSelection() || "";
       setCtxMenu({ x: e.clientX, y: e.clientY });
     };
@@ -905,6 +874,7 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
       if (host.closest("[hidden]")) return;
       if (isSidebarSearchTarget(e.target)) return;
       const text = e.clipboardData?.getData("text") || "";
+      if (!host.contains(e.target as Node)) return;
       if (!text) return;
       // Intercept paste so we always apply delay (even if focus is odd).
       if (document.activeElement === term.textarea || host.contains(document.activeElement) || autoFocusRef.current) {

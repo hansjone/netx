@@ -2370,6 +2370,8 @@ const zh = {
       custom: "自定义",
     },
     copyOnSelect: "选中即复制",
+    rightClickPaste: "右键直接粘贴",
+    rightClickPasteHint: "Shift + 右键打开菜单；关闭此项后，右键始终打开菜单。",
     pasteDelay: "粘贴最大行间隔",
     pasteDelayOff: "无延迟（整块发送）",
     keepalive: "SSH Keepalive",

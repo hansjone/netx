@@ -111,6 +111,7 @@ type SessionOptions = {
   background: string;
   foreground: string;
   copyOnSelect: boolean;
+  rightClickPaste: boolean;
   pasteDelayMs: number;
   keepaliveSec: number;
 };
@@ -186,6 +187,7 @@ function defaultSessionOptions(): SessionOptions {
     background: COLOR_SCHEMES.dark.background,
     foreground: COLOR_SCHEMES.dark.foreground,
     copyOnSelect: true,
+    rightClickPaste: true,
     pasteDelayMs: 40,
     keepaliveSec: 0,
   };
@@ -199,7 +201,7 @@ function loadSessionOptions(): SessionOptions {
       const legacy = JSON.parse(legacyRaw) as Partial<{ copyOnSelect: boolean; pasteDelayMs: number }>;
       if (legacy.copyOnSelect === false) base.copyOnSelect = false;
       if (legacy.pasteDelayMs != null) {
-        base.pasteDelayMs = Math.max(0, Math.min(200, Number(legacy.pasteDelayMs) || 40));
+        base.pasteDelayMs = Math.max(0, Math.min(200, Number(legacy.pasteDelayMs) || 0));
       }
     }
     const raw = localStorage.getItem(SESSION_OPTS_KEY);
@@ -234,7 +236,8 @@ function loadSessionOptions(): SessionOptions {
       background,
       foreground,
       copyOnSelect: j.copyOnSelect !== false,
-      pasteDelayMs: Math.max(0, Math.min(200, Number(j.pasteDelayMs ?? base.pasteDelayMs) || 40)),
+      rightClickPaste: j.rightClickPaste !== false,
+      pasteDelayMs: Math.max(0, Math.min(200, Number(j.pasteDelayMs ?? base.pasteDelayMs) || 0)),
       keepaliveSec: Math.max(0, Math.min(600, Number(j.keepaliveSec ?? base.keepaliveSec) || 0)),
     };
   } catch {
@@ -263,6 +266,7 @@ function normalizeSessionOptions(draft: SessionOptions): SessionOptions {
       background: preset.background,
       foreground: preset.foreground,
       copyOnSelect: draft.copyOnSelect !== false,
+      rightClickPaste: draft.rightClickPaste !== false,
       pasteDelayMs: Math.max(0, Math.min(200, Number(draft.pasteDelayMs) || 0)),
       keepaliveSec: Math.max(0, Math.min(600, Number(draft.keepaliveSec) || 0)),
     };
@@ -274,6 +278,7 @@ function normalizeSessionOptions(draft: SessionOptions): SessionOptions {
     background,
     foreground,
     copyOnSelect: draft.copyOnSelect !== false,
+    rightClickPaste: draft.rightClickPaste !== false,
     pasteDelayMs: Math.max(0, Math.min(200, Number(draft.pasteDelayMs) || 0)),
     keepaliveSec: Math.max(0, Math.min(600, Number(draft.keepaliveSec) || 0)),
   };
@@ -1245,7 +1250,7 @@ export function WebcrtPage() {
           rows: dims.rows,
           encoding: dims.encoding,
           keepalive_sec: dims.keepaliveSec,
-          async_connect: false,
+          async_connect: true,
           username,
           password: authForm.password,
         });
@@ -1279,7 +1284,7 @@ export function WebcrtPage() {
         rows: dims.rows,
         encoding: dims.encoding,
         keepalive_sec: dims.keepaliveSec,
-        async_connect: false,
+        async_connect: true,
       });
       const target: CliTargetItem = {
         source: "webcrt",
@@ -2420,9 +2425,10 @@ export function WebcrtPage() {
                           foreground: sessionOpts.foreground,
                         }}
                         copyOnSelect={sessionOpts.copyOnSelect}
+                        rightClickPaste={sessionOpts.rightClickPaste}
                         pasteDelayMs={sessionOpts.pasteDelayMs}
                         keywordHighlight={keywordHl}
-                        autoFocus={tab.status === "connected"}
+                        autoFocus={isActive && (tab.status === "connected" || tab.status === "connecting")}
                         onStdout={(chunk) => {
                           if (!chunk) return;
                           let parts = logBuffersRef.current.get(tab.key);
@@ -2452,7 +2458,7 @@ export function WebcrtPage() {
                               ...(typeof meta?.sftpReady === "boolean" ? { sftpReady: meta.sftpReady } : {}),
                               ...(typeof meta?.cliHop === "boolean" ? { cliHop: meta.cliHop } : {}),
                             });
-                            window.setTimeout(() => termRefs.current.get(tab.key)?.focus(), 40);
+                            window.setTimeout(() => termRefs.current.get(tab.key)?.focus({ force: false }), 40);
                           } else if (state === "open" || state === "connecting") {
                             const nextPhase: ConnectPhase =
                               phase === "waiting_prompt" || message === "waiting_prompt"
@@ -3257,6 +3263,17 @@ export function WebcrtPage() {
                 }
               />
             </label>
+            <label className="webcrt-session-opts__field webcrt-session-opts__field--check" title={t("webcrt.rightClickPasteHint")}>
+              <span>{t("webcrt.rightClickPaste")}</span>
+              <input
+                type="checkbox"
+                checked={sessionOptsDraft.rightClickPaste}
+                onChange={(e) =>
+                  setSessionOptsDraft((prev) => ({ ...prev, rightClickPaste: e.target.checked }))
+                }
+              />
+            </label>
+            <p className="form-hint">{t("webcrt.rightClickPasteHint")}</p>
             <label className="webcrt-session-opts__field">
               <span>{t("webcrt.pasteDelay")}</span>
               <select

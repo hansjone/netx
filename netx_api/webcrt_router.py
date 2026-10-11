@@ -208,9 +208,8 @@ def api_quick_connect(
         user_override = str(body.username or "").strip() or None
         if str(body.password or "").strip():
             pwd_override = str(body.password)
-    # SSH with password: wait for auth so wrong credentials can re-prompt (SecureCRT-like).
-    wait_for_auth = proto == "ssh" and bool(pwd_override)
-    async_connect = bool(body.async_connect) and not wait_for_auth
+    # Open the terminal immediately; WS reports auth progress and retryable failures.
+    async_connect = bool(body.async_connect)
     try:
         session = create_session(
             db,

@@ -2388,6 +2388,8 @@ const en = {
       custom: "Custom",
     },
     copyOnSelect: "Copy on select",
+    rightClickPaste: "Paste on right click",
+    rightClickPasteHint: "Shift + right click opens the menu. Turn off to always show the menu.",
     pasteDelay: "Paste max line wait",
     pasteDelayOff: "No delay (bulk send)",
     keepalive: "SSH keepalive",

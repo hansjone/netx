@@ -89,10 +89,8 @@ def map_network_cli_enter(data: str, conn: ConnectHandler | None) -> str:
     if not text:
         return text
     ret = channel_return(conn)
-    if ret == "\r":
-        return text
-    # Prefer replacing CRLF first so Telnet RETURN \\r\\n does not double-expand.
-    return text.replace("\r\n", ret).replace("\r", ret)
+    # Replace once: chained replacements expand the CR in Telnet CRLF again.
+    return re.sub(r"\r\n|\r|\n", lambda _match: ret, text)
 
 
 def _drain_channel(conn: ConnectHandler, *, rounds: int = 6, wait: float = 0.06) -> str:
