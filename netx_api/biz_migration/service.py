@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
+from collections import Counter
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
 from fastapi import HTTPException
-from sqlalchemy import insert
+from sqlalchemy import and_, insert, or_
 from sqlalchemy.orm import Session
 
 from ..biz_state.compare_rules import apply_row_filters, scalar_text
@@ -42,6 +44,7 @@ from .evaluate import (
 )
 
 PURPOSE_CUTOVER_HF = "cutover_hf"
+MANUAL_ROUTE_METRICS = frozenset({"ip_route", "ipv6_route", "bgp_route"})
 
 
 def _parse_dt(raw: Any) -> datetime | None:
@@ -217,7 +220,9 @@ def _hf_bindings(proj: BizMigrationProject, side: str) -> list[dict[str, Any]]:
                 iv = max(60, int(row.get("interval_sec") or 60))
             except (TypeError, ValueError):
                 iv = 60
-            out.append({"task_id": tid, "metric_ids": mids, "interval_sec": iv})
+            out.append({"task_id": tid, "metric_ids": mids, "interval_sec": iv,
+                        "collect_group_id": str(row.get("collect_group_id") or ""),
+                        "manual_only": bool(row.get("manual_only"))})
         if out:
             return out
     # Legacy single slot
@@ -296,11 +301,45 @@ def _metric_sample_ok(db: Session, batch: BizStateBatch, metric_id: str) -> bool
     return bool(statuses) and all(s in ("ok", "ok_aux") for s in statuses)
 
 
+def _current_pair_for_metric(db: Session, proj: BizMigrationProject, mid: str,
+                             pin_old: str = "", pin_new: str = "") -> tuple[BizStateBatch | None, BizStateBatch | None, dict[str, Any]]:
+    old_tid, new_tid = (_hf_task_id_for_metric(proj, side, mid) for side in ("old", "new"))
+    old_task = db.get(BizStateTask, old_tid) if old_tid else None
+    new_task = db.get(BizStateTask, new_tid) if new_tid else None
+    gid = old_task.collect_group_id if old_task else ""
+    meta: dict[str, Any] = {"collect_group_id": gid, "manual_only": bool(old_task and old_task.collect_manual_only)}
+    if gid and not (pin_old or pin_new):
+        if not new_task or new_task.collect_group_id != gid:
+            return None, None, {**meta, "sample_issues": ["collect_pair_invalid"]}
+        latest = db.query(BizStateBatch).filter(BizStateBatch.collect_group_id == gid,
+            BizStateBatch.task_id.in_((old_tid, new_tid))).order_by(
+            BizStateBatch.queued_at.desc(), BizStateBatch.started_at.desc(), BizStateBatch.id.desc()).first()
+        peers = db.query(BizStateBatch).filter(BizStateBatch.collect_round_id == latest.collect_round_id,
+            BizStateBatch.task_id.in_((old_tid, new_tid))).all() if latest and latest.collect_round_id else []
+        meta.update({"collect_round_id": latest.collect_round_id if latest else "",
+                     "old_collect_status": next((b.status for b in peers if b.task_id == old_tid), "missing"),
+                     "new_collect_status": next((b.status for b in peers if b.task_id == new_tid), "missing")})
+        if len(peers) != 2:
+            return None, None, {**meta, "sample_issues": ["collect_pair_missing"]}
+        if any(b.status in ("running", "queued") for b in peers):
+            return None, None, {**meta, "sample_issues": ["collect_pair_pending"]}
+        by_task = {b.task_id: b for b in peers}
+        if not all(_metric_sample_ok(db, b, mid) for b in peers):
+            return None, None, {**meta, "sample_issues": ["collect_pair_failed"]}
+        return by_task[old_tid], by_task[new_tid], meta
+    old = _current_batch_for_metric(db, proj, "old", mid, pinned_batch_id=pin_old)
+    new = _current_batch_for_metric(db, proj, "new", mid, pinned_batch_id=pin_new)
+    if old and new and (old.collect_round_id or new.collect_round_id) and old.collect_round_id != new.collect_round_id:
+        return None, None, {**meta, "sample_issues": ["collect_round_mismatch"]}
+    return old, new, meta
+
+
 def _sample_timing(proj: BizMigrationProject, mid: str, old: BizStateBatch,
                    new: BizStateBatch, *, check_age: bool) -> dict[str, Any]:
     interval = max(60, _metric_interval_map(proj).get(mid) or proj.hf_interval_sec or 60)
     old_at, new_at = old.ended_at or old.started_at, new.ended_at or new.started_at
-    age_limit, skew_limit = interval * 3, interval * 2
+    durations = [max(0, ((b.ended_at or b.started_at) - b.started_at).total_seconds()) for b in (old, new)]
+    age_limit, skew_limit = interval * 3 + max(durations), interval * 2
     reasons: list[str] = []
     if not old_at or not new_at:
         reasons.append("sample_time_missing")
@@ -312,9 +351,15 @@ def _sample_timing(proj: BizMigrationProject, mid: str, old: BizStateBatch,
         if check_age and max((utcnow_naive() - old_at).total_seconds(),
                              (utcnow_naive() - new_at).total_seconds()) > age_limit:
             reasons.append("sample_stale")
+    start_skew = abs((old.started_at - new.started_at).total_seconds())
+    if old.collect_round_id and start_skew > min(30, interval / 2):
+        reasons.append("sample_start_skew")
     return {"old_collected_at": _dt_iso(old_at), "new_collected_at": _dt_iso(new_at),
             "age_limit_sec": age_limit, "skew_limit_sec": skew_limit,
-            "skew_sec": skew, "sample_issues": reasons}
+            "skew_sec": skew, "start_skew_sec": start_skew, "sample_issues": reasons,
+            "old_duration_sec": durations[0], "new_duration_sec": durations[1],
+            "old_queue_sec": max(0, (old.started_at - (old.queued_at or old.started_at)).total_seconds()),
+            "new_queue_sec": max(0, (new.started_at - (new.queued_at or new.started_at)).total_seconds())}
 
 
 def find_portrait_task_for_ne(db: Session, *, source: str, ne_id: str) -> BizStateTask | None:
@@ -762,12 +807,28 @@ def patch_project(db: Session, project_id: str, body: dict[str, Any]) -> dict[st
         p.hf_start_at = _parse_dt(body.get("hf_start_at"))
     if "hf_end_at" in body:
         p.hf_end_at = _parse_dt(body.get("hf_end_at"))
+    sampling_changed = any(k in body for k in ("collect_metric_ids", "metric_interval_sec", "hf_interval_sec", "monitor_template_id"))
+    has_hf = bool(_all_hf_task_ids(p, "old") and _all_hf_task_ids(p, "new"))
+    if sampling_changed and has_hf:
+        # Validate newly selected commands before saving the project selection.
+        for side in ("old", "new"):
+            portrait = db.get(BizStateTask, portrait_task_id(p, side))
+            existing = db.get(BizStateTask, hf_task_id(p, side))
+            fields = _template_from_task_or_ne(db, portrait=portrait, existing_hf=existing, ne=None)
+            for mid in resolve_collect_metric_ids(db, p):
+                task = db.get(BizStateTask, _hf_task_id_for_metric(p, side, mid))
+                if (task and mid in _enabled_metric_ids(db, task.id)) or _portrait_metric_items(db, portrait, mid):
+                    continue
+                _catalog_item_for_metric(vendor=fields["vendor"], device_type=fields["device_type"], metric_id=mid)
     p.updated_at = utcnow_naive()
     db.commit()
     db.refresh(p)
     # Status / schedule changes should stop or resume HF without waiting for scheduler tick
     if any(k in body for k in ("status", "hf_start_at", "hf_end_at")):
         _apply_hf_window_to_tasks(db, p)
+        db.refresh(p)
+    if sampling_changed and has_hf:
+        ensure_highfreq(db, p.id, collect_now=False)
         db.refresh(p)
     return project_to_dict(db, p)
 
@@ -870,6 +931,7 @@ def run_evaluate(
     acceptance: bool = False,
     purpose: str = "manual",
     _commit: bool = True,
+    _metric_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     mb = db.get(BizMigrationBatch, batch_id)
     if not mb:
@@ -904,12 +966,14 @@ def run_evaluate(
     # Primary current batch ids (for run record / pin UX); per-metric may differ when multi-HF
     if not old_batch:
         for tid in _all_hf_task_ids(proj, "old") or [current_task_id(proj, "old")]:
-            old_batch = _latest_success_batch(db, tid)
+            old_batch = db.query(BizStateBatch).filter(BizStateBatch.task_id == tid).order_by(
+                BizStateBatch.started_at.desc(), BizStateBatch.id.desc()).first()
             if old_batch:
                 break
     if not new_batch:
         for tid in _all_hf_task_ids(proj, "new") or [current_task_id(proj, "new")]:
-            new_batch = _latest_success_batch(db, tid)
+            new_batch = db.query(BizStateBatch).filter(BizStateBatch.task_id == tid).order_by(
+                BizStateBatch.started_at.desc(), BizStateBatch.id.desc()).first()
             if new_batch:
                 break
     if not old_batch:
@@ -971,12 +1035,26 @@ def run_evaluate(
     all_rows: list[dict[str, Any]] = []
     metric_batches: dict[str, dict[str, str]] = {}
     seq = 0
-    verdict_counts: dict[str, int] = {}
     rows_cache: dict[tuple[str, str], list[dict[str, Any]]] = {}
     command_cache: dict[str, dict[str, Any]] = {}
-    scope_ids = {str(s.get("metric_id") or "") for s in sheets} | {sheet_key(s) for s in sheets} | {"_ports"}
+    enabled_sheets = [s for s in sheets if str(s.get("metric_id") or "") in collect_ids and not
+                      override_for_sheet(sheet_overrides, sheet_id=sheet_key(s), metric_id=s.get("metric_id", "")).get("skip_dual")]
+    scope_ids = {str(s.get("metric_id") or "") for s in enabled_sheets} | {sheet_key(s) for s in enabled_sheets}
+    if any(s.get("iface_fields") for s in enabled_sheets):
+        scope_ids.add("_ports")
     uncovered_scope = sorted({k for scope in (expect, previous_expect) for k, values in scope.items()
                               if values and k not in scope_ids})
+    config_snapshot = {"sheets": sheets, "sheet_overrides": sheet_overrides,
+        "defaults": defaults, "iface_normalize": iface_norm, "port_map": port_map,
+        "expect_set": mb.expect_set_json, "previous_expect": {k: sorted(v) for k, v in previous_expect.items()},
+        "baseline_ids": [proj.old_baseline_batch_id, proj.new_baseline_batch_id],
+        "collect_metric_ids": sorted(collect_ids), "window_active": window_active,
+        "bindings": [_hf_bindings(proj, "old"), _hf_bindings(proj, "new")]}
+    prior_run = db.query(BizMigrationRun).filter(BizMigrationRun.batch_id == batch_id).order_by(
+        BizMigrationRun.created_at.desc()).first() if _metric_ids is not None else None
+    reusable = (prior_run.summary_json or {}).get("config_snapshot") == config_snapshot if prior_run else False
+    prior_cards = {sheet_key(c): c for c in (prior_run.summary_json or {}).get("sheet_cards", [])} if reusable else {}
+    pair_cache: dict[str, tuple[BizStateBatch | None, BizStateBatch | None, dict[str, Any]]] = {}
 
     def metric_rows(bid: str, mid: str) -> list[dict[str, Any]]:
         key = (bid, mid)
@@ -1021,8 +1099,17 @@ def run_evaluate(
             )
             continue
 
-        old_cur_batch = _current_batch_for_metric(db, proj, "old", mid, pinned_batch_id=pin_old)
-        new_cur_batch = _current_batch_for_metric(db, proj, "new", mid, pinned_batch_id=pin_new)
+        if _metric_ids is not None and mid not in _metric_ids and sid in prior_cards:
+            cached = {**prior_cards[sid], "source_run_id": prior_cards[sid].get("source_run_id") or prior_run.id}
+            times = [_parse_dt(cached.get(k)) for k in ("old_collected_at", "new_collected_at")]
+            if any(at and (utcnow_naive() - at).total_seconds() > cached.get("age_limit_sec", 180) for at in times):
+                cached.update({"current_missing": True, "sample_issues": ["sample_stale"]})
+            sheet_cards.append(cached)
+            metric_batches[mid] = (prior_run.summary_json or {}).get("metric_batches", {}).get(mid, {})
+            continue
+        if mid not in pair_cache:
+            pair_cache[mid] = _current_pair_for_metric(db, proj, mid, pin_old, pin_new)
+        old_cur_batch, new_cur_batch, pair_meta = pair_cache[mid]
         # Do NOT fall back to another HF task's batch — empty/wrong metric → false red
         if not old_cur_batch or not new_cur_batch:
             sheet_cards.append(
@@ -1041,13 +1128,14 @@ def run_evaluate(
                     "current_missing": True,
                     "collect_incomplete": True,
                     "collect_skipped": False,
+                    **pair_meta,
                 }
             )
             continue
         old_cur_mid = old_cur_batch.id
         new_cur_mid = new_cur_batch.id
-        timing = _sample_timing(proj, mid, old_cur_batch, new_cur_batch,
-                                check_age=acceptance or not (pin_old and pin_new))
+        timing = {**pair_meta, **_sample_timing(proj, mid, old_cur_batch, new_cur_batch,
+                                check_age=acceptance or not (pin_old and pin_new))}
         baseline_missing = [side for side in ("old", "new") if not _metric_sample_ok(
             db, db.get(BizStateBatch, getattr(proj, f"{side}_baseline_batch_id")), mid)]
         if timing["sample_issues"] or baseline_missing:
@@ -1114,6 +1202,8 @@ def run_evaluate(
             "new_batch_id": new_cur_mid,
             "old_task_id": old_tid,
             "new_task_id": new_tid,
+            "old_status": old_cur_batch.status,
+            "new_status": new_cur_batch.status,
             **timing,
         }
         sheet_cards.append(
@@ -1138,6 +1228,8 @@ def run_evaluate(
                 "duplicate_keys_after": int(one.get("duplicate_keys_after") or 0),
                 **timing,
                 "awaiting_peer": awaiting,
+                "verdict_counts": dict(Counter(r["verdict"] for r in one["rows"] if r.get("verdict"))),
+                "expected_count": sum(bool(r.get("in_expect")) for r in one["rows"]),
             }
         )
         for r in one["rows"]:
@@ -1154,10 +1246,12 @@ def run_evaluate(
             r["sheet_id"] = sid
             seq += 1
             all_rows.append(r)
-            v = str(r.get("verdict") or "")
-            if v:
-                verdict_counts[v] = verdict_counts.get(v, 0) + 1
 
+    verdict_counts = {}
+    for card in sheet_cards:
+        if not card.get("current_missing"):
+            for verdict, count in card.get("verdict_counts", {}).items():
+                verdict_counts[verdict] = verdict_counts.get(verdict, 0) + count
     active_cards = [
         c for c in sheet_cards if not c.get("collect_skipped") and not c.get("current_missing")
     ]
@@ -1202,11 +1296,8 @@ def run_evaluate(
             "steady_outside": sum(int(c.get("steady_outside") or 0) for c in active_cards),
             "duplicate_keys": sum(int(c.get("duplicate_keys_before") or 0) + int(c.get("duplicate_keys_after") or 0) for c in active_cards),
             "uncovered_scope": uncovered_scope,
-            "coverage_complete": bool(sheet_cards) and not uncovered_scope and not any(c.get("collect_skipped") or c.get("current_missing") or c.get("awaiting_peer") or c.get("duplicate_keys_before") or c.get("duplicate_keys_after") for c in sheet_cards),
-            "config_snapshot": {"sheets": sheets, "sheet_overrides": sheet_overrides,
-                                "defaults": defaults, "iface_normalize": iface_norm,
-                                "port_map": port_map, "expect_set": mb.expect_set_json,
-                                "previous_expect": {k: sorted(v) for k, v in previous_expect.items()}},
+            "coverage_complete": bool(enabled_sheets) and not uncovered_scope and not any(c.get("current_missing") or c.get("awaiting_peer") or c.get("duplicate_keys_before") or c.get("duplicate_keys_after") for c in sheet_cards if not c.get("collect_skipped")),
+            "config_snapshot": config_snapshot,
             "window_active": window_active,
             "expect_ports": sorted(expect.get("_ports") or ()),
             "old_current_task_id": current_task_id(proj, "old"),
@@ -1216,6 +1307,9 @@ def run_evaluate(
     )
     db.add(run)
     db.flush()
+    for card in sheet_cards:
+        card.setdefault("source_run_id", run.id)
+    run.summary_json = {**run.summary_json, "sheet_cards": sheet_cards}
     pending_diffs: list[dict[str, Any]] = []
     for r in all_rows:
         key_list = r.get("key") or []
@@ -1468,6 +1562,9 @@ def list_baseline_expect_objects(db: Session, project_id: str) -> dict[str, Any]
         # Only offer expect keys for metrics that are actually HF-collected
         if collect_ids and mid not in collect_ids:
             continue
+        if mid in MANUAL_ROUTE_METRICS:
+            # Never enumerate million-row route tables into batch scope pickers.
+            continue
         sheet_ov = override_for_sheet(sheet_overrides, sheet_id=sid, metric_id=mid)
         if sheet_ov.get("skip_dual"):
             continue
@@ -1526,20 +1623,18 @@ def _catalog_item_for_metric(*, vendor: str, device_type: str, metric_id: str) -
 
     mid = str(metric_id or "").strip()
     vkey = resolve_vendor_key(vendor, device_type)
-    for p in profiles_for_vendor(vkey):
-        if p.metric_id == mid and p.kind == "collect":
-            if getattr(p, "placeholders", None):
-                ph = ",".join(str(x.name) for x in (p.placeholders or []) if getattr(x, "name", None))
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"metric_needs_bindings:{mid}:{ph or 'required'}",
-                )
+    candidates = [p for p in profiles_for_vendor(vkey) if p.metric_id == mid and p.kind == "collect"]
+    for p in sorted(candidates, key=lambda p: bool(p.placeholders)):
+        if not any(getattr(ph, "required", True) for ph in (p.placeholders or [])):
             return {
                 "source_profile_id": p.profile_id,
                 "kind": "catalog",
                 "enabled": True,
                 "title": p.title or mid,
             }
+    if candidates:
+        ph = ",".join(x.name for x in candidates[0].placeholders if getattr(x, "required", True))
+        raise HTTPException(status_code=400, detail=f"metric_needs_bindings:{mid}:{ph}")
     raise HTTPException(
         status_code=400,
         detail=f"no_profile_for_metric:{mid}:{vkey or vendor or 'unknown'}",
@@ -1643,6 +1738,26 @@ def _template_from_task_or_ne(
     raise HTTPException(status_code=400, detail="old_new_ne_or_task_required")
 
 
+def _portrait_metric_items(db: Session, portrait: BizStateTask | None, mid: str) -> list[dict[str, Any]]:
+    """Preserve CLI variants and bindings already used by the device baseline."""
+    from ..biz_state.profiles import get_profile
+    from ..models import BizStateTaskItem, BizStateTaskItemBinding
+
+    if not portrait:
+        return []
+    out = []
+    for item in db.query(BizStateTaskItem).filter(BizStateTaskItem.task_id == portrait.id,
+            BizStateTaskItem.enabled.is_(True)).order_by(BizStateTaskItem.sort_order).all():
+        profile = get_profile(item.source_profile_id) if item.kind == "catalog" else None
+        if not profile or profile.metric_id != mid:
+            continue
+        bindings = db.query(BizStateTaskItemBinding).filter(BizStateTaskItemBinding.item_id == item.id).all()
+        out.append({"source_profile_id": item.source_profile_id, "kind": item.kind,
+                    "enabled": True, "title": item.title, "command_override": item.command_override,
+                    "bindings": [{"placeholder": b.placeholder, "value": b.value} for b in bindings]})
+    return out
+
+
 def _ensure_side_highfreq(
     db: Session,
     *,
@@ -1653,6 +1768,7 @@ def _ensure_side_highfreq(
     retention_days: int,
     metric_ids: list[str],
     status: str = "running",
+    configured_items: list[dict[str, Any]] | None = None,
 ) -> tuple[BizStateTask, bool]:
     """Return (hf_task, created). Reuse existing HF if metrics match; never mutate portrait."""
     from ..biz_state import service as biz_svc
@@ -1660,6 +1776,9 @@ def _ensure_side_highfreq(
     want = {str(m).strip() for m in metric_ids if str(m).strip()}
     if not want:
         want = {PORT_METRIC_ID}
+    if existing_hf and existing_hf.collect_running and _enabled_metric_ids(db, existing_hf.id) != want:
+        # A running collection owns its item configuration until completion.
+        existing_hf = None
 
     if existing_hf and _is_highfreq_task(db, existing_hf, want):
         patch: dict[str, Any] = {
@@ -1676,7 +1795,7 @@ def _ensure_side_highfreq(
     # Existing HF (purpose already cutover_hf) with wrong metrics → update items in place.
     # Never rewrite a task that only "looks like" HF by note — create a sibling instead.
     if existing_hf and str(getattr(existing_hf, "purpose", None) or "").strip() == PURPOSE_CUTOVER_HF:
-        items = [
+        items = configured_items or [
             _catalog_item_for_metric(
                 vendor=str(template_fields.get("vendor") or existing_hf.vendor),
                 device_type=str(template_fields.get("device_type") or existing_hf.device_type),
@@ -1700,7 +1819,7 @@ def _ensure_side_highfreq(
         refreshed = db.get(BizStateTask, existing_hf.id)
         return refreshed or existing_hf, False
 
-    items = [
+    items = configured_items or [
         _catalog_item_for_metric(
             vendor=str(template_fields.get("vendor") or ""),
             device_type=str(template_fields.get("device_type") or ""),
@@ -1754,11 +1873,12 @@ def _apply_hf_window_to_tasks(db: Session, proj: BizMigrationProject) -> None:
     from ..biz_state import service as biz_svc
 
     log = logging.getLogger("netx.biz_migration.hf_window")
-    want = _hf_window_status(proj)
+    window_status = _hf_window_status(proj)
     for tid in _all_hf_task_ids(proj, "old") + _all_hf_task_ids(proj, "new"):
         task = db.get(BizStateTask, tid)
         if not task:
             continue
+        want = "paused" if task.collect_manual_only else window_status
         purpose = str(getattr(task, "purpose", None) or "").strip()
         if purpose and purpose != PURPOSE_CUTOVER_HF:
             continue
@@ -1806,9 +1926,7 @@ def ensure_highfreq(
     old_ne: dict[str, Any] | None = None,
     new_ne: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Create/bind HF tasks (one per interval group) — never overwrites portrait ids."""
-    from ..biz_state.collect_runner import dispatch_collect
-
+    """One task per metric/device, paired by project; route tables are manual-only."""
     proj = db.get(BizMigrationProject, project_id)
     if not proj:
         raise HTTPException(status_code=404, detail="project_not_found")
@@ -1822,33 +1940,28 @@ def ensure_highfreq(
     if not metric_ids:
         metric_ids = [PORT_METRIC_ID]
     by_metric = _metric_interval_map(proj)
-    groups = _group_metrics_by_interval(metric_ids, default_interval=iv_default, by_metric=by_metric)
+    groups = [(max(60, by_metric.get(mid) or iv_default), [mid]) for mid in metric_ids]
     want_status = _hf_window_status(proj)
 
     old_portrait = db.get(BizStateTask, proj.old_task_id) if proj.old_task_id else None
     new_portrait = db.get(BizStateTask, proj.new_task_id) if proj.new_task_id else None
 
-    # Reuse existing bindings by interval when possible
-    def _existing_by_interval(side: str) -> dict[int, BizStateTask]:
-        out: dict[int, BizStateTask] = {}
-        for b in _hf_bindings(proj, side):
-            tid = str(b.get("task_id") or "").strip()
-            t = db.get(BizStateTask, tid) if tid else None
-            if not t:
-                continue
-            try:
-                iv = max(60, int(b.get("interval_sec") or t.interval_sec or 60))
-            except (TypeError, ValueError):
-                iv = 60
-            out[iv] = t
-        # legacy primary slot
-        primary = db.get(BizStateTask, hf_task_id(proj, side)) if hf_task_id(proj, side) else None
-        if primary and iv_default not in out:
-            out[iv_default] = primary
+    # Reuse a single-metric binding; a legacy combined task can be assigned
+    # once, while the remaining metrics receive independent sibling tasks.
+    def _existing_by_metric(side: str) -> dict[str, BizStateTask]:
+        out: dict[str, BizStateTask] = {}
+        for binding in _hf_bindings(proj, side):
+            task = db.get(BizStateTask, binding["task_id"])
+            if task:
+                mids = binding.get("metric_ids") or metric_ids
+                for mid in mids:
+                    if mid in metric_ids:
+                        out.setdefault(mid, task)
+                        break
         return out
 
-    old_existing = _existing_by_interval("old")
-    new_existing = _existing_by_interval("new")
+    old_existing = _existing_by_metric("old")
+    new_existing = _existing_by_metric("new")
     old_prev_ids = set(_all_hf_task_ids(proj, "old"))
     new_prev_ids = set(_all_hf_task_ids(proj, "new"))
 
@@ -1871,33 +1984,51 @@ def ensure_highfreq(
     new_any_created = False
 
     for g_iv, g_metrics in groups:
+        mid = g_metrics[0]
+        gid = "cutover:" + proj.id + ":" + hashlib.sha256(mid.encode()).hexdigest()[:16]
+        old_candidate, new_candidate = old_existing.get(mid), new_existing.get(mid)
+        if old_candidate and old_candidate.collect_group_id not in ("", gid):
+            old_candidate = None
+        if new_candidate and new_candidate.collect_group_id not in ("", gid):
+            new_candidate = None
         old_task, old_created = _ensure_side_highfreq(
             db,
-            existing_hf=old_existing.get(g_iv),
+            existing_hf=old_candidate,
             template_fields=old_fields,
             project_name=proj.name,
             interval_sec=g_iv,
             retention_days=ret,
             metric_ids=g_metrics,
-            status=want_status,
+            status="paused",
+            configured_items=_portrait_metric_items(db, old_portrait, mid),
         )
         new_task, new_created = _ensure_side_highfreq(
             db,
-            existing_hf=new_existing.get(g_iv),
+            existing_hf=new_candidate,
             template_fields=new_fields,
             project_name=proj.name,
             interval_sec=g_iv,
             retention_days=ret,
             metric_ids=g_metrics,
-            status=want_status,
+            status="paused",
+            configured_items=_portrait_metric_items(db, new_portrait, mid),
         )
+        if old_task.ne_id == new_task.ne_id:
+            raise HTTPException(status_code=400, detail="collect_pair_same_device")
+        for task in (old_task, new_task):
+            task.collect_group_id = gid
+            task.collect_manual_only = mid in MANUAL_ROUTE_METRICS
+            task.status = "paused" if task.collect_manual_only else want_status
+        db.commit()
         old_any_created = old_any_created or old_created
         new_any_created = new_any_created or new_created
         old_bindings.append(
-            {"task_id": old_task.id, "metric_ids": list(g_metrics), "interval_sec": g_iv}
+            {"task_id": old_task.id, "metric_ids": list(g_metrics), "interval_sec": g_iv,
+             "collect_group_id": gid, "manual_only": mid in MANUAL_ROUTE_METRICS}
         )
         new_bindings.append(
-            {"task_id": new_task.id, "metric_ids": list(g_metrics), "interval_sec": g_iv}
+            {"task_id": new_task.id, "metric_ids": list(g_metrics), "interval_sec": g_iv,
+             "collect_group_id": gid, "manual_only": mid in MANUAL_ROUTE_METRICS}
         )
 
     proj = db.get(BizMigrationProject, project_id)
@@ -1921,27 +2052,24 @@ def ensure_highfreq(
             continue
         if str(getattr(t, "purpose", None) or "").strip() not in ("", PURPOSE_CUTOVER_HF):
             continue
+        if t.collect_group_id and not t.collect_group_id.startswith("cutover:" + proj.id + ":"):
+            continue
+        t.collect_group_id = ""
+        t.collect_manual_only = False
+        db.commit()
         if t.status == "running":
             try:
                 biz_svc.update_task(db, tid, {"status": "paused"})
             except Exception:  # noqa: BLE001
                 pass
+        if t.collect_running:
+            from ..biz_state.collect_stop import request_stop_collect
+
+            request_stop_collect(tid)
 
     collect: dict[str, Any] = {"old": [], "new": []}
-    if collect_now and want_status == "running":
-        for side, binds in (("old", old_bindings), ("new", new_bindings)):
-            for b in binds:
-                tid = b["task_id"]
-                try:
-                    dispatch_collect(tid)
-                    collect[side].append({"ok": True, "task_id": tid})
-                except Exception as exc:  # noqa: BLE001
-                    collect[side].append({"ok": False, "task_id": tid, "error": str(exc)[:200]})
-    elif collect_now and want_status != "running":
-        collect = {
-            "old": [{"ok": False, "error": "hf_window_inactive"}],
-            "new": [{"ok": False, "error": "hf_window_inactive"}],
-        }
+    if collect_now:
+        collect = collect_project_now(db, project_id)
 
     return {
         "project": project_to_dict(db, proj),
@@ -1984,26 +2112,33 @@ def collect_project_now(db: Session, project_id: str) -> dict[str, Any]:
         }
 
     out: dict[str, Any] = {"old": [], "new": [], "hf_status": want_status}
-    for side in ("old", "new"):
-        tids = _all_hf_task_ids(proj, side)
-        if not tids:
-            out[side] = [{"ok": False, "error": "hf_task_missing"}]
+    old_bindings, new_bindings = _hf_bindings(proj, "old"), _hf_bindings(proj, "new")
+    handled: set[str] = set()
+    for old_binding in old_bindings:
+        gid = old_binding.get("collect_group_id")
+        if not gid or gid in handled:
             continue
-        for tid in tids:
-            task = db.get(BizStateTask, tid)
-            if not task:
-                out[side].append({"ok": False, "error": "task_not_found", "task_id": tid})
-                continue
-            if bool(task.collect_running):
-                out[side].append(
-                    {"ok": False, "error": "collect_already_running", "task_id": tid}
-                )
-                continue
-            try:
-                dispatch_collect(tid)
-                out[side].append({"ok": True, "task_id": tid})
-            except Exception as exc:  # noqa: BLE001
-                out[side].append({"ok": False, "task_id": tid, "error": str(exc)[:200]})
+        handled.add(gid)
+        new_binding = next((b for b in new_bindings if b.get("collect_group_id") == gid), None)
+        if not new_binding:
+            result = {"ok": False, "error": "collect_pair_invalid"}
+        else:
+            result = dispatch_collect(old_binding["task_id"], manual=True)
+            result = {**result, "ok": bool(result.get("queued")), "error": result.get("reason", "")}
+        for side, binding in (("old", old_binding), ("new", new_binding)):
+            out[side].append({**result, "task_id": binding["task_id"] if binding else "",
+                              "metric_ids": old_binding.get("metric_ids", [])})
+    # Legacy projects remain operable until their bindings are upgraded.
+    if not handled:
+        for side in ("old", "new"):
+            tids = _all_hf_task_ids(proj, side)
+            if not tids:
+                out[side] = [{"ok": False, "error": "hf_task_missing"}]
+            for tid in tids:
+                result = dispatch_collect(tid, manual=True)
+                out[side].append({**result, "ok": bool(result.get("queued")), "task_id": tid,
+                                  "error": result.get("reason", "")})
+
     return out
 
 
@@ -2352,9 +2487,17 @@ def list_run_diffs(
     offset: int = 0,
     limit: int = 100,
 ) -> dict[str, Any]:
-    if not db.get(BizMigrationRun, run_id):
+    run = db.get(BizMigrationRun, run_id)
+    if not run:
         raise HTTPException(status_code=404, detail="run_not_found")
-    q = db.query(BizMigrationDiff).filter(BizMigrationDiff.run_id == run_id)
+    sources = [and_(BizMigrationDiff.run_id == c["source_run_id"],
+                    BizMigrationDiff.key_json["sheet_id"].as_string() == sheet_key(c))
+               for c in (run.summary_json or {}).get("sheet_cards", [])
+               if c.get("source_run_id") and c["source_run_id"] != run_id
+               and not (only_expect and c.get("expected_count") == 0)
+               and (not metric_id or c.get("metric_id") == metric_id)
+               and (not sheet_id or sheet_key(c) == sheet_id)]
+    q = db.query(BizMigrationDiff).filter(or_(BizMigrationDiff.run_id == run_id, *sources))
     if metric_id:
         q = q.filter(BizMigrationDiff.metric_id == metric_id)
     if sheet_id:
@@ -2369,7 +2512,7 @@ def list_run_diffs(
         literal = kw.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         q = q.filter(BizMigrationDiff.search_text.ilike(f"%{literal}%", escape="\\"))
     total = q.count()
-    rows = q.order_by(BizMigrationDiff.seq.asc()).offset(max(0, offset)).limit(min(500, max(1, limit))).all()
+    rows = q.order_by(BizMigrationDiff.metric_id.asc(), BizMigrationDiff.seq.asc(), BizMigrationDiff.id.asc()).offset(max(0, offset)).limit(min(500, max(1, limit))).all()
     return {
         "total": total,
         "offset": max(0, offset),
@@ -2411,7 +2554,33 @@ def board(db: Session, batch_id: str, run_id: str = "") -> dict[str, Any]:
         "project": proj,
         "batch": batch_to_dict(mb),
         "run": run_to_dict(db, run) if run else None,
+        "sampling": sampling_state(db, db.get(BizMigrationProject, mb.project_id)) if not run_id else [],
     }
+
+
+def sampling_state(db: Session, proj: BizMigrationProject) -> list[dict[str, Any]]:
+    """Small live read independent of evaluation and route row counts."""
+    out = []
+    for binding in _hf_bindings(proj, "old"):
+        gid = binding.get("collect_group_id")
+        if not gid:
+            continue
+        latest = db.query(BizStateBatch).filter(BizStateBatch.collect_group_id == gid).order_by(
+            BizStateBatch.queued_at.desc(), BizStateBatch.started_at.desc()).first()
+        peers = db.query(BizStateBatch).filter(BizStateBatch.collect_round_id == latest.collect_round_id).all() if latest else []
+        old = next((b for b in peers if b.task_id == binding["task_id"]), None)
+        new = next((b for b in peers if b.task_id != binding["task_id"]), None)
+        card: dict[str, Any] = {"metric_id": (binding.get("metric_ids") or [""])[0],
+            "collect_group_id": gid, "collect_round_id": latest.collect_round_id if latest else "",
+            "manual_only": binding.get("manual_only", False), "interval_sec": binding["interval_sec"]}
+        for side, batch in (("old", old), ("new", new)):
+            card[f"{side}_collect_status"] = batch.status if batch else "idle"
+            card[f"{side}_duration_sec"] = max(0, ((batch.ended_at or utcnow_naive()) - batch.started_at).total_seconds()) if batch and batch.status != "queued" else 0
+            card[f"{side}_queue_sec"] = max(0, ((utcnow_naive() if batch.status == "queued" else batch.started_at) - (batch.queued_at or batch.started_at)).total_seconds()) if batch else 0
+        if old and new and all(b.status != "queued" for b in (old, new)):
+            card["start_skew_sec"] = abs((old.started_at - new.started_at).total_seconds())
+        out.append(card)
+    return out
 
 
 def get_monitor_context(

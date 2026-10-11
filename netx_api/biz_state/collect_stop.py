@@ -131,7 +131,7 @@ def _force_close_holders(batch_id: str) -> int:
 
 
 def request_stop_collect(task_id: str) -> dict[str, Any]:
-    """Cancel queued batches and signal running collect for this task to abort."""
+    """Stop a task, including its paired collector, without stranding a half round."""
     tid = str(task_id or "").strip()
     if not tid:
         return {"ok": False, "reason": "missing_task_id"}
@@ -141,26 +141,37 @@ def request_stop_collect(task_id: str) -> dict[str, Any]:
     signaled_ids: list[str] = []
     closed = 0
     try:
+        from sqlalchemy import text
+        from .claim import _dialect_supports_skip_locked
+
+        if _dialect_supports_skip_locked(db):
+            db.execute(text("SELECT pg_advisory_xact_lock(hashtext('biz-state-claim-capacity'))"))
         task = db.get(BizStateTask, tid)
         if not task:
             return {"ok": False, "reason": "task_not_found", "task_id": tid}
 
+        task_ids = [tid]
+        if task.collect_group_id:
+            task_ids = [r[0] for r in db.query(BizStateTask.id).filter(
+                BizStateTask.collect_group_id == task.collect_group_id).all()]
         active = (
             db.query(BizStateBatch)
             .filter(
-                BizStateBatch.task_id == tid,
+                BizStateBatch.task_id.in_(task_ids),
                 BizStateBatch.status.in_(("queued", "running")),
             )
-            .all()
+            .order_by(BizStateBatch.id).with_for_update().all()
         )
+        tasks = db.query(BizStateTask).filter(BizStateTask.id.in_(task_ids)).order_by(
+            BizStateTask.id).with_for_update().populate_existing().all()
         if not active:
             # Nothing to stop — clear sticky collect_running if orphaned.
-            if bool(task.collect_running):
-                task.collect_running = False
-                if hasattr(task, "collect_queued_at"):
-                    task.collect_queued_at = None
-                task.updated_at = utcnow_naive()
-                db.commit()
+            for member in tasks:
+                if member.collect_running:
+                    member.collect_running = False
+                    member.collect_queued_at = None
+                    member.updated_at = utcnow_naive()
+            db.commit()
             return {
                 "ok": True,
                 "task_id": tid,
@@ -171,7 +182,7 @@ def request_stop_collect(task_id: str) -> dict[str, Any]:
             }
 
         now = utcnow_naive()
-        still_running = False
+        running_tasks: set[str] = set()
         for batch in active:
             bid = str(batch.id)
             mark_stop_requested(bid)
@@ -183,16 +194,16 @@ def request_stop_collect(task_id: str) -> dict[str, Any]:
             else:
                 batch.message = STOP_REQUEST_TOKEN
                 signaled_ids.append(bid)
-                still_running = True
+                running_tasks.add(batch.task_id)
             closed += _force_close_holders(bid)
 
-        if not still_running:
-            task.collect_running = False
-            if hasattr(task, "collect_queued_at"):
-                task.collect_queued_at = None
-            task.last_collect_ended_at = now
-            task.last_error = STOP_USER_MESSAGE
-            task.updated_at = now
+        for member in tasks:
+            if member.id not in running_tasks:
+                member.collect_running = False
+                member.collect_queued_at = None
+                member.last_collect_ended_at = now
+                member.last_error = STOP_USER_MESSAGE
+                member.updated_at = now
 
         db.commit()
         _log.info(

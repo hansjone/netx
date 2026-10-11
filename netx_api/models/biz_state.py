@@ -32,6 +32,9 @@ class BizStateTask(Base):
     note: Mapped[str] = mapped_column(String(256), default="")
     # "" | portrait | cutover_hf — filter cutover HF in biz-state list
     purpose: Mapped[str] = mapped_column(String(32), default="", index=True)
+    # Optional paired sampling; ordinary per-device tasks remain independent.
+    collect_group_id: Mapped[str] = mapped_column(String(128), default="", index=True)
+    collect_manual_only: Mapped[bool] = mapped_column(Boolean, default=False)
     status: Mapped[str] = mapped_column(String(32), default="draft", index=True)  # draft|running|paused|stopped
     interval_sec: Mapped[int] = mapped_column(Integer, default=300)
     # Keep snapshots for N calendar days (protected baselines/refs never auto-deleted)
@@ -86,6 +89,10 @@ class BizStateBatch(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid4().hex)
     task_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    collect_group_id: Mapped[str] = mapped_column(String(128), default="", index=True)
+    collect_round_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    collect_priority: Mapped[int] = mapped_column(Integer, default=0)
+    queued_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     source: Mapped[str] = mapped_column(String(32), default="managed", index=True)
     ne_id: Mapped[str] = mapped_column(String(128), default="", index=True)
     ne_name: Mapped[str] = mapped_column(String(256), default="")

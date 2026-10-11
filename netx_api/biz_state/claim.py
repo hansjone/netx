@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
@@ -39,6 +39,10 @@ def enqueue_collect(task_id: str, *, manual: bool = False) -> dict[str, Any]:
         task = db.get(BizStateTask, tid)
         if not task:
             return {"ok": False, "queued": False, "reason": "task_not_found", "task_id": tid}
+        if task.collect_group_id:
+            group_id = task.collect_group_id
+            db.close()
+            return enqueue_collect_group(group_id, manual=manual, requested_task_id=tid)
         if str(task.source or "").strip().lower() == "import":
             return {
                 "ok": False,
@@ -99,6 +103,7 @@ def enqueue_collect(task_id: str, *, manual: bool = False) -> dict[str, Any]:
             vendor=task.vendor,
             status="queued",
             started_at=now,
+            queued_at=now,
             message="queued" if not manual else "queued_manual",
         )
         db.add(batch)
@@ -117,6 +122,61 @@ def enqueue_collect(task_id: str, *, manual: bool = False) -> dict[str, Any]:
         except Exception:
             pass
         return {"ok": False, "queued": False, "reason": "enqueue_error", "task_id": tid}
+    finally:
+        db.close()
+
+
+def enqueue_collect_group(group_id: str, *, manual: bool = False,
+                          requested_task_id: str = "") -> dict[str, Any]:
+    """Atomically enqueue both devices with one round identity, or neither."""
+    db = SessionLocal()
+    try:
+        tasks = db.query(BizStateTask).filter(BizStateTask.collect_group_id == group_id).order_by(
+            BizStateTask.id).with_for_update().populate_existing().all()
+        result: dict[str, Any] = {"ok": False, "queued": False, "task_id": requested_task_id,
+                                  "collect_group_id": group_id}
+        if len(tasks) != 2 or len({t.ne_id for t in tasks}) != 2:
+            return {**result, "reason": "collect_pair_invalid"}
+        if max_concurrent_tasks() < 2:
+            return {**result, "reason": "collect_pair_capacity"}
+        from ..cli_budget import clamp_cli_workers
+
+        worker_cap = clamp_cli_workers(int(getattr(settings, "biz_state_worker_collect_threads", None)
+            or getattr(settings, "biz_state_dispatch_workers", 8) or 8))
+        if worker_cap < 2:
+            return {**result, "reason": "collect_pair_capacity"}
+        if any(t.collect_running for t in tasks):
+            return {**result, "reason": "collect_pair_busy"}
+        for task in tasks:
+            if task.source == "import" or (not manual and (task.status != "running" or task.collect_manual_only)):
+                return {**result, "reason": "not_scheduled"}
+            if task.status in ("", "deleted"):
+                return {**result, "reason": "bad_status"}
+            if not db.query(BizStateTaskItem.id).filter(BizStateTaskItem.task_id == task.id,
+                                                       BizStateTaskItem.enabled.is_(True)).first():
+                return {**result, "reason": "no_enabled_items"}
+        now, round_id = _utcnow(), uuid4().hex
+        batches = []
+        for task in tasks:
+            task.collect_running = True
+            task.collect_queued_at = now
+            task.last_error = ""
+            task.updated_at = now
+            batch = BizStateBatch(id=uuid4().hex, task_id=task.id, source=task.source,
+                ne_id=task.ne_id, ne_name=task.ne_name, vendor=task.vendor, status="queued",
+                started_at=now, queued_at=now, collect_group_id=group_id,
+                collect_round_id=round_id, collect_priority=10 if task.collect_manual_only else 20,
+                message="queued_manual" if manual else "queued")
+            db.add(batch)
+            batches.append({"batch_id": batch.id, "task_id": task.id})
+        db.commit()
+        selected = next((b for b in batches if b["task_id"] == requested_task_id), batches[0])
+        return {**result, **selected, "ok": True, "queued": True, "collect_round_id": round_id,
+                "batches": batches, "manual": manual}
+    except Exception:
+        db.rollback()
+        _log.exception("enqueue collect pair failed group=%s", group_id)
+        return {"ok": False, "queued": False, "reason": "enqueue_error", "task_id": requested_task_id}
     finally:
         db.close()
 
@@ -151,11 +211,16 @@ def claim_queued_batches(limit: int | None = None) -> list[dict[str, Any]]:
     Global ceiling is always ``max_concurrent_tasks()``; ``limit`` only caps
     how many this caller wants in one call.
     """
-    from sqlalchemy import text
+    from sqlalchemy import and_, case, text
 
     global_cap = max_concurrent_tasks()
     db = SessionLocal()
     try:
+        pg = _dialect_supports_skip_locked(db)
+        if pg:
+            # A short transaction lock makes capacity reservation and pair claims
+            # atomic across worker processes. Never held during device I/O.
+            db.execute(text("SELECT pg_advisory_xact_lock(hashtext('biz-state-claim-capacity'))"))
         running_n = (
             db.query(BizStateBatch).filter(BizStateBatch.status == "running").count()
         )
@@ -173,50 +238,54 @@ def claim_queued_batches(limit: int | None = None) -> list[dict[str, Any]]:
             if str(r[0] or "").strip()
         }
 
+        # Manual route rounds yield to fresh monitoring, but must eventually
+        # run even when a busy device always has regular metrics queued.
+        priority = case((and_(BizStateBatch.collect_priority == 10,
+            BizStateBatch.queued_at <= _utcnow() - timedelta(seconds=300)), 30),
+            else_=BizStateBatch.collect_priority)
         q = (
             db.query(BizStateBatch)
             .filter(BizStateBatch.status == "queued")
-            .order_by(BizStateBatch.started_at.asc())
+            .order_by(priority.desc(), BizStateBatch.started_at.asc(), BizStateBatch.id.asc())
         )
-        pg = _dialect_supports_skip_locked(db)
         if pg:
             q = q.with_for_update(skip_locked=True)
         else:
             q = q.with_for_update()
 
-        candidates = q.limit(max(slots * 4, slots)).all()
+        candidates = q.limit(max(slots * 8, 64)).all()
         claimed_rows: list[BizStateBatch] = []
+        visited: set[str] = set()
         for batch in candidates:
+            if batch.id in visited:
+                continue
             if len(claimed_rows) >= slots:
                 break
-            ne = str(batch.ne_id or "").strip()
-            if ne and ne in busy_nes:
-                continue
-            # Serialize claims per NE across workers (Postgres).
-            if ne and pg:
-                try:
-                    db.execute(
-                        text("SELECT pg_advisory_xact_lock(hashtext(:ne))"),
-                        {"ne": ne},
-                    )
-                except Exception:
-                    _log.exception("advisory lock failed ne=%s", ne)
-                conflict = (
-                    db.query(BizStateBatch.id)
-                    .filter(
-                        BizStateBatch.status == "running",
-                        BizStateBatch.ne_id == ne,
-                        BizStateBatch.id != batch.id,
-                    )
-                    .first()
-                )
-                if conflict:
+            group = [batch]
+            if batch.collect_round_id:
+                peers = db.query(BizStateBatch).filter(
+                    BizStateBatch.collect_round_id == batch.collect_round_id,
+                ).with_for_update(skip_locked=pg).all()
+                if len(peers) != 2 or any(p.status != "queued" for p in peers):
                     continue
-            batch.status = "running"
-            batch.message = ""
-            claimed_rows.append(batch)
-            if ne:
-                busy_nes.add(ne)
+                group = peers
+            visited.update(p.id for p in group)
+            if len(group) > slots - len(claimed_rows):
+                continue
+            nes = {str(p.ne_id or "").strip() for p in group}
+            if nes & busy_nes:
+                continue
+            now = _utcnow()
+            for member in group:
+                member.status = "running"
+                member.message = ""
+                if member.collect_round_id:
+                    member.started_at = now
+                    task = db.get(BizStateTask, member.task_id)
+                    if task:
+                        task.last_collect_started_at = now
+                claimed_rows.append(member)
+            busy_nes.update(nes - {""})
 
         if not claimed_rows:
             db.rollback()
@@ -231,10 +300,13 @@ def claim_queued_batches(limit: int | None = None) -> list[dict[str, Any]]:
             db.query(BizStateBatch).filter(BizStateBatch.status == "running").count()
         )
         while n_running > global_cap and claimed_rows:
-            demote = claimed_rows.pop()
-            demote.status = "queued"
-            demote.message = "queued"
-            n_running -= 1
+            last = claimed_rows[-1]
+            demoted = [b for b in claimed_rows if b.collect_round_id == last.collect_round_id] if last.collect_round_id else [last]
+            for demote in demoted:
+                claimed_rows.remove(demote)
+                demote.status = "queued"
+                demote.message = "queued"
+                n_running -= 1
 
         if not claimed_rows:
             db.rollback()

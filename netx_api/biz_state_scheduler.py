@@ -110,12 +110,21 @@ def _sync_cutover_hf_windows() -> None:
 
         projects = db.query(BizMigrationProject).all()
         for proj in projects:
-            want = _hf_window_status(proj)
+            tids = _all_hf_task_ids(proj, "old") + _all_hf_task_ids(proj, "new")
+            if tids and any((t := db.get(BizStateTask, tid)) and not t.collect_group_id for tid in tids):
+                try:
+                    from .biz_migration.service import ensure_highfreq
+
+                    ensure_highfreq(db, proj.id, collect_now=False)
+                except Exception:
+                    _log.exception("upgrade cutover collection pairs failed project=%s", proj.id)
+            window_status = _hf_window_status(proj)
             tids = _all_hf_task_ids(proj, "old") + _all_hf_task_ids(proj, "new")
             for tid in tids:
                 task = db.get(BizStateTask, tid)
                 if not task:
                     continue
+                want = "paused" if task.collect_manual_only else window_status
                 purpose = str(getattr(task, "purpose", None) or "").strip()
                 if purpose and purpose != PURPOSE_CUTOVER_HF:
                     continue
@@ -149,12 +158,26 @@ def _enqueue_due_tasks() -> int:
             .filter(
                 BizStateTask.status == "running",
                 BizStateTask.collect_running.is_(False),
+                BizStateTask.collect_manual_only.is_(False),
             )
             .all()
         )
         due_ids: list[str] = []
+        seen_groups: set[str] = set()
         now = _utcnow()
         for task in tasks:
+            if task.collect_group_id:
+                if task.collect_group_id in seen_groups:
+                    continue
+                seen_groups.add(task.collect_group_id)
+                peers = db.query(BizStateTask).filter(BizStateTask.collect_group_id == task.collect_group_id).all()
+                if len(peers) != 2 or any(p.collect_running or p.status != "running" or p.collect_manual_only for p in peers):
+                    continue
+                anchors = [p.last_collect_started_at or p.last_collect_ended_at for p in peers]
+                anchor = max((a for a in anchors if a), default=None)
+                if anchor is None or (now - anchor).total_seconds() >= max(p.interval_sec or 60 for p in peers):
+                    due_ids.append(task.id)
+                continue
             interval = max(60, int(task.interval_sec or 300))
             # Prefer start-based interval to avoid drift when collect duration
             # approaches the interval (end-based: 40s collect + 60s → 100s cycle).

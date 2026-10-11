@@ -47,6 +47,7 @@ class HfDecoupleFlowTests(unittest.TestCase):
         )
         Base.metadata.create_all(bind=engine)
         self.db = TestingSession()
+        self.Session = TestingSession
 
         self.mt = BizMonitorTemplate(
             id="mt1",
@@ -94,10 +95,13 @@ class HfDecoupleFlowTests(unittest.TestCase):
         return t
 
     def _mk_batch(self, bid: str, task_id: str) -> BizStateBatch:
+        task = self.db.get(BizStateTask, task_id)
         now = datetime.utcnow()
         b = BizStateBatch(
             id=bid,
             task_id=task_id,
+            collect_group_id=task.collect_group_id or "",
+            collect_round_id="test-" + task.collect_group_id if task.collect_group_id else "",
             status="success",
             started_at=now,
             ended_at=now,
@@ -139,6 +143,64 @@ class HfDecoupleFlowTests(unittest.TestCase):
         self.assertTrue(out["new_hf_task_id"])
         self.assertNotEqual(out["old_hf_task_id"], "old_p")
         self.assertNotEqual(out["new_hf_task_id"], "new_p")
+
+    def test_same_interval_metrics_are_separate_paired_tasks(self) -> None:
+        out = self._create_project(collect_metric_ids=["interface_brief", "arp"])
+        old, new = out["old_hf_bindings"], out["new_hf_bindings"]
+        self.assertEqual(len(old), 2)
+        self.assertEqual({b["interval_sec"] for b in old}, {60})
+        for o, n in zip(old, new):
+            self.assertEqual(len(o["metric_ids"]), 1)
+            self.assertTrue(o["collect_group_id"])
+            self.assertEqual(o["collect_group_id"], n["collect_group_id"])
+            self.assertEqual(o["metric_ids"], n["metric_ids"])
+
+    def test_dynamic_routes_manual_only_and_removal_cancels_queued_pairs(self) -> None:
+        from netx_api.models import BizStateTaskItem, BizStateTaskItemBinding
+
+        for tid in ("old_p", "new_p"):
+            self.db.add(BizStateTaskItem(id="route-item-" + tid, task_id=tid, source_profile_id="zte.ip_route_vrf", kind="catalog", enabled=True))
+            self.db.add(BizStateTaskItemBinding(id="route-bind-" + tid, item_id="route-item-" + tid, placeholder="vrf", value="customer-A"))
+        self.db.commit()
+        out = self._create_project()
+        with mock.patch.object(biz_svc, "_ne_meta", side_effect=_stub_ne_meta):
+            updated = mig.patch_project(self.db, out["id"], {"collect_metric_ids": ["interface_brief", "ip_route"]})
+        routes = [b for side in ("old", "new") for b in updated[f"{side}_hf_bindings"] if "ip_route" in b["metric_ids"]]
+        self.assertEqual(len(routes), 2)
+        for idx, binding in enumerate(routes):
+            task = self.db.get(BizStateTask, binding["task_id"])
+            self.assertTrue(task.collect_manual_only)
+            self.assertEqual(task.status, "paused")
+            task.collect_running = True
+            self.db.add(BizStateBatch(id=f"queued-route-{idx}", task_id=task.id, status="queued", collect_round_id="route-round"))
+        self.db.commit()
+        with mock.patch("netx_api.biz_state.collect_stop.SessionLocal", self.Session), mock.patch.object(biz_svc, "_ne_meta", side_effect=_stub_ne_meta):
+            shrunk = mig.patch_project(self.db, out["id"], {"collect_metric_ids": ["interface_brief"]})
+        self.db.expire_all()
+        self.assertEqual(len(shrunk["old_hf_bindings"]), 1)
+        for idx in range(2):
+            self.assertEqual(self.db.get(BizStateBatch, f"queued-route-{idx}").status, "cancelled")
+
+    def test_route_profile_preserves_portrait_cli_variant_and_bindings(self) -> None:
+        from netx_api.models import BizStateTaskItem, BizStateTaskItemBinding
+
+        self.db.add(BizStateTaskItem(id="vrf-item", task_id="old_p", source_profile_id="zte.ip_route_vrf", kind="catalog", enabled=True))
+        self.db.add(BizStateTaskItemBinding(id="vrf-bind", item_id="vrf-item", placeholder="vrf", value="customer-A"))
+        self.db.commit()
+        out = self._create_project(collect_metric_ids=["interface_brief", "ip_route"])
+        binding = next(b for b in out["old_hf_bindings"] if b["metric_ids"] == ["ip_route"])
+        item = self.db.query(BizStateTaskItem).filter(BizStateTaskItem.task_id == binding["task_id"]).one()
+        self.assertEqual(item.source_profile_id, "zte.ip_route_vrf")
+        copied = self.db.query(BizStateTaskItemBinding).filter(BizStateTaskItemBinding.item_id == item.id).one()
+        self.assertEqual((copied.placeholder, copied.value), ("vrf", "customer-A"))
+
+    def test_invalid_new_metric_does_not_save_broken_selection(self) -> None:
+        out = self._create_project()
+        with self.assertRaises(Exception):
+            mig.patch_project(self.db, out["id"], {"collect_metric_ids": ["interface_brief", "not-a-metric"]})
+        self.db.rollback()
+        current = self.db.get(BizMigrationProject, out["id"])
+        self.assertEqual(mig.resolve_collect_metric_ids(self.db, current), ["interface_brief"])
 
     def test_ensure_highfreq_does_not_overwrite_portrait(self) -> None:
         proj = self._create_project()
@@ -213,7 +275,7 @@ class HfDecoupleFlowTests(unittest.TestCase):
         called = {c.args[0] for c in disp.call_args_list}
         self.assertEqual(
             called,
-            {proj["old_hf_task_id"], proj["new_hf_task_id"]},
+            {proj["old_hf_task_id"]},  # one dispatch atomically enqueues the pair
         )
         self.assertNotIn("old_p", called)
 

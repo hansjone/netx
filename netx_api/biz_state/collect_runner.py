@@ -784,6 +784,12 @@ def dispatch_collect(task_id: str, *, manual: bool = False) -> dict[str, Any]:
     result = enqueue_collect(task_id, manual=manual)
     if not result.get("queued"):
         return result
+    if result.get("collect_group_id"):
+        if _should_execute_inline():
+            from ..biz_state_scheduler import _claim_and_dispatch
+
+            _claim_and_dispatch()
+        return result
     batch_id = str(result.get("batch_id") or "")
     if not batch_id:
         return result
@@ -870,6 +876,11 @@ def execute_claimed_batch(
         task = db.get(BizStateTask, task_id) if task_id else None
         if not batch:
             return
+        if batch.collect_round_id:
+            batch.started_at = _utcnow()
+            if task:
+                task.last_collect_started_at = batch.started_at
+            db.commit()
         if not task_id:
             task_id = str(batch.task_id or "")
             task = db.get(BizStateTask, task_id) if task_id else None

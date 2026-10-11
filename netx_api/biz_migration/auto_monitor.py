@@ -65,10 +65,20 @@ def try_auto_monitor_for_task(db: Session, task_id: str) -> int:
         if last and (last.summary_json or {}).get("auto_fingerprint") == fingerprint:
             db.rollback()
             continue
+        previous_samples = {s[0]: (s[1], s[2]) for s in (last.summary_json or {}).get("auto_samples", [])} if last else {}
+        if last and not previous_samples:
+            for sample in (last.summary_json or {}).get("metric_batches", {}).values():
+                for side in ("old", "new"):
+                    previous_samples[sample.get(f"{side}_task_id", "")] = (
+                        sample.get(f"{side}_batch_id", ""), sample.get(f"{side}_status", "success"))
+        changed_tasks = {tid for tid, bid, status in samples if previous_samples.get(tid) != (bid, status)}
+        changed_metrics = {mid for side in ("old", "new") for binding in service._hf_bindings(proj, side)
+                           if binding["task_id"] in changed_tasks for mid in binding.get("metric_ids") or payload[-1]}
         try:
-            result = service.run_evaluate(db, batch_id=batch.id, purpose="auto", _commit=False)
+            result = service.run_evaluate(db, batch_id=batch.id, purpose="auto", _commit=False,
+                                          _metric_ids=changed_metrics)
             run = db.get(BizMigrationRun, result["id"])
-            run.summary_json = {**run.summary_json, "auto_fingerprint": fingerprint}
+            run.summary_json = {**run.summary_json, "auto_fingerprint": fingerprint, "auto_samples": samples}
             db.commit()
             count += 1
         except Exception:

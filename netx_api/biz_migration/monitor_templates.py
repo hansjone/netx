@@ -34,6 +34,8 @@ def _out(row: BizMonitorTemplate, compare_name: str = "", *, db: Session | None 
             effective = seen
     if not effective:
         effective = [PORT_METRIC_ID]
+    ct = db.get(BizCompareTemplate, row.compare_template_id) if db and row.compare_template_id else None
+    available = list(dict.fromkeys(str(s.get("metric_id") or "") for s in cmp_svc.template_metrics(ct))) if ct else effective
     out: dict[str, Any] = {
         "id": row.id,
         "name": row.name,
@@ -41,6 +43,7 @@ def _out(row: BizMonitorTemplate, compare_name: str = "", *, db: Session | None 
         "compare_template_name": compare_name,
         "collect_metric_ids": collect,
         "collect_metric_ids_effective": effective,
+        "available_metric_ids": [m for m in available if m],
         "defaults": dict(row.defaults_json or {}),
         "sheet_overrides": list(row.sheet_overrides_json or []),
         "note": row.note or "",

@@ -396,6 +396,8 @@ def _task_summary(task: BizStateTask) -> dict[str, Any]:
         "daily_keep_enabled": bool(getattr(task, "daily_keep_enabled", False)),
         "daily_keep_count": int(getattr(task, "daily_keep_count", None) or 10),
         "collect_running": bool(task.collect_running),
+        "collect_group_id": task.collect_group_id or "",
+        "collect_manual_only": bool(task.collect_manual_only),
         "last_collect_started_at": task.last_collect_started_at.isoformat() + "Z"
         if task.last_collect_started_at
         else None,
@@ -444,6 +446,8 @@ def list_tasks(db: Session, *, purpose: str | None = None) -> list[dict[str, Any
             "status": t.status,
             "interval_sec": t.interval_sec,
             "collect_running": bool(t.collect_running),
+            "collect_group_id": t.collect_group_id or "",
+            "collect_manual_only": bool(t.collect_manual_only),
             "last_error": t.last_error,
             "last_collect_started_at": t.last_collect_started_at.isoformat() + "Z"
             if t.last_collect_started_at

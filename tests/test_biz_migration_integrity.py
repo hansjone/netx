@@ -112,6 +112,97 @@ def test_collected_empty_baseline_can_pass_acceptance(db):
     assert finished["run"]["summary"]["config_snapshot"]["expect_set"]
 
 
+def paired_samples(db):
+    for tid in ("oh", "nh"):
+        db.get(BizStateTask, tid).collect_group_id = "pair"
+    for bid in ("oc", "nc"):
+        sample = db.get(BizStateBatch, bid)
+        sample.collect_group_id = "pair"
+        sample.collect_round_id = "round"
+        sample.queued_at = sample.started_at
+    db.commit()
+
+
+@pytest.mark.parametrize("problem", ["running", "queued", "failed", "round_mismatch"])
+def test_paired_samples_cannot_mix_rounds_or_use_old_success(db, problem):
+    paired_samples(db)
+    if problem == "round_mismatch":
+        db.get(BizStateBatch, "nc").collect_round_id = "another-round"
+    else:
+        db.get(BizStateBatch, "nc").status = problem
+    db.commit()
+    run = svc.run_evaluate(db, batch_id="wave")
+    assert not run["summary"]["coverage_complete"]
+    assert not run["summary"]["anomaly"]  # incomplete pair is unknown, not service loss
+
+
+def test_paired_samples_expose_duration_queue_and_real_start_skew(db):
+    paired_samples(db)
+    for bid in ("oc", "nc"):
+        sample = db.get(BizStateBatch, bid)
+        sample.queued_at = sample.started_at - timedelta(seconds=15)
+        sample.started_at -= timedelta(seconds=5)
+    db.commit()
+    card = svc.run_evaluate(db, batch_id="wave")["summary"]["sheet_cards"][0]
+    assert card["collect_round_id"] == "round"
+    assert card["old_queue_sec"] == 10 and card["old_duration_sec"] == 5
+    assert card["start_skew_sec"] < 1
+
+
+def test_unselected_route_does_not_block_regular_acceptance(db):
+    ct = db.get(BizCompareTemplate, "ct")
+    ct.metrics_json = [*ct.metrics_json, {"metric_id": "ip_route", "sheet_id": "route", "key_fields": ["prefix"]}]
+    db.commit()
+    assert svc.finish_batch(db, "wave")["accept_summary"]["passed"]
+
+
+def test_incremental_evaluation_reuses_route_rows_and_paged_evidence(db):
+    from unittest.mock import patch
+    ct = db.get(BizCompareTemplate, "ct")
+    ct.metrics_json = [*ct.metrics_json, {"metric_id": "ip_route", "sheet_id": "route", "key_fields": ["prefix"], "compare_fields": ["nexthop"]}]
+    db.get(BizMonitorTemplate, "mt").collect_metric_ids_json = ["arp", "ip_route"]
+    # Legacy combined samples also exercise compatibility with existing projects.
+    for bid in ("ob", "nb", "oc", "nc"):
+        db.add(BizStateBatchCommand(id="route-cmd-" + bid, batch_id=bid, metric_id="ip_route", parse_status="ok"))
+    for i in range(2000):
+        db.add(BizStateMetricRow(id=f"route-{i}", batch_id="ob", metric_id="ip_route", data_json={"prefix": str(i), "nexthop": "old"}))
+    db.commit()
+    first = svc.run_evaluate(db, batch_id="wave", purpose="auto")
+    with patch.object(svc, "_load_metric_rows", wraps=svc._load_metric_rows) as load:
+        second = svc.run_evaluate(db, batch_id="wave", purpose="auto", _metric_ids={"arp"})
+    assert all(call.kwargs["metric_id"] == "arp" for call in load.call_args_list)
+    assert svc.list_run_diffs(db, second["id"], sheet_id="route", color="red", limit=100)["total"] == 2000
+    assert db.query(BizMigrationDiff).filter(BizMigrationDiff.run_id == second["id"]).count() == 1
+    assert second["summary"]["anomaly"] == first["summary"]["anomaly"]
+    assert svc.list_run_diffs(db, second["id"], only_expect=True)["total"] == 1
+    # Template correction invalidates cached verdicts and evidence.
+    ct.metrics_json = [ct.metrics_json[0], {**ct.metrics_json[1], "row_filters": [{"field": "prefix", "op": "eq", "value": "1"}]}]
+    db.commit()
+    third = svc.run_evaluate(db, batch_id="wave", purpose="auto", _metric_ids={"arp"})
+    assert svc.list_run_diffs(db, third["id"], sheet_id="route")["total"] == 1
+
+
+def test_baseline_picker_never_loads_route_inventory(db):
+    from unittest.mock import patch
+    ct = db.get(BizCompareTemplate, "ct")
+    ct.metrics_json = [*ct.metrics_json, {"metric_id": "ip_route", "sheet_id": "route", "key_fields": ["prefix"]}]
+    db.get(BizMonitorTemplate, "mt").collect_metric_ids_json = ["arp", "ip_route"]
+    db.commit()
+    with patch.object(svc, "_load_metric_rows", wraps=svc._load_metric_rows) as load:
+        sheets = svc.list_baseline_expect_objects(db, "p")["sheets"]
+    assert {s["metric_id"] for s in sheets} == {"arp"}
+    assert all(c.kwargs["metric_id"] == "arp" for c in load.call_args_list)
+
+
+def test_legacy_auto_monitor_refreshes_changed_samples_without_explicit_metric_bindings(db):
+    assert try_auto_monitor_for_task(db, "nh") == 1
+    db.get(BizStateBatch, "nc").status = "failed"
+    db.commit()
+    assert try_auto_monitor_for_task(db, "nh") == 1
+    last = db.query(BizMigrationRun).order_by(BizMigrationRun.created_at.desc()).first()
+    assert not last.summary_json["coverage_complete"]
+
+
 @pytest.mark.parametrize("problem", ["missing_receipt", "failed_receipt", "stale", "skew", "duplicate", "skipped", "unknown_scope"])
 def test_uncertain_coverage_cannot_pass_acceptance(db, problem):
     if problem == "missing_receipt":

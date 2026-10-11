@@ -138,10 +138,13 @@ class EvidencePersistTests(unittest.TestCase):
         return t
 
     def _mk_batch(self, bid: str, task_id: str) -> BizStateBatch:
+        task = self.db.get(BizStateTask, task_id)
         now = _utcnow()
         b = BizStateBatch(
             id=bid,
             task_id=task_id,
+            collect_group_id=task.collect_group_id or "",
+            collect_round_id="test-" + task.collect_group_id if task.collect_group_id else "",
             status="success",
             started_at=now,
             ended_at=now,
