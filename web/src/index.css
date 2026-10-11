@@ -11210,6 +11210,9 @@ html.login-page--paused .login-page__flare {
 .bm-field-changes div { padding-top: 5px; overflow-wrap: anywhere; }
 .bm-field-changes ins { color: #f87171; text-decoration: none; }
 .bm-board .bs-cmp-main { min-width: 0; }
+.bm-sampling { border: 1px solid rgba(148,163,184,.25); border-radius: 4px; min-width: 0; }
+.bm-sampling > summary { padding: 8px 12px; cursor: pointer; font-size: 12px; }
+.app-heroui-modal .bm-sampling .pt-list-table-wrap { max-width: 100%; min-height: 0; }
 @media (max-width: 720px) {
   .bm-live-sources { grid-template-columns: 1fr; }
   .bm-live-kpis { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 6px; }

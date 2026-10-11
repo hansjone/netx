@@ -15,11 +15,11 @@ page.on("pageerror", (e) => errors.push(e.message));
 let liveRunId = "live-1", uncertain = false, failBoard = false, delayedSheet = "";
 const now = new Date().toISOString();
 const project = { id: "p", name: "核心 PE 替换", old_task_id: "op", new_task_id: "np", old_hf_task_id: "oh", new_hf_task_id: "nh", old_baseline_batch_id: "ob", new_baseline_batch_id: "nb", monitor_template_id: "mt", hf_interval_sec: 60, status: "active", created_at: now,
-  old_task: { id: "op", ne_name: "PE-OLD", ne_ip: "10.0.0.1" }, new_task: { id: "np", ne_name: "PE-NEW", ne_ip: "10.0.0.2" } };
+  collect_metric_ids_effective: ["arp"], old_task: { id: "op", ne_name: "PE-OLD", ne_ip: "10.0.0.1" }, new_task: { id: "np", ne_name: "PE-NEW", ne_ip: "10.0.0.2" } };
 const second = { ...project, id: "p2", name: "第二割接项目" };
 const wave = { id: "wave", batch_label: "第一批 · 客户专线", status: "active", accept_status: "none" };
 const sheets = ["s1", "s2"].map((sid, i) => ({ sheet_id: sid, metric_id: "arp", title: `ARP · ${i ? "专线" : "公网"}`, key_fields: ["ip"], compare_fields: ["mac"], iface_fields: [] }));
-const monitor = { id: "mt", name: "业务连续性", compare_template_id: "ct", compare_template_name: "业务模板", collect_metric_ids: ["arp"], collect_metric_ids_effective: ["arp"], defaults: { custom_setting: false, threshold: 7, out_of_expect: "ignore" }, sheet_overrides: [{ metric_id: "arp", success: [{ old_groups: [["removed"]], new_groups: [["added"]], name: "客户迁移规则" }], anomaly: [] }] };
+const monitor = { id: "mt", name: "业务连续性", compare_template_id: "ct", compare_template_name: "业务模板", collect_metric_ids: ["arp"], collect_metric_ids_effective: ["arp"], available_metric_ids: ["arp", "ip_route"], defaults: { custom_setting: false, threshold: 7, out_of_expect: "ignore" }, sheet_overrides: [{ metric_id: "arp", success: [{ old_groups: [["removed"]], new_groups: [["added"]], name: "客户迁移规则" }], anomaly: [] }] };
 const dataset = Array.from({ length: 601 }, (_, i) => ({ id: `row-${i}`, metric_id: "arp", sheet_id: i % 2 ? "s2" : "s1", verdict: i === 600 ? "anomaly" : "migrated", color: i === 600 ? "red" : "green", in_expect: i !== 600, old_key: `10.1.${Math.floor(i / 255)}.${i % 255}`, new_key: `10.1.${Math.floor(i / 255)}.${i % 255}`, old_status: "gone", new_status: "up", rule_hit: i === 600 ? "service_content_changed" : "success#1", integrity_changes: i === 600 ? [{ field: "mac", before: "aa:bb", after: "cc:dd" }] : [] }));
 function run(rid, pid = "p") {
   return { id: rid, purpose: rid === "hist" ? "manual" : "auto", created_at: now,
@@ -32,6 +32,12 @@ await page.route("**/v1/**", async (route) => {
   let data = { items: [] };
   if (p === "/v1/auth/me") data = { user: { id: "fixture", username: "fixture", role: "admin", is_active: true } };
   else if (req.method() === "PATCH" && p.endsWith("/monitor-templates/mt")) { data = { ...monitor, ...req.postDataJSON() }; writes.push(req.postDataJSON()); }
+  else if (req.method() === "PATCH" && p.endsWith("/projects/p")) {
+    writes.push(req.postDataJSON()); Object.assign(project, req.postDataJSON());
+    project.collect_metric_ids_effective = project.collect_metric_ids;
+    data = project;
+  }
+  else if (p.endsWith("/p/ensure-highfreq")) data = { project, hf_status: "running", collect: { old: [], new: [] } };
   else if (req.method() === "POST" && p.endsWith("/p/batches")) { writes.push(req.postDataJSON()); data = { ...wave, id: "created-wave", ...req.postDataJSON() }; }
   else if (p.endsWith("/biz-migration/projects")) data = { items: [project, second] };
   else if (p.endsWith("/monitor-templates")) data = { items: [monitor] };
@@ -42,7 +48,7 @@ await page.route("**/v1/**", async (route) => {
   else if (p.includes("/biz-migration/projects/") && p.endsWith("/batches")) data = { items: [{ ...wave, id: p.includes("/p2/") ? "wave2" : "wave" }] };
   else if (p.endsWith("/board")) {
     if (failBoard) { await route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ detail: "fixture_refresh_error" }) }); return; }
-    data = { project, batch: wave, run: run(url.searchParams.get("run_id") || liveRunId, p.includes("wave2") ? "p2" : "p") };
+    data = { project, batch: wave, sampling: [{ metric_id: "arp", collect_round_id: "paired-round-1", old_collect_status: "success", new_collect_status: uncertain ? "running" : "success", old_duration_sec: 18, new_duration_sec: 20, old_queue_sec: 2, new_queue_sec: 2, start_skew_sec: 0.4 }], run: run(url.searchParams.get("run_id") || liveRunId, p.includes("wave2") ? "p2" : "p") };
   } else if (p.endsWith("/runs")) data = { items: [run(liveRunId), run("hist")] };
   else if (p.endsWith("/diffs")) {
     let rows = dataset;
@@ -67,7 +73,9 @@ try {
   await dialog().getByText("范围外异常", { exact: true }).waitFor();
   assert.equal(await dialog().locator(".bm-live-kpis .is-bad").last().locator("strong").textContent(), "1");
   assert.equal(requests.filter((r) => r.p.endsWith("/diffs")).at(-1).query.limit, "100");
-  passed.push("live continuity KPIs", "outside anomaly visible before acceptance", "100 row page bound");
+  await dialog().getByText("双端关联采集 · 及时性", { exact: true }).waitFor();
+  assert.equal(await dialog().locator('.bm-sampling tbody td:last-child').textContent(), '0.4 s');
+  passed.push("measured paired start skew", "paired round and duration visible", "live continuity KPIs", "outside anomaly visible before acceptance", "100 row page bound");
   await dialog().getByRole("button", { name: "下一页", exact: true }).click();
   await page.waitForFunction(() => document.querySelector('.bm-board__table tbody tr code')?.textContent === '10.1.0.100');
   passed.push("server pagination beyond first page");
@@ -97,7 +105,8 @@ try {
   await dialog().getByRole("button", { name: "刷新看板", exact: true }).click();
   await dialog().getByText("数据待确认，不能视为验收通过", { exact: true }).waitFor();
   await dialog().getByText(/两侧采集间隔过大/).first().waitFor();
-  passed.push("uncertain sampling visibly blocks healthy appearance", "duplicate key warning");
+  await dialog().getByText("采集中", { exact: true }).waitFor();
+  passed.push("in-flight paired sample remains uncertain", "uncertain sampling visibly blocks healthy appearance", "duplicate key warning");
   uncertain = false;
   await dialog().getByRole("combobox", { name: "判定历史", exact: true }).selectOption("hist");
   await dialog().getByText("历史快照", { exact: true }).waitFor();
@@ -123,6 +132,19 @@ try {
   assert.ok(await dialog().locator(".bm-board").evaluate((el) => el.scrollWidth <= el.clientWidth + 1));
   await page.screenshot({ path: path.join(output, "cutover-monitor-mobile.png"), fullPage: true });
   passed.push("390px responsive board", "table overflow stays within scroll container");
+  await page.setViewportSize({ width: 1440, height: 1080 });
+  await dialog().getByRole("button", { name: "基线配置", exact: true }).click();
+  await dialog().locator('.bm-metric-chip').filter({ hasText: 'ip_route' }).click();
+  await dialog().getByText("手动收尾", { exact: true }).waitFor();
+  assert.equal(await dialog().getByRole("spinbutton", { name: "ip_route interval", exact: true }).count(), 0);
+  await dialog().getByRole("button", { name: "保存配置", exact: true }).click();
+  await page.waitForTimeout(500);
+  assert.deepEqual(writes.at(-1).collect_metric_ids, ['arp', 'ip_route']);
+  await dialog().locator('.bm-metric-chip').filter({ hasText: 'ip_route' }).click();
+  await dialog().getByRole("button", { name: "保存配置", exact: true }).click();
+  await page.waitForTimeout(500);
+  assert.deepEqual(writes.at(-1).collect_metric_ids, ['arp']);
+  passed.push("route can be selected from comparison items", "route has manual mode instead of periodic interval", "dynamic metric additions saved explicitly", "removed metric no longer selected");
   await dialog().getByRole("button", { name: "割接批次", exact: true }).click();
   await page.waitForFunction(() => document.querySelectorAll('.bm-expect-table tbody tr').length === 100);
   await dialog().getByRole("checkbox", { name: "ARP · 公网 业务 0", exact: true }).check();

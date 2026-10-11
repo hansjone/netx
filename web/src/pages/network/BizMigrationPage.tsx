@@ -50,6 +50,8 @@ type CreateStep = 0 | 1 | 2 | 3;
 const CREATE_NE_PAGE_SIZE_DEFAULT = 20;
 const CREATE_NE_PAGE_SIZE_OPTIONS = [10, 20, 50, 100];
 const CREATE_STEPS = 4;
+const MANUAL_ROUTE_METRICS = new Set(["ip_route", "ipv6_route", "bgp_route"]);
+const isManualMetric = (mid: string) => MANUAL_ROUTE_METRICS.has(mid);
 
 function neSourceOf(row: CliTargetItem): "managed" | "ume" {
   return row.source === "ume" ? "ume" : "managed";
@@ -75,12 +77,13 @@ function monitorTplMetrics(tpl: MonitorTplOpt | null | undefined): string[] {
   return mids.length ? mids : ["interface_brief"];
 }
 
-/** Empty override = use monitor-template default (full effective set). */
-function collectOverridePayload(selected: string[], available: string[]): string[] {
-  if (!available.length) return selected.filter(Boolean);
-  const sel = new Set(selected.filter(Boolean));
-  if (sel.size === available.length && available.every((m) => sel.has(m))) return [];
-  return [...sel];
+// Freeze the operator selection; later template additions stay opt-in.
+function collectOverridePayload(selected: string[], _available: string[]): string[] {
+  return [...new Set(selected.filter(Boolean))];
+}
+
+function availableTplMetrics(tpl: MonitorTplOpt | null | undefined): string[] {
+  return tpl?.available_metric_ids?.length ? tpl.available_metric_ids : monitorTplMetrics(tpl);
 }
 
 function metricIntervalPayload(
@@ -90,7 +93,7 @@ function metricIntervalPayload(
   const out: Record<string, number> = {};
   for (const mid of selected) {
     const raw = intervals[mid];
-    if (raw && Number(raw) >= 60) out[mid] = Math.max(60, Number(raw));
+    if (!isManualMetric(mid) && raw && Number(raw) >= 60) out[mid] = Math.max(60, Number(raw));
   }
   return out;
 }
@@ -139,15 +142,24 @@ function mapMigrationApiErr(
   }
   if (detail === "old_baseline_required") return t("bizMigration.errOldBaselineRequired");
   if (detail === "new_baseline_required") return t("bizMigration.errNewBaselineRequired");
+  if (detail === "collect_pair_same_device") return t("bizMigration.errPairSameDevice");
   return formatErr(e);
 }
 
+function collectErrorMessage(code: string, t: (key: string) => string): string {
+  const keys: Record<string, string> = {
+    collect_pair_capacity: "errPairCapacity", collect_pair_busy: "errPairBusy",
+    collect_pair_invalid: "errPairInvalid", hf_task_missing: "hfNotBound",
+  };
+  return keys[code] ? t(`bizMigration.${keys[code]}`) : code || "collect_failed";
+}
+
 function formatHfBindLine(
-  binds?: Array<{ task_id: string; metric_ids?: string[]; interval_sec?: number }>,
+  binds?: Array<{ task_id: string; metric_ids?: string[]; interval_sec?: number; manual_only?: boolean; collect_group_id?: string }>,
 ): string {
   if (!binds?.length) return "";
   return binds
-    .map((b) => `${b.interval_sec || 60}s·${(b.metric_ids || []).join("+") || "—"}`)
+    .map((b) => `${b.manual_only ? "manual" : `${b.interval_sec || 60}s`}·${(b.metric_ids || []).join("+") || "—"}`)
     .join(" · ");
 }
 
@@ -172,6 +184,7 @@ type MonitorTplOpt = {
   compare_template_name?: string;
   collect_metric_ids?: string[];
   collect_metric_ids_effective?: string[];
+  available_metric_ids?: string[];
 };
 type Project = {
   id: string;
@@ -180,8 +193,8 @@ type Project = {
   new_task_id: string;
   old_hf_task_id?: string;
   new_hf_task_id?: string;
-  old_hf_bindings?: Array<{ task_id: string; metric_ids?: string[]; interval_sec?: number }>;
-  new_hf_bindings?: Array<{ task_id: string; metric_ids?: string[]; interval_sec?: number }>;
+  old_hf_bindings?: Array<{ task_id: string; metric_ids?: string[]; interval_sec?: number; manual_only?: boolean; collect_group_id?: string }>;
+  new_hf_bindings?: Array<{ task_id: string; metric_ids?: string[]; interval_sec?: number; manual_only?: boolean; collect_group_id?: string }>;
   old_baseline_batch_id: string;
   new_baseline_batch_id: string;
   mapping_id: string;
@@ -276,6 +289,18 @@ type RedTicket = {
   status: string;
   evidence?: DiffRow["evidence"];
 };
+type SamplingPair = {
+  metric_id: string;
+  manual_only?: boolean;
+  collect_round_id?: string;
+  old_collect_status?: string;
+  new_collect_status?: string;
+  old_duration_sec?: number;
+  new_duration_sec?: number;
+  old_queue_sec?: number;
+  new_queue_sec?: number;
+  start_skew_sec?: number;
+};
 type SheetCard = {
   metric_id: string;
   sheet_id?: string;
@@ -294,6 +319,7 @@ type SheetCard = {
   duplicate_keys_before?: number;
   duplicate_keys_after?: number;
   age_limit_sec?: number;
+  baseline_missing_sides?: string[];
 };
 type EvalRun = {
   id: string;
@@ -419,6 +445,7 @@ export function BizMigrationPage() {
   const [batches, setBatches] = useState<MigBatch[]>([]);
   const [batchId, setBatchId] = useState("");
   const [board, setBoard] = useState<{
+    sampling?: SamplingPair[];
     run?: {
       id: string;
       created_at?: string;
@@ -483,7 +510,9 @@ export function BizMigrationPage() {
   const samplesStale = monitorIsLive && sheetCards.some((c) =>
     [c.old_collected_at, c.new_collected_at].some((at) => at &&
       boardClock - Date.parse(at) > (c.age_limit_sec || 180) * 1000));
-  const coverageUnknown = Boolean(board?.run && (liveSummary?.coverage_complete !== true || samplesStale));
+  const pairedPending = followLatest && board?.sampling?.some((pair) =>
+    [pair.old_collect_status, pair.new_collect_status].some((s) => !["success", "partial"].includes(s || "idle")));
+  const coverageUnknown = Boolean(board?.run && (liveSummary?.coverage_complete !== true || samplesStale || pairedPending));
 
   const filteredProjects = useMemo(() => {
     const kw = debouncedListKw.trim().toLowerCase();
@@ -693,6 +722,9 @@ export function BizMigrationPage() {
             collect_metric_ids_effective: Array.isArray(x.collect_metric_ids_effective)
               ? (x.collect_metric_ids_effective as string[])
               : [],
+            available_metric_ids: Array.isArray(x.available_metric_ids)
+              ? (x.available_metric_ids as string[])
+              : [],
           }));
           setMonitorTpls(mts);
           if (!createMonitorTplId && mts.length) {
@@ -701,7 +733,7 @@ export function BizMigrationPage() {
               mts.find((x) => /默认|default|状态|status/i.test(x.name)) ||
               mts[0];
             setCreateMonitorTplId(preferred.id);
-            setCreateCollectMetricIds(monitorTplMetrics(preferred));
+            setCreateCollectMetricIds(monitorTplMetrics(preferred).filter((mid) => !isManualMetric(mid)));
           }
         };
         apply(await cutoverCachedGetSWR("bizMigration:bootstrap", fetchBundle, apply));
@@ -1086,7 +1118,7 @@ export function BizMigrationPage() {
       monitorTpls[0];
     const tplId = preferred?.id || "";
     setCreateMonitorTplId(tplId);
-    setCreateCollectMetricIds(monitorTplMetrics(preferred));
+    setCreateCollectMetricIds(monitorTplMetrics(preferred).filter((mid) => !isManualMetric(mid)));
   }
 
   const openCreate = () => {
@@ -1443,7 +1475,7 @@ export function BizMigrationPage() {
       } else if (sum.kind === "partial") {
         showError(t("bizMigration.collectPartial", { ok: String(sum.okN), fail: String(sum.failN) }));
       } else if (sum.kind === "fail" || sum.kind === "missing") {
-        showError(sum.err === "hf_task_missing" ? t("bizMigration.hfNotBound") : sum.err);
+        showError(collectErrorMessage(sum.err, t));
       } else {
         showOk(t("bizMigration.highfreqReady"));
       }
@@ -1468,7 +1500,7 @@ export function BizMigrationPage() {
       else if (sum.kind === "missing") showError(t("bizMigration.hfNotBound"));
       else if (sum.kind === "partial") {
         showError(t("bizMigration.collectPartial", { ok: String(sum.okN), fail: String(sum.failN) }));
-      } else if (sum.kind === "fail") showError(sum.err || "collect_failed");
+      } else if (sum.kind === "fail") showError(collectErrorMessage(sum.err, t));
       else showOk(t("bizMigration.collectTriggered"));
     } catch (e) {
       showError(formatErr(e));
@@ -1525,7 +1557,7 @@ export function BizMigrationPage() {
 
   const collectMetricOptions = useMemo(() => {
     const set = new Set<string>();
-    for (const m of monitorTplMetrics(selectedMonitorTpl as MonitorTplOpt | null)) {
+    for (const m of availableTplMetrics(selectedMonitorTpl as MonitorTplOpt | null)) {
       if (m) set.add(m);
     }
     for (const m of project?.collect_metric_ids_effective || []) {
@@ -1557,7 +1589,7 @@ export function BizMigrationPage() {
 
   const createTplMetrics = useMemo(() => {
     const tpl = monitorTpls.find((m) => m.id === createMonitorTplId);
-    const base = monitorTplMetrics(tpl);
+    const base = availableTplMetrics(tpl);
     const set = new Set([...base, ...createCollectMetricIds]);
     return [...set];
   }, [monitorTpls, createMonitorTplId, createCollectMetricIds]);
@@ -1942,7 +1974,7 @@ export function BizMigrationPage() {
                   const id = e.target.value;
                   setCreateMonitorTplId(id);
                   const tpl = monitorTpls.find((m) => m.id === id);
-                  setCreateCollectMetricIds(monitorTplMetrics(tpl));
+                  setCreateCollectMetricIds(monitorTplMetrics(tpl).filter((mid) => !isManualMetric(mid)));
                   setCreateMetricIntervalSec({});
                 }}
                 fullWidth
@@ -1960,6 +1992,7 @@ export function BizMigrationPage() {
                   {createCollectMetricIds.length}/{createTplMetrics.length}
                 </span>
               </div>
+              <p className="muted bm-hint">{t("bizMigration.pairCollectionHint")}</p>
               <div className="bm-metric-chips">
                 {createTplMetrics.map((mid) => {
                   const on = createCollectMetricIds.includes(mid);
@@ -1974,7 +2007,7 @@ export function BizMigrationPage() {
                         );
                       }}
                     >
-                      {mid}
+                      {mid}{isManualMetric(mid) ? <small> · {t("bizMigration.manualRoute")}</small> : null}
                     </button>
                   );
                 })}
@@ -2035,7 +2068,7 @@ export function BizMigrationPage() {
                           <tr key={mid}>
                             <td>{mid}</td>
                             <td>
-                              <Input
+                              {isManualMetric(mid) ? <span>{t("bizMigration.manualRoute")}</span> : <Input
                                 type="number"
                                 min={60}
                                 placeholder={String(createHfIntervalSec)}
@@ -2047,7 +2080,7 @@ export function BizMigrationPage() {
                                   }))
                                 }
                                 aria-label={`${mid} interval`}
-                              />
+                              />}
                             </td>
                           </tr>
                         ))}
@@ -2330,6 +2363,7 @@ export function BizMigrationPage() {
                   </div>
                   <div className="bm-hf-collect">
                     <div className="bm-mapping__label">{t("bizMigration.projectCollectMetrics")}</div>
+                    <p className="muted bm-hint">{t("bizMigration.pairCollectionHint")}</p>
                     <div className="bm-metric-chips">
                       {collectMetricOptions.map((mid) => {
                         const on = collectMetricIds.includes(mid);
@@ -2344,7 +2378,7 @@ export function BizMigrationPage() {
                               );
                             }}
                           >
-                            {mid}
+                            {mid}{isManualMetric(mid) ? <small> · {t("bizMigration.manualRoute")}</small> : null}
                           </button>
                         );
                       })}
@@ -2366,7 +2400,7 @@ export function BizMigrationPage() {
                               <tr key={mid}>
                                 <td>{mid}</td>
                                 <td>
-                                  <Input
+                                  {isManualMetric(mid) ? <span>{t("bizMigration.manualRoute")}</span> : <Input
                                     type="number"
                                     min={60}
                                     placeholder={String(hfIntervalSec)}
@@ -2378,7 +2412,7 @@ export function BizMigrationPage() {
                                       }))
                                     }
                                     aria-label={`${mid} interval`}
-                                  />
+                                  />}
                                 </td>
                               </tr>
                             ))}
@@ -2703,9 +2737,27 @@ export function BizMigrationPage() {
                     <div className="is-bad"><span>{t("bizMigration.anomalyInBatch")}</span><strong>{Math.max(0, (liveSummary?.anomaly ?? 0) - (liveSummary?.anomaly_outside_expect ?? 0))}</strong></div>
                     <div className="is-bad"><span>{t("bizMigration.anomalyOutsideBatch")}</span><strong>{liveSummary?.anomaly_outside_expect ?? 0}</strong></div>
                   </div>
+                  {followLatest && board?.sampling?.length ? <details className="bm-sampling" open>
+                    <summary>{t("bizMigration.pairedSampling")}</summary>
+                    <div className="pt-list-table-wrap"><table className="data-table pt-list-table">
+                      <thead><tr><th>{t("bizMigration.sectionMetrics")}</th><th>{t("bizMigration.samplingMode")}</th><th>{t("bizMigration.colOld")}</th><th>{t("bizMigration.colNew")}</th><th>{t("bizMigration.samplingDuration")}</th><th>{t("bizMigration.samplingQueue")}</th><th>{t("bizMigration.startSkew")}</th></tr></thead>
+                      <tbody>{board.sampling.map((pair) => <tr key={pair.metric_id}>
+                        <td><code>{pair.metric_id}</code><small className="bm-scope-label">{pair.collect_round_id ? t("bizMigration.sameRound") + " " + pair.collect_round_id.slice(0, 8) : "—"}</small></td>
+                        <td>{t(pair.manual_only ? "bizMigration.manualRoute" : "bizMigration.pairedPeriodic")}</td>
+                        <td>{t("bizMigration.samplePhase_" + (pair.old_collect_status || "idle"))}</td>
+                        <td>{t("bizMigration.samplePhase_" + (pair.new_collect_status || "idle"))}</td>
+                        <td>{Math.round(pair.old_duration_sec || 0)} / {Math.round(pair.new_duration_sec || 0)} s</td>
+                        <td>{Math.round(pair.old_queue_sec || 0)} / {Math.round(pair.new_queue_sec || 0)} s</td>
+                        <td>{pair.start_skew_sec == null ? "—" : pair.start_skew_sec.toFixed(1) + " s"}</td>
+                      </tr>)}</tbody>
+                    </table></div>
+                  </details> : null}
                   {coverageUnknown ? <div className="bm-live-warning" role="status">
                     <strong>{t("bizMigration.coverageUnknown")}</strong><span>{t("bizMigration.coverageUnknownHint")}</span>
                     {samplesStale ? <span>{t("bizMigration.sample_stale")}</span> : null}
+                    {pairedPending ? <span>{t("bizMigration.collect_pair_pending")}</span> : null}
+                    {sheetCards.filter((c) => c.baseline_missing_sides?.length).map((c) =>
+                      <span key={sheetIdentity(c)}>{sheetLabel(c)}: {t("bizMigration.metricBaselineMissing")}</span>)}
                     {sheetCards.filter((c) => c.sample_issues?.length || c.awaiting_peer).map((c) =>
                       <span key={sheetIdentity(c)}>{sheetLabel(c)}: {c.awaiting_peer ? t("bizMigration.awaitingPeer") :
                         c.sample_issues?.map((issue) => t(`bizMigration.${issue}`)).join(" · ")}</span>)}
