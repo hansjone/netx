@@ -992,6 +992,7 @@ const zh = {
   },
   bizMonitorTpl: {
     title: "监控模板",
+    help: "对比模板定义怎么对齐/比对；监控模板按同表定义搬迁成功条件。",
     hint: "对比模板定义「怎么对齐/比对」；监控模板按同样的表（sheet）定义「怎样算搬迁成功/失败」。",
     create: "新建监控模板",
     edit: "编辑",
@@ -1556,6 +1557,7 @@ const zh = {
     loginFailed: "登录失败",
     logout: "退出",
     sessionsTitle: "登录会话",
+    sessionsHelp: "反代后 IP 取真实客户端；同公网可用「客户端」列区分。踢掉后需重新登录。",
     sessionsHint:
       "管理当前账号在各浏览器/设备上的登录。IP 经反代时会取真实客户端地址；同公网出口可用「客户端」列区分浏览器/系统。踢掉会话后对方需重新登录。",
     sessionsEmpty: "当前没有活跃会话。",
@@ -1599,7 +1601,7 @@ const zh = {
     colIp: "IP",
     apiKeysTitle: "API Key 管理",
     apiKeysHelp:
-      "网页登录不用 API Key，Key 给 MCP/脚本与 netxops 用。生成时默认 alarms:read + ne:read + ne:write + ne:exec + biz-monitor:read，之后用「改权限」增减（保存即生效，不必重生明文）。明文仅创建时显示一次。管理员可代其他用户签发，权限不能超过所属用户已有能力；未接的项为预留。全站未吊销 Key 上限 {{max}} 把（吊销或删除后可再建）。",
+      "供 MCP/脚本与 netxops 使用（网页登录用会话）。明文仅创建时显示一次；可用「改权限」调整。未吊销上限 {{max}}。",
     tokenQuota: "未吊销 {{active}} / {{max}}",
     tokenLimitReached: "已达 API Key 上限（{{max}}），请先吊销或删除不用的 Key",
     tokenName: "名称",
@@ -1873,16 +1875,16 @@ const zh = {
     },
     help:
       "【批量导入】\n" +
-      "· 必填列：device_type、ip、username、port、protocol、name、vendor；可先下载模板。\n" +
-      "· password 可留空（直连需填；堡垒机托管或后续批量添加代理时可空）。\n" +
-      "· 推荐流程：先导入网元 → 勾选网元 → 点「批量添加代理」统一配置跳板/堡垒机。\n\n" +
+      "· 必填列：device_type、ip、username、port、protocol、name、vendor（可先下载模板）\n" +
+      "· password 可留空：直连需填；堡垒机托管或后续「批量添加代理」时可空\n" +
+      "· 推荐：导入网元 → 勾选 →「批量添加代理」统一配置跳板\n\n" +
       "【跳板 / 堡垒机】\n" +
-      "· 堡垒机 SSH 用户名模板：{hop_user}@{target_user}@{target_ip}（堡垒机地址单独填在跳板地址）；命令行等价：ssh 用户@目标@IP@堡垒机。\n" +
-      "· 堡垒机托管时填「跳板密码」（Vault 密码），目标密码可留空；手动模式需填目标密码。\n" +
-      "· JumpServer/CBH 常用跳板端口 2222，部分现场为 22。\n\n" +
+      "· 用户名模板：{hop_user}@{target_user}@{target_ip}（堡垒机地址另填跳板地址）\n" +
+      "· 托管模式填跳板密码（Vault）；目标密码可空。手动模式需填目标密码\n" +
+      "· JumpServer/CBH 跳板端口多为 2222，部分现场为 22\n\n" +
       "【连通性 / 编辑】\n" +
-      "· 保存密码需配置 NETX_CREDENTIAL_SECRET_KEY。\n" +
-      "· 编辑时密码留空表示不修改；连通性失败请点「详情」查看 hop 上下文（不含密码）。",
+      "· 保存密码需配置 NETX_CREDENTIAL_SECRET_KEY\n" +
+      "· 编辑时密码留空表示不改；失败请看「详情」中的 hop 上下文（不含密码）",
     importResult: {
       done: "导入完成：新增 {{inserted}}，更新 {{updated}}，失败 {{failed}} 行",
     },
@@ -1989,7 +1991,12 @@ const zh = {
     subscription: {
       title: "UME 告警订阅（WebSocket）",
       help:
-        "订阅需手动建立/取消；建立后（或重启后若库中仍有有效订阅）后台会自动连接 WSS 接收实时告警。后台任务 alarms_current_ws_consumer 的 pause/resume 会停止或恢复 WSS 连接（不会取消 UME 订阅）。",
+        "【订阅】\n" +
+        "· 需手动建立 / 取消\n" +
+        "· 建立后（或重启且库中仍有效）后台自动连 WSS 收实时告警\n\n" +
+        "【任务控制】\n" +
+        "· alarms_current_ws_consumer 的 pause/resume 只停/启 WSS\n" +
+        "· 不会取消 UME 侧订阅",
       sub: "订阅",
       subActive: "已建立",
       subInactive: "未建立",
@@ -2030,7 +2037,14 @@ const zh = {
       title: "AI 告警监控",
       showPanel: "详情",
       hidePanel: "关闭",
-      help: "按 notificationId 精确匹配，或按告警描述关键字模糊匹配（不区分大小写，匹配 nativeProbableCause 等字段）；可选限定 UME Inventory 中的网元类型 (ne_type)，不选则匹配全部设备。命中后由 NetX 作为服务器广播给已订阅的 Netx Ops（DSH）客户端。",
+      help:
+        "【匹配】\n" +
+        "· notificationId 精确匹配\n" +
+        "· 或告警描述关键字模糊匹配（不区分大小写，含 nativeProbableCause 等）\n\n" +
+        "【范围】\n" +
+        "· 可选限定 Inventory 的 ne_type；不选则匹配全部设备\n\n" +
+        "【投递】\n" +
+        "· 命中后由 NetX 广播给已订阅的 Netx Ops（DSH）客户端",
       hub: "DSH 订阅",
       hubConnected: "有订阅",
       hubEmpty: "无订阅",
@@ -2180,7 +2194,11 @@ const zh = {
       title: "UME CLI 连接配置",
       showPanel: "详情",
       hidePanel: "关闭",
-      hint: "为 UME 清单网元配置统一 SSH 凭据与跳板/堡垒机；OClaw MCP 可通过 ume_ne_id 直接执行 show 命令，无需逐台录入 managed_ne。",
+      hint:
+        "【用途】\n" +
+        "· 为 Inventory 网元配置统一 SSH 凭据与跳板/堡垒机\n\n" +
+        "【MCP】\n" +
+        "· 可用 ume_ne_id 直接执行 show，无需逐台录入 managed_ne",
       statusReady: "CLI 配置已就绪，可对 UME 网元执行命令。",
       statusNotReady: "请填写目标用户名，并配置跳板/堡垒机（若启用）。",
       profileName: "配置名称",

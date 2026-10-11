@@ -69,7 +69,6 @@ export function UsersPage() {
         <div className="panel__toolbar">
           <h2>{t("auth.usersTitle")}</h2>
         </div>
-        <p className="panel__hint">{t("auth.usersHint")}</p>
 
         <div className="pt-list">
           <form className="filter-inline" onSubmit={onCreate}>

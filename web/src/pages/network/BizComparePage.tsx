@@ -2498,9 +2498,6 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
 
         {activeTab === "templates" ? (
           <div className="pt-list-table-wrap">
-            <p className="muted" style={{ margin: "0 0 8px" }}>
-              {t("bizCompare.templateImportHint")}
-            </p>
             <table className="data-table pt-list-table">
               <thead>
                 <tr>

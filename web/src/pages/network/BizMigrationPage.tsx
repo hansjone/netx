@@ -1,6 +1,6 @@
 import { Button, Input, Modal } from "@heroui/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { ListPager } from "../../components/ListPager";
 import { AppModalShell } from "../../components/ui/AppModalShell";
 import { FieldSelect } from "../../components/ui/FieldSelect";
@@ -383,6 +383,7 @@ function fmtTime(v?: string | null) {
 
 export function BizMigrationPage() {
   const { t } = useI18n();
+  const navigate = useNavigate();
   const { showOk, showError } = useToast();
 
   const [projects, setProjects] = useState<Project[]>([]);
@@ -1694,17 +1695,25 @@ export function BizMigrationPage() {
       <div className="panel__toolbar">
         <h2>{t("bizMigration.title")}</h2>
         <div className="btn-row">
+          <Button
+            size="sm"
+            variant="secondary"
+            onPress={() => navigate("/network/cutover/monitor-templates")}
+          >
+            {t("network.nav.monitorTemplates")}
+          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
+            onPress={() => navigate("/network/cutover/compare-templates")}
+          >
+            {t("network.nav.compareTemplates")}
+          </Button>
           <Button size="sm" variant="primary" onPress={openCreate}>
             {t("bizMigration.create")}
           </Button>
         </div>
       </div>
-      <p className="panel__hint muted">
-        {t("bizMigration.hintShort")}{" "}
-        <Link to="/network/cutover/monitor-templates">{t("network.nav.monitorTemplates")}</Link>
-        {" · "}
-        <Link to="/network/cutover/compare-templates">{t("network.nav.compareTemplates")}</Link>
-      </p>
 
       <div className="pt-list">
         <div className="pt-list-kpis">

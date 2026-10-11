@@ -997,6 +997,7 @@ const en = {
   },
   bizMonitorTpl: {
     title: "Monitor templates",
+    help: "Compare templates define align/diff; monitor templates define migrate success on the same sheets.",
     hint: "Compare templates define HOW to align/diff; monitor templates define WHEN dual-device migrate succeeds — one sheet tab per compare sheet.",
     create: "New monitor template",
     edit: "Edit",
@@ -1568,6 +1569,8 @@ const en = {
     loginFailed: "Login failed",
     logout: "Sign out",
     sessionsTitle: "Login sessions",
+    sessionsHelp:
+      "Behind a proxy, IP is the real client; use Client to tell browsers apart. Revoked sessions must sign in again.",
     sessionsHint:
       "Manage browser/device logins for this account. Behind a reverse proxy, IP is taken from trusted forwarded headers; use the Client column to tell browsers apart on the same public IP. Revoked sessions must sign in again.",
     sessionsEmpty: "No active sessions.",
@@ -1611,7 +1614,7 @@ const en = {
     colIp: "IP",
     apiKeysTitle: "API Key management",
     apiKeysHelp:
-      "The web UI uses login sessions, not API keys — keys are for MCP/scripts and netxops. Defaults on create: alarms:read + ne:read + ne:write + ne:exec + biz-monitor:read; refine later with Edit scopes (takes effect immediately, no need to regenerate). Secret is shown once. Admins may issue for other users; scopes cannot exceed the owner's. Unused scopes are reserved. System-wide cap: {{max}} non-revoked keys (revoke or delete to free a slot).",
+      "For MCP/scripts and netxops (web UI uses sessions). Secret shown once; Edit scopes later. Cap {{max}} non-revoked keys.",
     tokenQuota: "Active {{active}} / {{max}}",
     tokenLimitReached: "API key limit reached ({{max}}). Revoke or delete unused keys first.",
     tokenName: "Name",
@@ -1889,16 +1892,16 @@ const en = {
     },
     help:
       "[Bulk import]\n" +
-      "· Required columns: device_type, ip, username, port, protocol, name, vendor. Download the template first.\n" +
-      "· password may be empty (required for direct login; optional for bastion-managed or batch proxy later).\n" +
-      "· Recommended flow: import NEs first, select rows, then use Batch add proxy.\n\n" +
+      "· Required: device_type, ip, username, port, protocol, name, vendor (download template first)\n" +
+      "· password may be empty for bastion-managed / later Batch add proxy; required for direct login\n" +
+      "· Flow: import → select rows → Batch add proxy\n\n" +
       "[Jump / bastion]\n" +
-      "· Bastion SSH username template: {hop_user}@{target_user}@{target_ip} (bastion host is separate IP or FQDN); CLI: ssh user@target@ip@bastion-host.\n" +
-      "· Bastion-managed: set Jump password (Vault); target password optional. Manual mode needs target password.\n" +
-      "· Jump host accepts IP (192.0.2.10) or domain (ssh-bastion.example.com). JumpServer/CBH often use port 2222; some sites use 22.\n\n" +
+      "· Username template: {hop_user}@{target_user}@{target_ip} (bastion host filled separately)\n" +
+      "· Managed mode: Jump password (Vault); target password optional. Manual mode needs target password\n" +
+      "· JumpServer/CBH ports often 2222; some sites use 22\n\n" +
       "[Connectivity / edit]\n" +
-      "· NETX_CREDENTIAL_SECRET_KEY required to store passwords.\n" +
-      "· Leave password blank on edit to keep unchanged; open Details after failed connect-test for hop context (no secrets).",
+      "· Storing passwords needs NETX_CREDENTIAL_SECRET_KEY\n" +
+      "· Blank password on edit keeps current; use Details hop context after failed connect (no secrets)",
     importResult: {
       done: "Import done: {{inserted}} inserted, {{updated}} updated, {{failed}} failed row(s)",
     },
@@ -2005,7 +2008,12 @@ const en = {
     subscription: {
       title: "UME alarm subscription (WebSocket)",
       help:
-        "Subscriptions must be created/cancelled manually. After establish (or on restart if a valid subscription exists in DB), the backend auto-connects WSS for live alarms. Pause/resume on runtime task alarms_current_ws_consumer stops/resumes WSS only (does not cancel the UME subscription).",
+        "[Subscription]\n" +
+        "· Create / cancel manually\n" +
+        "· After establish (or restart with a valid DB record), backend auto-connects WSS\n\n" +
+        "[Task control]\n" +
+        "· alarms_current_ws_consumer pause/resume only stops/starts WSS\n" +
+        "· Does not cancel the UME subscription",
       sub: "subscription",
       subActive: "active",
       subInactive: "inactive",
@@ -2046,7 +2054,14 @@ const en = {
       title: "AI alarm monitor",
       showPanel: "Details",
       hidePanel: "Close",
-      help: "Exact match by notificationId, or substring match on alarm description (case-insensitive; nativeProbableCause, etc.). Optionally restrict to UME inventory ne_type values (multi-select; empty = all devices). Matched alerts are broadcast by NetX (server) to subscribed Netx Ops (DSH) clients.",
+      help:
+        "[Match]\n" +
+        "· Exact notificationId\n" +
+        "· Or description keyword (case-insensitive; includes nativeProbableCause)\n\n" +
+        "[Scope]\n" +
+        "· Optional Inventory ne_type filter; empty = all devices\n\n" +
+        "[Deliver]\n" +
+        "· NetX broadcasts hits to subscribed Netx Ops (DSH) clients",
       hub: "DSH subscribers",
       hubConnected: "subscribed",
       hubEmpty: "no subscribers",
@@ -2196,7 +2211,11 @@ const en = {
       title: "UME CLI connection profile",
       showPanel: "Details",
       hidePanel: "Close",
-      hint: "Unified SSH credentials and hop/bastion for UME inventory NEs. OClaw MCP can exec show commands via ume_ne_id without per-device managed_ne entries.",
+      hint:
+        "[Purpose]\n" +
+        "· Unified SSH credentials and hop/bastion for Inventory NEs\n\n" +
+        "[MCP]\n" +
+        "· Exec show via ume_ne_id without per-device managed_ne entries",
       statusReady: "CLI profile is ready for UME NE command execution.",
       statusNotReady: "Set target username and hop/bastion settings (if enabled).",
       profileName: "Profile name",

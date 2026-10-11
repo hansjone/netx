@@ -639,7 +639,6 @@ export function CollectPage() {
             />
           </label>
         </div>
-        <p className="panel__hint">{t("collect.form.commandsHint")}</p>
 
         {policyScopeMode === "selected" ? (
           <div style={{ marginTop: 12 }}>
@@ -817,7 +816,6 @@ export function CollectPage() {
           <Modal.CloseTrigger isDisabled={createMutation.isPending} />
         </Modal.Header>
         <Modal.Body className="flex flex-col gap-3">
-          <p className="muted">{t("collect.create.hint")}</p>
           <div className="collect-create-modal">
             <div className="form-grid form-grid--single">
               <label className="form-grid__full">
@@ -839,7 +837,6 @@ export function CollectPage() {
                 />
               </label>
             </div>
-            <p className="panel__hint">{t("collect.form.commandsHint")}</p>
 
             <div className="collect-selected-block">
               <div className="collect-selected-block__head">
@@ -854,7 +851,7 @@ export function CollectPage() {
                 ) : null}
               </div>
               {selectedList.length === 0 ? (
-                <p className="panel__hint">{t("collect.create.selectedEmpty")}</p>
+                <p className="muted">{t("collect.create.selectedEmpty")}</p>
               ) : (
                 <div className="collect-selected-list">
                   {selectedList.map((row) => {
@@ -884,7 +881,6 @@ export function CollectPage() {
               <div className="panel__toolbar">
                 <div>
                   <h3>{t("collect.create.pickTitle")}</h3>
-                  <p className="panel__hint">{t("collect.create.pickHint")}</p>
                 </div>
                 <div className="table-actions">
                   <Button

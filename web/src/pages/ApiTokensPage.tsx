@@ -2,6 +2,7 @@ import { Button, Checkbox, Input, Modal } from "@heroui/react";
 import { useMemo, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "../auth/AuthContext";
+import { HelpHint } from "../components/HelpHint";
 import { AppModalShell } from "../components/ui/AppModalShell";
 import { FieldSelect } from "../components/ui/FieldSelect";
 import { useI18n } from "../i18n";
@@ -226,14 +227,9 @@ export function ApiTokensPage() {
     <div className="page-stack system-page">
       <section className="panel">
         <div className="panel__toolbar">
-          <h2 className="token-page__title">
+          <h2 className="token-page__title card-title-with-hint">
             {t("auth.apiKeysTitle")}
-            <span className="help-q" tabIndex={0} aria-label={t("auth.apiKeysHelp", { max: tokenMax || 20 })}>
-              ?
-              <span className="help-q__tip" role="tooltip">
-                {t("auth.apiKeysHelp", { max: tokenMax || 20 })}
-              </span>
-            </span>
+            <HelpHint text={t("auth.apiKeysHelp", { max: tokenMax || 20 })} ariaLabel={t("common.help")} />
           </h2>
           {tokenMax > 0 ? (
             <span className="muted" style={{ fontSize: 13 }}>

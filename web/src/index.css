@@ -1918,15 +1918,16 @@ pre {
   z-index: 40;
   width: min(360px, 80vw);
   padding: 10px 12px;
-  border: 1px solid rgba(148, 163, 184, 0.28);
-  border-radius: 8px;
-  background: #0f172a;
-  color: #e2e8f0;
-  font-size: 13px;
+  border: 1px solid var(--nm-ops-line, #2b3748);
+  border-radius: 6px;
+  background: #0c1521;
+  color: #d7e3f2;
+  font-size: 12px;
   font-weight: 400;
-  line-height: 1.45;
+  line-height: 1.5;
   white-space: pre-line;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  box-shadow: none;
+  overflow: auto;
 }
 
 .help-hint--align-end .help-hint__popover {
@@ -1939,9 +1940,77 @@ pre {
   width: auto;
 }
 
+.help-hint__popover--structured {
+  width: min(420px, 86vw);
+  white-space: normal;
+  padding: 12px 14px;
+}
+
 .help-hint__popover--nowrap {
   width: max-content;
   max-width: min(90vw, 720px);
+  white-space: nowrap;
+}
+
+.help-hint__body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.help-hint__plain {
+  white-space: pre-line;
+}
+
+.help-hint__section-title {
+  margin: 2px 0 0;
+  padding-bottom: 5px;
+  border-bottom: 1px solid var(--nm-ops-line, #2b3748);
+  color: var(--nm-ops-accent, #6ba9ec);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  line-height: 1.35;
+}
+
+.help-hint__section-title:first-child {
+  margin-top: 0;
+}
+
+.help-hint__list {
+  margin: 0;
+  padding: 0 0 0 1.05rem;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  color: var(--nm-ops-muted, #9aa9bc);
+}
+
+.help-hint__list > li {
+  padding-left: 2px;
+  line-height: 1.45;
+}
+
+.help-hint__list > li::marker {
+  color: #526f94;
+}
+
+.help-hint__para {
+  margin: 0;
+  color: var(--nm-ops-muted, #9aa9bc);
+  line-height: 1.5;
+}
+
+.help-hint__code {
+  display: inline;
+  padding: 0 4px;
+  border: 1px solid rgba(43, 55, 72, 0.9);
+  border-radius: 3px;
+  background: #111c2a;
+  color: #c4ddfa;
+  font: 11px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace;
   white-space: nowrap;
 }
 
@@ -2226,9 +2295,9 @@ pre {
 }
 
 .system-page .panel__hint {
-  margin: -6px 0 12px;
-  color: var(--nm-muted);
-  font-size: 13px;
+  margin: 0 0 10px;
+  color: var(--nm-ops-muted, var(--nm-muted));
+  font-size: 12px;
 }
 
 .ume-page .panel > h3,
@@ -3246,15 +3315,20 @@ pre {
   grid-template-columns: 1fr;
 }
 
+/* Status / empty-state copy only — conceptual docs go in HelpHint on the title. */
 .panel__hint {
-  margin: 0 0 12px;
-  font-size: 13px;
-  color: #94a3b8;
-  line-height: 1.45;
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--nm-ops-muted, #9aa9bc);
+  line-height: 1.4;
 }
 
 .panel__hint--live {
-  color: var(--nm-accent, #3b82f6);
+  color: var(--nm-ops-accent, #6ba9ec);
+  border: 1px solid var(--nm-ops-line, #2b3748);
+  border-radius: 4px;
+  padding: 8px 10px;
+  background: rgba(107, 169, 236, 0.06);
 }
 
 .collect-commands {

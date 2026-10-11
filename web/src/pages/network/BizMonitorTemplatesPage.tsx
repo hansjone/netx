@@ -1,6 +1,7 @@
 import { Button, Input, Modal } from "@heroui/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
+import { HelpHint } from "../../components/HelpHint";
 import { AppModalShell } from "../../components/ui/AppModalShell";
 import { FieldSelect } from "../../components/ui/FieldSelect";
 import { useDebouncedValue } from "../../hooks/useDebouncedValue";
@@ -806,6 +807,7 @@ function DualPatternList({
 
 export function BizMonitorTemplatesPage() {
   const { t } = useI18n();
+  const navigate = useNavigate();
   const { showOk, showError } = useToast();
 
   const [items, setItems] = useState<MonitorTpl[]>([]);
@@ -1105,7 +1107,10 @@ export function BizMonitorTemplatesPage() {
   return (
     <section className="panel nm-page-panel">
       <div className="panel__toolbar">
-        <h2>{t("bizMonitorTpl.title")}</h2>
+        <h2 className="card-title-with-hint">
+          {t("bizMonitorTpl.title")}
+          <HelpHint text={t("bizMonitorTpl.help")} ariaLabel={t("common.help")} />
+        </h2>
         <div className="btn-row">
           <input
             ref={tplImportRef}
@@ -1120,6 +1125,13 @@ export function BizMonitorTemplatesPage() {
           <Button
             size="sm"
             variant="secondary"
+            onPress={() => navigate("/network/cutover/compare-templates")}
+          >
+            {t("bizMonitorTpl.openCompare")}
+          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
             isDisabled={busy}
             onPress={() => tplImportRef.current?.click()}
           >
@@ -1130,12 +1142,6 @@ export function BizMonitorTemplatesPage() {
           </Button>
         </div>
       </div>
-      <p className="panel__hint muted">{t("bizMonitorTpl.hint")}</p>
-      <p className="muted" style={{ fontSize: 12, marginTop: -4 }}>
-        <Link to="/network/cutover/compare-templates">{t("bizMonitorTpl.openCompare")}</Link>
-        {" · "}
-        {t("bizMonitorTpl.templateImportHint")}
-      </p>
 
       <div className="pt-list">
         <div className="pt-list-kpis">

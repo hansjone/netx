@@ -873,7 +873,6 @@ export function UmePage() {
               {t("ume.cli.showPanel")}
             </Button>
           </div>
-          <p className="ume-entry__summary muted">{t("ume.cli.hint")}</p>
         </article>
 
         <article className="panel ume-entry nm-page-panel">
@@ -966,7 +965,6 @@ export function UmePage() {
           <Modal.CloseTrigger />
         </Modal.Header>
         <Modal.Body className="flex flex-col gap-3">
-          <p className="muted">{t("ume.cli.hint")}</p>
           <UmeCliConnectPanel embedded enabled />
         </Modal.Body>
       </AppModalShell>

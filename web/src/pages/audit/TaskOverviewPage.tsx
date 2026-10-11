@@ -97,7 +97,6 @@ export function TaskOverviewPage() {
             {query.isFetching ? t("common.refreshing") : t("common.refresh")}
           </Button>
         </div>
-        <p className="panel__hint">{t("audit.tasks.hint")}</p>
 
         <div className="pt-list-kpis">
           <div className="pt-list-kpi pt-list-kpi--live">

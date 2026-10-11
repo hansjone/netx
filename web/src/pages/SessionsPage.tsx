@@ -1,5 +1,6 @@
 import { Button } from "@heroui/react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { HelpHint } from "../components/HelpHint";
 import { useI18n } from "../i18n";
 import { useToast } from "../hooks/useToast";
 import { apiDelete, apiGet, apiPost } from "../services/api";
@@ -81,9 +82,11 @@ export function SessionsPage() {
     <div className="page-stack system-page">
       <section className="panel">
         <div className="panel__toolbar">
-          <h2>{t("auth.sessionsTitle")}</h2>
+          <h2 className="card-title-with-hint">
+            {t("auth.sessionsTitle")}
+            <HelpHint text={t("auth.sessionsHelp")} ariaLabel={t("common.help")} />
+          </h2>
         </div>
-        <p className="panel__hint">{t("auth.sessionsHint")}</p>
         <div className="pt-list">
           <div className="filter-inline">
             <Button
