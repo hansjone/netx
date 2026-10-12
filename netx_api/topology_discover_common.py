@@ -4,9 +4,10 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import or_
+from sqlalchemy import String, case, cast, func, or_
 from sqlalchemy.orm import Session
 
+from .table_filters import TableFilterParams, filter_query
 from .cli_resolve import get_default_profile, infer_device_type_vendor
 from .device_types import is_placeholder_ne_source
 from .models import ManagedNE, TopoDiscoverJob, TopoDiscoverJobItem, UmeInventoryNE
@@ -42,6 +43,17 @@ def _managed_target_dict(ne: ManagedNE) -> dict[str, str]:
     }
 
 
+def discover_item_expressions() -> dict[str, Any]:
+    item = TopoDiscoverJobItem
+    failed = or_(item.ok.is_(False), item.parser_stub.is_(True), item.error.in_(["parser_stub", "empty_cli_output", "vendor_or_device_type_required"]))
+    return {
+        "name": func.coalesce(func.nullif(item.ne_name, ""), item.ne_id), "ip": item.ne_ip,
+        "status": case((failed, "fail"), (item.unmatched_count > 0, "warn"), else_="ok"),
+        "neighbors": item.neighbors, "error": item.error,
+        "edges": cast(item.edges_added, String) + "/" + cast(item.edges_updated, String),
+    }
+
+
 def _job_out(
     db: Session,
     job: TopoDiscoverJob,
@@ -51,6 +63,7 @@ def _job_out(
     page_size: int | None = None,
     item_status: str = "",
     item_keyword: str = "",
+    table_filters: TableFilterParams | None = None,
 ) -> FabricDiscoverJobOut:
     items_out: list[FabricDiscoverJobItemOut] = []
     items_total = 0
@@ -93,6 +106,7 @@ def _job_out(
                     TopoDiscoverJobItem.error.ilike(like),
                 )
             )
+        q, _ = filter_query(q, discover_item_expressions(), table_filters)
         items_total = int(q.count())
         if page is not None and page_size is not None:
             items_page = max(1, int(page or 1))
@@ -157,6 +171,7 @@ def get_discover_job(
     page_size: int | None = None,
     item_status: str = "",
     item_keyword: str = "",
+    table_filters: TableFilterParams | None = None,
 ) -> FabricDiscoverJobOut:
     job = db.get(TopoDiscoverJob, str(job_id or "").strip())
     if job is None:
@@ -168,6 +183,7 @@ def get_discover_job(
         page_size=page_size,
         item_status=item_status,
         item_keyword=item_keyword,
+        table_filters=table_filters,
     )
 
 

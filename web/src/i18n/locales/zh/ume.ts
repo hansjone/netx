@@ -271,6 +271,7 @@ const ume = {
       hostName: "主机名",
       neType: "网元类型",
       cause: "原因",
+      cleared: "清除状态",
     },
   },
 };

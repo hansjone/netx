@@ -1,14 +1,13 @@
-import { Button, Input } from "@heroui/react";
+import { Button } from "@heroui/react";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ListPager } from "../../components/ListPager";
-import { FieldSelect } from "../../components/ui/FieldSelect";
+import { ColumnFilterMenu } from "../../components/ui/ColumnFilterMenu";
 import { queryKeys } from "../../constants/queryKeys";
-import { useDebouncedValue } from "../../hooks/useDebouncedValue";
 import { useToast } from "../../hooks/useToast";
 import { useI18n } from "../../i18n";
-import { fetchCliTargets, formatErr } from "../../services/api";
-import type { CliTargetItem } from "../../types";
+import { fetchCliTargetFilterOptions, fetchCliTargets, formatErr } from "../../services/api";
+import type { CliTargetColumnFilter, CliTargetFilterField, CliTargetItem } from "../../types";
 import { downloadCsv, fetchAllPages } from "../../utils/csvExport";
 import { pageCount } from "../../utils/display";
 import { openNewModuleWindow } from "../../utils/moduleWindows";
@@ -22,28 +21,50 @@ function openWebcrt(row: CliTargetItem) {
   openNewModuleWindow({ moduleId: "webcrt", path });
 }
 
+type DeviceColumnFilters = Record<CliTargetFilterField, CliTargetColumnFilter>;
+
+const EMPTY_COLUMN_FILTERS: DeviceColumnFilters = {
+  source: null,
+  name: null,
+  ip: null,
+  vendor: null,
+  deviceType: null,
+  connectStatus: null,
+};
+
 /** Inventory of managed + UME NEs for Network Management. */
 export function NetworkDevicesPage() {
   const { t } = useI18n();
   const { showOk, showError } = useToast();
-  const [keyword, setKeyword] = useState("");
-  const [source, setSource] = useState<"all" | "managed" | "ume">("all");
+  const [columnFilters, setColumnFilters] = useState<DeviceColumnFilters>(EMPTY_COLUMN_FILTERS);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
   const [exporting, setExporting] = useState(false);
 
-  const debouncedKeyword = useDebouncedValue(keyword, 300);
 
   const listQuery = useQuery({
-    queryKey: queryKeys.cliTargets(`${source}:${debouncedKeyword}`, page, pageSize),
-    queryFn: () => fetchCliTargets({ source, keyword: debouncedKeyword, page, pageSize }),
+    queryKey: queryKeys.cliTargets(
+      JSON.stringify(columnFilters),
+      page,
+      pageSize,
+    ),
+    queryFn: () =>
+      fetchCliTargets({
+        source: "inventory",
+        columnFilters,
+        page,
+        pageSize,
+      }),
     staleTime: 5000,
   });
 
   const items = listQuery.data?.items ?? [];
   const total = Number(listQuery.data?.total || 0);
   const pages = pageCount(total, pageSize);
-  const hasFilters = Boolean(keyword.trim() || source !== "all");
+  const hasFilters =
+    Object.values(columnFilters).some(Boolean);
+
+  if (listQuery.data && page > pages) setPage(pages);
 
   const exportCsv = async () => {
     setExporting(true);
@@ -52,7 +73,12 @@ export function NetworkDevicesPage() {
         pageSize: 200,
         maxRows: 2000,
         fetchPage: (p, ps) =>
-          fetchCliTargets({ source, keyword: debouncedKeyword, page: p, pageSize: ps }),
+          fetchCliTargets({
+            source: "inventory",
+            columnFilters,
+            page: p,
+            pageSize: ps,
+          }),
       });
       downloadCsv(`${t("networkDevices.exportName")}-${new Date().toISOString().slice(0, 10)}.csv`, rows, [
         { key: "source", header: t("networkDevices.col.source") },
@@ -84,10 +110,13 @@ export function NetworkDevicesPage() {
       <div className="panel__toolbar">
         <h2>{t("networkDevices.title")}</h2>
         <div className="btn-row">
+          <Button size="sm" variant="tertiary" isDisabled={!hasFilters} onPress={() => { setColumnFilters(EMPTY_COLUMN_FILTERS); setPage(1); }}>
+            {t("common.clearFilters")}
+          </Button>
           <Button
             size="sm"
             variant="secondary"
-            isDisabled={exporting || total === 0}
+            isDisabled={exporting || total === 0 || listQuery.isFetching}
             onPress={() => void exportCsv()}
           >
             {exporting ? t("common.exporting") : t("common.exportCsv")}
@@ -96,101 +125,88 @@ export function NetworkDevicesPage() {
       </div>
 
       <div className="pt-list">
-        <div className="filter-inline">
-          <Input
-            value={keyword}
-            placeholder={t("networkDevices.keywordPh")}
-            onChange={(e) => {
-              setKeyword(e.target.value);
-              setPage(1);
-            }}
-          />
-          <FieldSelect
-            value={source}
-            onChange={(e) => {
-              setSource(e.target.value as "all" | "managed" | "ume");
-              setPage(1);
-            }}
-          >
-            <option value="all">{t("networkDevices.allSource")}</option>
-            <option value="managed">managed</option>
-            <option value="ume">ume</option>
-          </FieldSelect>
-          <Button
-            size="sm"
-            variant="tertiary"
-            isDisabled={!hasFilters}
-            onPress={() => {
-              setKeyword("");
-              setSource("all");
-              setPage(1);
-            }}
-          >
-            {t("common.clearFilters")}
-          </Button>
-        </div>
-
-        {listQuery.isLoading ? <p className="muted">{t("common.refreshing")}</p> : null}
+        {listQuery.isFetching ? <p className="muted">{t("common.refreshing")}</p> : null}
         {listQuery.isError ? <p className="error-text">{t("common.opFailed")}</p> : null}
 
-        {!items.length && !listQuery.isLoading ? (
-          <div className="pt-list-empty">
-            <p>{t("networkDevices.empty")}</p>
-          </div>
-        ) : (
-          <div className="pt-list-table-wrap">
-            <table className="data-table pt-list-table">
-              <thead>
-                <tr>
-                  <th>{t("networkDevices.col.source")}</th>
-                  <th>{t("networkDevices.col.name")}</th>
-                  <th>IP</th>
-                  <th>{t("networkDevices.col.vendor")}</th>
-                  <th>{t("networkDevices.col.deviceType")}</th>
-                  <th>{t("networkDevices.col.connect")}</th>
-                  <th>{t("networkDevices.col.actions")}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {items.map((row) => (
-                  <tr key={`${row.source}:${row.id}`}>
-                    <td>
-                      <NmStatusChip color={sourceChipColor(row.source)}>{row.source}</NmStatusChip>
-                    </td>
-                    <td className="pt-list-task-name">{row.name || row.id}</td>
-                    <td className="pt-list-num">{row.ip_address || "—"}</td>
-                    <td>{row.vendor || "—"}</td>
-                    <td>{row.device_type || row.ne_type || "—"}</td>
-                    <td>
-                      <NmStatusChip color={connectChipColor(row.connect_status)}>
-                        {row.connect_status || "—"}
-                      </NmStatusChip>
-                    </td>
-                    <td>
-                      <div className="btn-row pt-list-actions table-actions">
-                        <Button size="sm" variant="ghost" onPress={() => openWebcrt(row)}>
-                          WebCRT
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          onPress={() =>
-                            openNewModuleWindow({
-                              moduleId: "network",
-                              path: `/network/configs?q=${encodeURIComponent(row.name || row.ip_address || row.id)}`,
-                            })
-                          }
-                        >
-                          {t("network.nav.configs")}
-                        </Button>
-                      </div>
-                    </td>
-                  </tr>
+        <div className="pt-list-table-wrap">
+          <table className="data-table pt-list-table">
+            <thead>
+              <tr>
+                {([
+                  ["source", t("networkDevices.col.source")],
+                  ["name", t("networkDevices.col.name")],
+                  ["ip", "IP"],
+                  ["vendor", t("networkDevices.col.vendor")],
+                  ["deviceType", t("networkDevices.col.deviceType")],
+                  ["connectStatus", t("networkDevices.col.connect")],
+                ] as const).map(([key, label]) => (
+                  <th key={key}>
+                    <span className="ne-column-heading">
+                      {label}
+                      <ColumnFilterMenu
+                        label={label}
+                        value={columnFilters[key]}
+                        queryKey={["cliTargetFilterOptions", key, "inventory", ""]}
+                        loadOptions={() => fetchCliTargetFilterOptions({ field: key, source: "inventory" }).then((result) => result.options)}
+                        onApply={(value) => {
+                          setColumnFilters((current) => ({ ...current, [key]: value }));
+                          setPage(1);
+                        }}
+                      />
+                    </span>
+                  </th>
                 ))}
-              </tbody>
-            </table>
+                <th>{t("networkDevices.col.actions")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((row) => (
+                <tr key={`${row.source}:${row.id}`}>
+                  <td>
+                    <NmStatusChip color={sourceChipColor(row.source)}>{row.source}</NmStatusChip>
+                  </td>
+                  <td className="pt-list-task-name">{row.name || row.id}</td>
+                  <td className="pt-list-num">{row.ip_address || "—"}</td>
+                  <td>{row.vendor || "—"}</td>
+                  <td>{row.device_type || row.ne_type || "—"}</td>
+                  <td>
+                    <NmStatusChip color={connectChipColor(row.connect_status)}>
+                      {row.connect_status || "—"}
+                    </NmStatusChip>
+                  </td>
+                  <td>
+                    <div className="btn-row pt-list-actions table-actions">
+                      <Button size="sm" variant="ghost" onPress={() => openWebcrt(row)}>
+                        WebCRT
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onPress={() =>
+                          openNewModuleWindow({
+                            moduleId: "network",
+                            path: `/network/configs?q=${encodeURIComponent(row.name || row.ip_address || row.id)}`,
+                          })
+                        }
+                      >
+                        {t("network.nav.configs")}
+                      </Button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+              {!items.length && !listQuery.isFetching && !listQuery.isError ? (
+                <tr>
+                  <td colSpan={7}>
+                    <div className="pt-list-empty">
+                      <p>{t(hasFilters ? "networkDevices.emptyFiltered" : "networkDevices.empty")}</p>
+                    </div>
+                  </td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
           </div>
-        )}
 
         <ListPager
           page={page}

@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Any
 
 from fastapi import HTTPException
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from .cli_schemas import (
@@ -279,19 +280,66 @@ def list_cli_targets(
     *,
     source: str = "all",
     keyword: str | None = None,
+    source_filter: list[str] | None = None,
+    source_filter_mode: str | None = None,
+    name_filter: list[str] | None = None,
+    name_filter_mode: str | None = None,
+    ip_filter: list[str] | None = None,
+    ip_filter_mode: str | None = None,
+    vendor_filter: list[str] | None = None,
+    vendor_filter_mode: str | None = None,
+    device_type_filter: list[str] | None = None,
+    device_type_filter_mode: str | None = None,
+    connect_status_filter: list[str] | None = None,
+    connect_status_filter_mode: str | None = None,
     page: int = 1,
     page_size: int = 50,
 ) -> dict[str, Any]:
     from .device_types import WEBCRT_NE_SOURCE
 
     src = str(source or "all").strip().lower()
-    if src not in ("managed", "ume", "webcrt", "all"):
+    if src not in ("managed", "ume", "webcrt", "inventory", "all"):
         raise HTTPException(status_code=400, detail="invalid_source")
     ready = cli_profile_ready(db)
     page = max(1, int(page or 1))
     page_size = max(1, min(500, int(page_size or 50)))
     offset = (page - 1) * page_size
     kw = str(keyword or "").strip()
+    column_filters: dict[str, list[str] | None] = {
+        "source": source_filter,
+        "name": name_filter,
+        "ip": ip_filter,
+        "vendor": vendor_filter,
+        "device_type": device_type_filter,
+        "connect_status": connect_status_filter,
+    }
+    filter_modes = {
+        "source": str(source_filter_mode or ""),
+        "name": str(name_filter_mode or ""),
+        "ip": str(ip_filter_mode or ""),
+        "vendor": str(vendor_filter_mode or ""),
+        "device_type": str(device_type_filter_mode or ""),
+        "connect_status": str(connect_status_filter_mode or ""),
+    }
+
+    def _source_allowed(row_source: str) -> bool:
+        mode = filter_modes["source"]
+        values = column_filters["source"] or []
+        if mode == "include":
+            return row_source in values
+        if mode == "exclude":
+            return row_source not in values
+        return True
+
+    def _apply_value_filter(stmt: Any, field: str, expression: Any) -> Any:
+        mode = filter_modes[field]
+        if mode not in ("include", "exclude"):
+            return stmt
+        values = column_filters[field] or []
+        normalized = func.coalesce(expression, "")
+        if mode == "include":
+            return stmt.filter(normalized.in_(values)) if values else stmt.filter(False)
+        return stmt.filter(~normalized.in_(values)) if values else stmt
 
     default_profile = get_default_profile(db)
     default_hop = bool(getattr(default_profile, "hop_enabled", False)) if default_profile else False
@@ -351,7 +399,8 @@ def list_cli_targets(
             return stmt
         like = f"%{kw}%"
         return stmt.filter(
-            ManagedNE.name.ilike(like)
+            ManagedNE.id.ilike(like)
+            | ManagedNE.name.ilike(like)
             | ManagedNE.ip_address.ilike(like)
             | ManagedNE.username.ilike(like)
             | ManagedNE.tags.ilike(like)
@@ -362,16 +411,42 @@ def list_cli_targets(
     def _inventory_managed_query():
         # Asset inventory for WebCRT: exclude Quick-Connect (source=webcrt) rows.
         stmt = db.query(ManagedNE).filter(ManagedNE.source != WEBCRT_NE_SOURCE)
-        return _apply_kw(stmt).order_by(ManagedNE.updated_at.desc())
+        stmt = _apply_kw(stmt)
+        if not _source_allowed("managed"):
+            stmt = stmt.filter(False)
+        stmt = _apply_value_filter(
+            stmt,
+            "name",
+            func.coalesce(func.nullif(ManagedNE.name, ""), ManagedNE.ip_address),
+        )
+        stmt = _apply_value_filter(stmt, "ip", ManagedNE.ip_address)
+        stmt = _apply_value_filter(stmt, "vendor", ManagedNE.vendor)
+        stmt = _apply_value_filter(stmt, "device_type", ManagedNE.device_type)
+        stmt = _apply_value_filter(stmt, "connect_status", ManagedNE.connect_status)
+        return stmt.order_by(ManagedNE.updated_at.desc())
 
     def _webcrt_query():
         stmt = db.query(ManagedNE).filter(ManagedNE.source == WEBCRT_NE_SOURCE)
-        return _apply_kw(stmt).order_by(ManagedNE.updated_at.desc())
+        stmt = _apply_kw(stmt)
+        if not _source_allowed("webcrt"):
+            stmt = stmt.filter(False)
+        stmt = _apply_value_filter(
+            stmt,
+            "name",
+            func.coalesce(func.nullif(ManagedNE.name, ""), ManagedNE.ip_address),
+        )
+        stmt = _apply_value_filter(stmt, "ip", ManagedNE.ip_address)
+        stmt = _apply_value_filter(stmt, "vendor", ManagedNE.vendor)
+        stmt = _apply_value_filter(stmt, "device_type", ManagedNE.device_type)
+        stmt = _apply_value_filter(stmt, "connect_status", ManagedNE.connect_status)
+        return stmt.order_by(ManagedNE.updated_at.desc())
 
     def _ume_query():
         stmt = db.query(UmeInventoryNE, UmeCliOverride).outerjoin(
             UmeCliOverride, UmeInventoryNE.ne_id == UmeCliOverride.ume_ne_id
         )
+        if not _source_allowed("ume"):
+            stmt = stmt.filter(False)
         if kw:
             like = f"%{kw}%"
             stmt = stmt.filter(
@@ -381,7 +456,45 @@ def list_cli_targets(
                 | UmeInventoryNE.ip_address.ilike(like)
                 | UmeInventoryNE.host_name.ilike(like)
             )
+        ume_name = func.coalesce(
+            func.nullif(UmeInventoryNE.user_label, ""),
+            func.nullif(UmeInventoryNE.ne_name, ""),
+            func.nullif(UmeInventoryNE.host_name, ""),
+            func.nullif(UmeInventoryNE.ip_address, ""),
+            UmeInventoryNE.ne_id,
+        )
+        stmt = _apply_value_filter(stmt, "name", ume_name)
+        stmt = _apply_value_filter(stmt, "ip", UmeInventoryNE.ip_address)
+        stmt = _apply_value_filter(stmt, "vendor", UmeInventoryNE.vendor)
+        stmt = _apply_value_filter(stmt, "device_type", UmeInventoryNE.ne_type)
+        stmt = _apply_value_filter(
+            stmt,
+            "connect_status",
+            func.coalesce(UmeCliOverride.connect_status, "unknown"),
+        )
         return stmt.order_by(UmeInventoryNE.ne_id.asc())
+
+    if src == "inventory":
+        # Network Management inventory includes managed assets and UME inventory,
+        # but not transient WebCRT quick-connect sessions.
+        mq = _inventory_managed_query()
+        uq = _ume_query()
+        m_total = int(mq.count())
+        u_total = int(uq.count())
+        total = m_total + u_total
+        items: list[dict[str, Any]] = []
+
+        if offset < m_total:
+            take = min(page_size, m_total - offset)
+            items.extend(_managed_item(row, list_source="managed") for row in mq.offset(offset).limit(take).all())
+            remaining = page_size - take
+            if remaining > 0:
+                items.extend(_ume_item(inv, ov) for inv, ov in uq.offset(0).limit(remaining).all())
+        else:
+            ume_offset = max(0, offset - m_total)
+            items.extend(_ume_item(inv, ov) for inv, ov in uq.offset(ume_offset).limit(page_size).all())
+
+        return {"items": items, "total": total, "page": page, "page_size": page_size}
 
     if src == "managed":
         mq = _inventory_managed_query()
@@ -441,6 +554,118 @@ def list_cli_targets(
             items.append(_ume_item(inv, ov))
 
     return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+
+def list_cli_target_filter_options(
+    db: Session,
+    *,
+    field: str,
+    source: str = "inventory",
+    keyword: str | None = None,
+) -> dict[str, Any]:
+    from .device_types import WEBCRT_NE_SOURCE
+
+    field_map = {
+        "source": "source",
+        "name": "name",
+        "ip": "ip",
+        "vendor": "vendor",
+        "deviceType": "device_type",
+        "connectStatus": "connect_status",
+    }
+    if field not in field_map:
+        raise HTTPException(status_code=400, detail="invalid_filter_field")
+    src = str(source or "inventory").strip().lower()
+    if src not in ("managed", "ume", "webcrt", "inventory", "all"):
+        raise HTTPException(status_code=400, detail="invalid_source")
+
+    include_managed = src in ("managed", "inventory", "all")
+    include_webcrt = src in ("webcrt", "all")
+    include_ume = src in ("ume", "inventory", "all")
+    kw = str(keyword or "").strip()
+
+    managed = db.query(ManagedNE)
+    if src in ("managed", "inventory"):
+        managed = managed.filter(ManagedNE.source != WEBCRT_NE_SOURCE)
+    elif src == "webcrt":
+        managed = managed.filter(ManagedNE.source == WEBCRT_NE_SOURCE)
+    elif src == "all":
+        managed = managed.filter(ManagedNE.source != WEBCRT_NE_SOURCE)
+    ume = db.query(UmeInventoryNE)
+    ume_status = db.query(UmeInventoryNE, UmeCliOverride).outerjoin(
+        UmeCliOverride, UmeInventoryNE.ne_id == UmeCliOverride.ume_ne_id
+    )
+    webcrt = db.query(ManagedNE).filter(ManagedNE.source == WEBCRT_NE_SOURCE)
+
+    def _apply_managed_keyword(query: Any) -> Any:
+        if not kw:
+            return query
+        like = f"%{kw}%"
+        return query.filter(
+            ManagedNE.id.ilike(like)
+            | ManagedNE.name.ilike(like)
+            | ManagedNE.ip_address.ilike(like)
+            | ManagedNE.username.ilike(like)
+            | ManagedNE.tags.ilike(like)
+            | ManagedNE.vendor.ilike(like)
+            | ManagedNE.device_type.ilike(like)
+        )
+
+    def _apply_ume_keyword(query: Any) -> Any:
+        if not kw:
+            return query
+        like = f"%{kw}%"
+        return query.filter(
+            UmeInventoryNE.ne_id.ilike(like)
+            | UmeInventoryNE.ne_name.ilike(like)
+            | UmeInventoryNE.user_label.ilike(like)
+            | UmeInventoryNE.ip_address.ilike(like)
+            | UmeInventoryNE.host_name.ilike(like)
+        )
+
+    managed = _apply_managed_keyword(managed)
+    webcrt = _apply_managed_keyword(webcrt)
+    ume = _apply_ume_keyword(ume)
+    ume_status = _apply_ume_keyword(ume_status)
+
+    if field == "source":
+        values: set[str] = set()
+        if include_managed and managed.count():
+            values.add("managed")
+        if include_webcrt and webcrt.count():
+            values.add("webcrt")
+        if include_ume and ume.count():
+            values.add("ume")
+    else:
+        managed_expr = {
+            "name": func.coalesce(func.nullif(ManagedNE.name, ""), ManagedNE.ip_address),
+            "ip": ManagedNE.ip_address,
+            "vendor": ManagedNE.vendor,
+            "device_type": ManagedNE.device_type,
+            "connect_status": ManagedNE.connect_status,
+        }.get(field_map[field])
+        ume_expr = {
+            "name": func.coalesce(
+                func.nullif(UmeInventoryNE.user_label, ""),
+                func.nullif(UmeInventoryNE.ne_name, ""),
+                func.nullif(UmeInventoryNE.host_name, ""),
+                func.nullif(UmeInventoryNE.ip_address, ""),
+                UmeInventoryNE.ne_id,
+            ),
+            "ip": UmeInventoryNE.ip_address,
+            "vendor": UmeInventoryNE.vendor,
+            "device_type": UmeInventoryNE.ne_type,
+            "connect_status": func.coalesce(UmeCliOverride.connect_status, "unknown"),
+        }.get(field_map[field])
+        values = set()
+        if include_managed and managed_expr is not None:
+            values.update(str(row[0] or "") for row in managed.with_entities(managed_expr).distinct().all())
+        if include_webcrt and managed_expr is not None:
+            values.update(str(row[0] or "") for row in webcrt.with_entities(managed_expr).distinct().all())
+        if include_ume and ume_expr is not None:
+            values.update(str(row[0] or "") for row in ume_status.with_entities(ume_expr).distinct().all())
+
+    return {"field": field, "options": sorted(values, key=str.casefold)}
 
 
 def cli_meta(db: Session) -> dict[str, Any]:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from .cli_schemas import (
@@ -15,12 +15,14 @@ from .cli_service import (
     delete_cli_profile,
     get_cli_profile,
     get_ume_cli_override,
+    list_cli_target_filter_options,
     list_cli_profiles,
     list_cli_targets,
     set_default_cli_profile,
     update_cli_profile,
     upsert_ume_cli_override,
 )
+from .table_filters import TableFilterParams, table_filter_params
 from .db import get_db
 from .ne_connect import schedule_ume_connect_tests
 
@@ -66,11 +68,57 @@ def api_delete_cli_profile(profile_id: str, db: Session = Depends(get_db)):
 def api_list_cli_targets(
     source: str = Query(default="all"),
     keyword: str | None = Query(default=None),
+    source_filter: list[str] | None = Query(default=None),
+    source_filter_mode: str | None = Query(default=None),
+    name_filter: list[str] | None = Query(default=None),
+    name_filter_mode: str | None = Query(default=None),
+    ip_filter: list[str] | None = Query(default=None),
+    ip_filter_mode: str | None = Query(default=None),
+    vendor_filter: list[str] | None = Query(default=None),
+    vendor_filter_mode: str | None = Query(default=None),
+    device_type_filter: list[str] | None = Query(default=None),
+    device_type_filter_mode: str | None = Query(default=None),
+    connect_status_filter: list[str] | None = Query(default=None),
+    connect_status_filter_mode: str | None = Query(default=None),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=500),
+    table_filters: TableFilterParams = Depends(table_filter_params),
     db: Session = Depends(get_db),
 ):
-    return list_cli_targets(db, source=source, keyword=keyword, page=page, page_size=page_size)
+    if table_filters.field:
+        return list_cli_target_filter_options(db, field=table_filters.field, source=source, keyword=keyword)
+    filters = table_filters.filters
+    if set(filters) - {"source", "name", "ip", "vendor", "deviceType", "connectStatus"}:
+        raise HTTPException(status_code=400, detail="invalid_filter_field")
+    return list_cli_targets(
+        db,
+        source=source,
+        keyword=keyword,
+        source_filter=filters.get("source", {}).get("values", source_filter),
+        source_filter_mode=filters.get("source", {}).get("mode", source_filter_mode),
+        name_filter=filters.get("name", {}).get("values", name_filter),
+        name_filter_mode=filters.get("name", {}).get("mode", name_filter_mode),
+        ip_filter=filters.get("ip", {}).get("values", ip_filter),
+        ip_filter_mode=filters.get("ip", {}).get("mode", ip_filter_mode),
+        vendor_filter=filters.get("vendor", {}).get("values", vendor_filter),
+        vendor_filter_mode=filters.get("vendor", {}).get("mode", vendor_filter_mode),
+        device_type_filter=filters.get("deviceType", {}).get("values", device_type_filter),
+        device_type_filter_mode=filters.get("deviceType", {}).get("mode", device_type_filter_mode),
+        connect_status_filter=filters.get("connectStatus", {}).get("values", connect_status_filter),
+        connect_status_filter_mode=filters.get("connectStatus", {}).get("mode", connect_status_filter_mode),
+        page=page,
+        page_size=page_size,
+    )
+
+
+@router.get("/targets/filter-options")
+def api_list_cli_target_filter_options(
+    field: str = Query(),
+    source: str = Query(default="inventory"),
+    keyword: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    return list_cli_target_filter_options(db, field=field, source=source, keyword=keyword)
 
 
 @router.get("/ume-overrides/{ume_ne_id}")

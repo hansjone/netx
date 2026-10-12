@@ -10,6 +10,7 @@ import {
   matchFabricNodes,
   patchFabricNodeTags,
 } from "../../services/api";
+import { useTableColumnFilters } from "../../hooks/useTableColumnFilters";
 import { ListPager } from "../../components/ListPager";
 import { queryKeys } from "../../constants/queryKeys";
 import { useI18n } from "../../i18n";
@@ -49,14 +50,6 @@ const LEVEL_PRESETS = [
   { value: "3.1", labelKey: "topoClassify.levelAccessSub" },
 ] as const;
 
-const FILTER_MAJOR = [
-  { value: "", labelKey: "topoClassify.filterLevelAll" },
-  { value: "0", labelKey: "topoClassify.levelExternal" },
-  { value: "1", labelKey: "topoClassify.levelCore" },
-  { value: "2", labelKey: "topoClassify.levelAgg" },
-  { value: "3", labelKey: "topoClassify.levelAccess" },
-] as const;
-
 function formatLevel(level: number | null | undefined): string {
   if (level === null || level === undefined || Number.isNaN(Number(level))) return "—";
   const n = Number(level);
@@ -92,11 +85,6 @@ export function TopologyClassifyPage() {
   const { showOk, showError } = useToast();
   const queryClient = useQueryClient();
 
-  const [keyword, setKeyword] = useState("");
-  const [filterMajor, setFilterMajor] = useState("");
-  const [filterRegion, setFilterRegion] = useState("");
-  const [unmatched, setUnmatched] = useState("");
-  const [linkStatus, setLinkStatus] = useState("");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
 
@@ -139,27 +127,12 @@ export function TopologyClassifyPage() {
     return m;
   }, [regions]);
 
+  const columns = useTableColumnFilters("/v1/topology/fabric/nodes", () => {
+    setPage(1); setSelected({}); setEditingId("");
+  });
   const listQuery = useQuery({
-    queryKey: queryKeys.fabricNodeInventory(
-      keyword,
-      "",
-      filterRegion,
-      unmatched,
-      linkStatus,
-      page,
-      filterMajor,
-      pageSize,
-    ),
-    queryFn: () =>
-      fetchFabricNodes({
-        keyword,
-        levelMajor: filterMajor || undefined,
-        regionFolderId: filterRegion,
-        unmatched,
-        linkStatus,
-        page,
-        pageSize,
-      }),
+    queryKey: ["fabricNodeInventory", columns.key, page, pageSize],
+    queryFn: () => fetchFabricNodes({ columnFilters: columns.filters, page, pageSize }),
   });
 
   const invalidateList = async () => {
@@ -252,6 +225,7 @@ export function TopologyClassifyPage() {
     .map((n) => n.id);
   const total = listQuery.data?.total || 0;
   const pages = pageCount(total, pageSize);
+  if (listQuery.data && page > pages) setPage(pages);
   const selectedCount = Object.values(selected).filter(Boolean).length;
   const highlight = useMemo(() => new Set(matchedIds), [matchedIds]);
 
@@ -281,7 +255,8 @@ export function TopologyClassifyPage() {
           <Button
             variant="primary"
             onPress={() => {
-              const regionId = filterRegion || assignRegion || "";
+              const regionFilter = columns.filters.region;
+              const regionId = (regionFilter?.mode === "include" && regionFilter.values.length === 1 ? regionFilter.values[0] : "") || assignRegion || "";
               const folder = regions.find((r) => r.id === regionId);
               const views = folder?.views || [];
               const primary =
@@ -298,68 +273,10 @@ export function TopologyClassifyPage() {
       </div>
 
       <section className="topo-classify__section topo-classify__section--first">
-        <h3>{t("topoClassify.inventory")}</h3>
-        <div className="topo-classify__draft">
-          <Input
-            placeholder={t("topoClassify.keywordPh")}
-            value={keyword}
-            onChange={(e) => {
-              setKeyword(e.target.value);
-              setPage(1);
-            }}
-          />
-          <select className="input"
-            value={filterMajor}
-            onChange={(e) => {
-              setFilterMajor(e.target.value);
-              setPage(1);
-            }}
-          >
-            {FILTER_MAJOR.map((r) => (
-              <option key={r.value || "all"} value={r.value}>
-                {t(r.labelKey)}
-              </option>
-            ))}
-          </select>
-          <select className="input"
-            value={filterRegion}
-            onChange={(e) => {
-              setFilterRegion(e.target.value);
-              setPage(1);
-            }}
-          >
-            <option value="">{t("topoClassify.filterRegionAll")}</option>
-            {regions.map((r) => (
-              <option key={r.id} value={r.id}>
-                {r.name}
-              </option>
-            ))}
-          </select>
-          <select className="input"
-            value={unmatched}
-            onChange={(e) => {
-              setUnmatched(e.target.value);
-              setPage(1);
-            }}
-          >
-            <option value="">{t("topoClassify.filterUnmatchedOff")}</option>
-            <option value="any">{t("topoClassify.kindAny")}</option>
-            <option value="level">{t("topoClassify.kindLevel")}</option>
-            <option value="region">{t("topoClassify.kindRegion")}</option>
-          </select>
-          <select className="input"
-            value={linkStatus}
-            onChange={(e) => {
-              setLinkStatus(e.target.value);
-              setPage(1);
-            }}
-          >
-            <option value="">{t("topoClassify.filterLinkAll")}</option>
-            <option value="linked">{t("topoClassify.filterLinkLinked")}</option>
-            <option value="orphaned">{t("topoClassify.filterLinkOrphaned")}</option>
-          </select>
+        <div className="panel__toolbar">
+          <h3>{t("topoClassify.inventory")}</h3>
+          <Button size="sm" variant="tertiary" isDisabled={!columns.active} onPress={columns.reset}>{t("common.clearFilters")}</Button>
         </div>
-
         <div className="topo-classify__regex-bar">
           <strong>{t("topoClassify.regexTitle")}</strong>
           <Input
@@ -456,7 +373,8 @@ export function TopologyClassifyPage() {
           </span>
         </div>
 
-        <table className="data-table topo-classify__table">
+        <div className="pt-list-table-wrap">
+        <table className="data-table pt-list-table topo-classify__table">
           <thead>
             <tr>
               <th>
@@ -467,11 +385,11 @@ export function TopologyClassifyPage() {
                   aria-label={t("topoClassify.selectPage")}
                 />
               </th>
-              <th>{t("topoClassify.colNe")}</th>
-              <th>IP</th>
-              <th>{t("topoClassify.colLink")}</th>
-              <th>{t("topoClassify.colLevel")}</th>
-              <th>{t("topoClassify.colRegion")}</th>
+              <th>{columns.column("name", t("topoClassify.colNe"))}</th>
+              <th>{columns.column("ip", "IP")}</th>
+              <th>{columns.column("link", t("topoClassify.colLink"), linkLabel)}</th>
+              <th>{columns.column("level", t("topoClassify.colLevel"), (value) => formatLevel(Number(value)))}</th>
+              <th>{columns.column("region", t("topoClassify.colRegion"), (value) => regionName[value] || value)}</th>
               <th>{t("topoClassify.colActions")}</th>
             </tr>
           </thead>
@@ -573,6 +491,7 @@ export function TopologyClassifyPage() {
             ) : null}
           </tbody>
         </table>
+        </div>
         <ListPager
           page={page}
           pages={pages}

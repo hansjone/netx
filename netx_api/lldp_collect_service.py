@@ -5,9 +5,11 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from fastapi import HTTPException
-from sqlalchemy import or_
+from sqlalchemy import String, cast, or_
 from sqlalchemy.orm import Session
 
+from .table_filters import TableFilterParams, filter_query
+from .topology_discover_common import discover_item_expressions
 from .lldp_collect_schemas import (
     LldpCollectDashboardOut,
     LldpCollectJobSummary,
@@ -488,6 +490,7 @@ def list_jobs(
     page_size: int = 20,
     status: str = "",
     keyword: str = "",
+    table_filters: TableFilterParams | None = None,
 ) -> dict:
     page = max(1, int(page or 1))
     page_size = max(1, min(100, int(page_size or 20)))
@@ -506,6 +509,15 @@ def list_jobs(
                 TopoDiscoverJob.trigger_mode.ilike(like),
             )
         )
+    job = TopoDiscoverJob
+    q, options = filter_query(q, {
+        "id": job.id, "trigger": job.trigger_mode, "scope": job.scope, "status": job.status,
+        "progress": cast(job.done, String) + "/" + cast(job.total, String),
+        "edges": cast(job.edges_added, String) + "/" + cast(job.edges_updated, String),
+        "missingDelta": job.edges_stale, "started": job.started_at, "ended": job.ended_at,
+    }, table_filters)
+    if options is not None:
+        return options
     q = q.order_by(TopoDiscoverJob.created_at.desc())
     total = int(q.count())
     rows = q.offset((page - 1) * page_size).limit(page_size).all()
@@ -532,7 +544,14 @@ def get_job_detail(
     page_size: int | None = None,
     item_status: str = "",
     item_keyword: str = "",
+    table_filters: TableFilterParams | None = None,
 ) -> dict:
+    if table_filters and table_filters.field:
+        if db.get(TopoDiscoverJob, job_id) is None:
+            raise HTTPException(status_code=404, detail="discover_job_not_found")
+        q = db.query(TopoDiscoverJobItem).filter(TopoDiscoverJobItem.job_id == job_id)
+        _, options = filter_query(q, discover_item_expressions(), table_filters)
+        return options
     return get_discover_job(
         db,
         job_id,
@@ -540,4 +559,5 @@ def get_job_detail(
         page_size=page_size,
         item_status=item_status,
         item_keyword=item_keyword,
+        table_filters=table_filters,
     ).model_dump()

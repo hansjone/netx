@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
+from .table_filters import TableFilterParams, table_filter_params
 from .db import get_db
 from .lldp_collect_schemas import LldpCollectPolicyUpdate, LldpCollectStartBody
 from .lldp_collect_service import (
@@ -69,9 +70,10 @@ def api_list_jobs(
     page_size: int = Query(default=20, ge=1, le=100),
     status: str = Query(default=""),
     keyword: str = Query(default=""),
+    table_filters: TableFilterParams = Depends(table_filter_params),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    return list_jobs(db, page=page, page_size=page_size, status=status, keyword=keyword)
+    return list_jobs(db, page=page, page_size=page_size, status=status, keyword=keyword, table_filters=table_filters)
 
 
 @router.get("/jobs/{job_id}")
@@ -81,6 +83,7 @@ def api_get_job(
     page_size: int = Query(default=20, ge=1, le=100),
     status: str = Query(default=""),
     keyword: str = Query(default=""),
+    table_filters: TableFilterParams = Depends(table_filter_params),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     return get_job_detail(
@@ -90,4 +93,5 @@ def api_get_job(
         page_size=page_size,
         item_status=status,
         item_keyword=keyword,
+        table_filters=table_filters,
     )

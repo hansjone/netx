@@ -48,6 +48,24 @@ export type CliTargetItem = {
   ne_source?: string;
 };
 
+export type CliTargetFilterField =
+  | "source"
+  | "name"
+  | "ip"
+  | "vendor"
+  | "deviceType"
+  | "connectStatus";
+
+export type CliTargetColumnFilter = {
+  mode: "include" | "exclude";
+  values: string[];
+} | null;
+
+export type CliTargetFilterOptions = {
+  field: CliTargetFilterField;
+  options: string[];
+};
+
 export type CliTargetListResponse = {
   total: number;
   page: number;

@@ -10,6 +10,8 @@ from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from .config import settings
+from .table_filters import TableFilterParams, filter_query
+from .table_filters import table_filter_params
 from .db import get_db
 from .key_alert_config import (
     get_key_alert_monitor_config,
@@ -78,6 +80,7 @@ def ume_list_alarms(
     time_to: str | None = Query(default=None, description="Filter by last_seen_at <="),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=500),
+    table_filters: TableFilterParams = Depends(table_filter_params),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     stmt = db.query(UmeAlarmCurrent, UmeInventoryNE).outerjoin(
@@ -113,6 +116,15 @@ def ume_list_alarms(
         stmt = stmt.filter(UmeAlarmCurrent.last_seen_at >= dt_from.replace(tzinfo=None))
     if dt_to:
         stmt = stmt.filter(UmeAlarmCurrent.last_seen_at <= dt_to.replace(tzinfo=None))
+    stmt, options = filter_query(stmt, {
+        "time": UmeAlarmCurrent.time_created, "severity": UmeAlarmCurrent.perceived_severity,
+        "neId": UmeAlarmCurrent.ne_id,
+        "hostName": func.coalesce(func.nullif(func.trim(UmeAlarmCurrent.host_name), ""), func.trim(UmeInventoryNE.host_name)),
+        "neType": UmeInventoryNE.ne_type, "cause": UmeAlarmCurrent.native_probable_cause,
+        "cleared": UmeAlarmCurrent.is_cleared,
+    }, table_filters)
+    if options is not None:
+        return options
     total = int(stmt.count())
     rows = (
         stmt.order_by(

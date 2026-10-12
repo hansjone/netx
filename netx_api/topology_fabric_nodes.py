@@ -8,10 +8,11 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi import HTTPException
-from sqlalchemy import and_, func, or_, text
+from sqlalchemy import and_, case, func, or_, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from .table_filters import TableFilterParams, filter_query
 from .cli_resolve import get_default_profile, infer_device_type_vendor
 from .device_types import LLDP_DISCOVERED_NE_SOURCE, WEBCRT_NE_SOURCE
 from .models import (
@@ -275,6 +276,7 @@ def list_fabric_nodes(
     region_folder_id: str = "",
     unmatched: str = "",
     link_status: str = "",
+    table_filters: TableFilterParams | None = None,
     page: int = 1,
     page_size: int = PAGE_DEFAULT,
 ) -> dict[str, Any]:
@@ -375,6 +377,16 @@ def list_fabric_nodes(
             and_(TopoFabricNode.managed_ne_id.isnot(None), TopoFabricNode.managed_ne_id != ""),
             and_(TopoFabricNode.ume_ne_id.isnot(None), TopoFabricNode.ume_ne_id != ""),
         )
+    has_managed = func.coalesce(TopoFabricNode.managed_ne_id, "") != ""
+    has_ume = func.coalesce(TopoFabricNode.ume_ne_id, "") != ""
+    q, options = filter_query(q, {
+        "name": func.coalesce(func.nullif(TopoFabricNode.name, ""), TopoFabricNode.id),
+        "ip": TopoFabricNode.ip, "level": TopoFabricNode.level,
+        "region": TopoFabricNode.region_folder_id,
+        "link": case((and_(has_managed, has_ume), "both"), (has_managed, "managed"), (has_ume, "ume"), else_="orphaned"),
+    }, table_filters)
+    if options is not None:
+        return options
     total = int(q.count())
     rows = (
         q.order_by(TopoFabricNode.name.asc())
@@ -399,6 +411,7 @@ def list_fabric_edges(
     status: str = "",
     source: str = "",
     keyword: str = "",
+    table_filters: TableFilterParams | None = None,
     page: int = 1,
     page_size: int = PAGE_DEFAULT,
 ) -> dict[str, Any]:
@@ -438,6 +451,23 @@ def list_fabric_edges(
                 TopoFabricEdge.b_node_id.in_(matched_ids),
             )
         )
+    from sqlalchemy.orm import aliased
+    a = aliased(TopoFabricNode)
+    b = aliased(TopoFabricNode)
+    q = q.outerjoin(a, TopoFabricEdge.a_node_id == a.id).outerjoin(b, TopoFabricEdge.b_node_id == b.id)
+    status_expr = case((TopoFabricEdge.status == "stale", "missing"), else_=TopoFabricEdge.status)
+    miss = func.coalesce(TopoFabricEdge.attrs["miss_count"].as_integer(), 0)
+    q, options = filter_query(q, {
+        "status": status_expr,
+        "aSide": func.coalesce(func.nullif(a.name, ""), func.nullif(a.ip, ""), func.substr(TopoFabricEdge.a_node_id, 1, 8)),
+        "bSide": func.coalesce(func.nullif(b.name, ""), func.nullif(b.ip, ""), func.substr(TopoFabricEdge.b_node_id, 1, 8)),
+        "aPort": TopoFabricEdge.a_port, "bPort": TopoFabricEdge.b_port,
+        "source": case((TopoFabricEdge.source == "stale", "lldp"), else_=func.coalesce(func.nullif(TopoFabricEdge.source, ""), "lldp")),
+        "lastSeen": TopoFabricEdge.last_seen_at,
+        "missCount": case((miss != 0, miss), (status_expr == "missing", 1), else_=0),
+    }, table_filters)
+    if options is not None:
+        return options
     total = int(q.count())
     rows = (
         q.order_by(TopoFabricEdge.updated_at.desc())

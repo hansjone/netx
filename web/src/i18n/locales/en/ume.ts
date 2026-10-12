@@ -271,6 +271,7 @@ const ume = {
       hostName: "Host",
       neType: "NE type",
       cause: "Cause",
+      cleared: "Cleared status",
     },
   },
 };

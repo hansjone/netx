@@ -27,6 +27,7 @@ from .config_sync_service import (
     stop_cycle,
     update_policy,
 )
+from .table_filters import TableFilterParams, table_filter_params
 from .db import get_db
 
 router = APIRouter(prefix="/v1/config-sync", tags=["config-sync"])
@@ -164,10 +165,11 @@ def api_list_snapshots(
     keyword: str = Query(default=""),
     source: str = Query(default=""),
     vendor: str = Query(default=""),
+    table_filters: TableFilterParams = Depends(table_filter_params),
     db: Session = Depends(get_db),
 ):
     return list_snapshots(
-        db, page=page, page_size=page_size, keyword=keyword, source=source, vendor=vendor
+        db, page=page, page_size=page_size, keyword=keyword, source=source, vendor=vendor, table_filters=table_filters
     )
 
 

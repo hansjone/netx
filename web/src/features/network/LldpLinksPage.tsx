@@ -5,9 +5,9 @@ import { useSearchParams } from "react-router-dom";
 import { ListPager } from "../../components/ListPager";
 import { HelpHint } from "../../components/HelpHint";
 import { AppModalShell } from "../../components/ui/AppModalShell";
-import { FieldSelect } from "../../components/ui/FieldSelect";
+import { useTableColumnFilters } from "../../hooks/useTableColumnFilters";
+import { useLocalTableColumnFilters } from "../../hooks/useLocalTableColumnFilters";
 import { queryKeys } from "../../constants/queryKeys";
-import { useDebouncedValue } from "../../hooks/useDebouncedValue";
 import { useToast } from "../../hooks/useToast";
 import { useI18n } from "../../i18n";
 import {
@@ -109,26 +109,16 @@ export function LldpLinksPage() {
 
   const [jobPage, setJobPage] = useState(1);
   const [jobPageSize, setJobPageSize] = useState(10);
-  const [jobStatus, setJobStatus] = useState("");
-  const [jobKeyword, setJobKeyword] = useState("");
   const [exportingJobs, setExportingJobs] = useState(false);
-  const debouncedJobKeyword = useDebouncedValue(jobKeyword, 300);
   const [expandedJobId, setExpandedJobId] = useState("");
   const [itemPage, setItemPage] = useState(1);
   const [itemPageSize, setItemPageSize] = useState(10);
-  const [itemStatus, setItemStatus] = useState("");
-  const [itemKeyword, setItemKeyword] = useState("");
   const [exportingItems, setExportingItems] = useState(false);
-  const debouncedItemKeyword = useDebouncedValue(itemKeyword, 300);
   const [itemDetail, setItemDetail] = useState<TopologyDiscoverJobItem | null>(null);
 
-  const [edgeStatus, setEdgeStatus] = useState<"all" | "active" | "missing">("all");
-  const [edgeSource, setEdgeSource] = useState("");
-  const [edgeKeyword, setEdgeKeyword] = useState("");
   const [edgePage, setEdgePage] = useState(1);
   const [edgePageSize, setEdgePageSize] = useState(10);
   const [exportingEdges, setExportingEdges] = useState(false);
-  const debouncedEdgeKeyword = useDebouncedValue(edgeKeyword, 300);
 
   const [enabled, setEnabled] = useState(false);
   const [intervalValue, setIntervalValue] = useState(1);
@@ -140,8 +130,15 @@ export function LldpLinksPage() {
   const [selectedMap, setSelectedMap] = useState<Record<string, ConfigSyncTargetRef>>({});
   const [policyHydrated, setPolicyHydrated] = useState(false);
 
-  const [targetKeyword, setTargetKeyword] = useState("");
   const [targetPage, setTargetPage] = useState(1);
+
+  const edgeColumns = useTableColumnFilters("/v1/topology/fabric/edges", () => setEdgePage(1));
+  const jobColumns = useTableColumnFilters("/v1/topology/lldp-collect/jobs", () => setJobPage(1));
+  const itemColumns = useTableColumnFilters(`/v1/topology/lldp-collect/jobs/${encodeURIComponent(expandedJobId)}`, () => setItemPage(1));
+  const targetColumns = useTableColumnFilters("/v1/cli/targets", () => setTargetPage(1), { source: "all" });
+  const unmatchedColumns = useLocalTableColumnFilters(itemDetail?.id || "", itemDetail?.unmatched || [], (row) => ({
+    remote: row.remote_name || row.remote_ip || "", localPort: row.local_port || "", remotePort: row.remote_port || "",
+  }));
 
   const dashQuery = useQuery({
     queryKey: queryKeys.lldpCollectDashboard,
@@ -156,8 +153,7 @@ export function LldpLinksPage() {
     },
   });
 
-  useEffect(() => {
-    if (!dashQuery.data || policyHydrated) return;
+  if (dashQuery.data && !policyHydrated) {
     const p = dashQuery.data.policy;
     setEnabled(Boolean(p.enabled));
     const hours = Math.max(1, Number(p.interval_hours || (Number(p.interval_days || 1) * 24)));
@@ -179,84 +175,48 @@ export function LldpLinksPage() {
     }
     setSelectedMap(map);
     setPolicyHydrated(true);
-  }, [dashQuery.data, policyHydrated]);
+  }
 
-  // Deep link from topology canvas: /network/topology/lldp?job_id=…
-  useEffect(() => {
-    const jobId = String(searchParams.get("job_id") || "").trim();
-    if (!jobId) return;
+  // Apply each deep-link job once; keep URL cleanup separate from local state.
+  const linkedJobId = String(searchParams.get("job_id") || "").trim();
+  const [appliedLinkedJobId, setAppliedLinkedJobId] = useState("");
+  if (linkedJobId && linkedJobId !== appliedLinkedJobId) {
+    setAppliedLinkedJobId(linkedJobId);
     setItemDetail(null);
     setItemPage(1);
-    setItemStatus("");
-    setItemKeyword("");
-    setExpandedJobId(jobId);
-    setSearchParams(
-      (prev) => {
-        const next = new URLSearchParams(prev);
-        if (next.get("job_id") === jobId) next.delete("job_id");
-        return next;
-      },
-      { replace: true },
-    );
-  }, [searchParams, setSearchParams]);
+    setExpandedJobId(linkedJobId);
+  }
+  useEffect(() => {
+    if (!linkedJobId) return;
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      if (next.get("job_id") === linkedJobId) next.delete("job_id");
+      return next;
+    }, { replace: true });
+  }, [linkedJobId, setSearchParams]);
 
   const jobsQuery = useQuery({
-    queryKey: queryKeys.lldpCollectJobs(jobPage, jobPageSize, jobStatus, debouncedJobKeyword),
-    queryFn: () =>
-      fetchLldpCollectJobs({
-        page: jobPage,
-        pageSize: jobPageSize,
-        status: jobStatus,
-        keyword: debouncedJobKeyword,
-      }),
+    queryKey: [...queryKeys.lldpCollectJobs(jobPage, jobPageSize, "", ""), jobColumns.key],
+    queryFn: () => fetchLldpCollectJobs({ page: jobPage, pageSize: jobPageSize, columnFilters: jobColumns.filters }),
     staleTime: 1000,
     refetchInterval: () => (dashQuery.data?.running_job ? POLL_MS : false),
   });
-
   const jobDetailQuery = useQuery({
-    queryKey: queryKeys.lldpCollectJob(
-      expandedJobId,
-      itemPage,
-      itemPageSize,
-      itemStatus,
-      debouncedItemKeyword,
-    ),
-    queryFn: () =>
-      fetchLldpCollectJob(expandedJobId, {
-        page: itemPage,
-        pageSize: itemPageSize,
-        status: itemStatus,
-        keyword: debouncedItemKeyword,
-      }),
+    queryKey: [...queryKeys.lldpCollectJob(expandedJobId, itemPage, itemPageSize, "", ""), itemColumns.key],
+    queryFn: () => fetchLldpCollectJob(expandedJobId, { page: itemPage, pageSize: itemPageSize, columnFilters: itemColumns.filters }),
     enabled: Boolean(expandedJobId),
     staleTime: 800,
     refetchInterval: () => (dashQuery.data?.running_job?.id === expandedJobId ? POLL_MS : false),
   });
-
   const targetsQuery = useQuery({
-    queryKey: queryKeys.cliTargets(targetKeyword, targetPage, TARGET_PAGE_SIZE),
-    queryFn: () =>
-      fetchCliTargets({ source: "all", keyword: targetKeyword, page: targetPage, pageSize: TARGET_PAGE_SIZE }),
+    queryKey: queryKeys.cliTargets(`all:${targetColumns.key}`, targetPage, TARGET_PAGE_SIZE),
+    queryFn: () => fetchCliTargets({ source: "all", columnFilters: targetColumns.filters, page: targetPage, pageSize: TARGET_PAGE_SIZE }),
     enabled: scopeMode === "selected",
     staleTime: 5000,
   });
-
   const edgesQuery = useQuery({
-    queryKey: queryKeys.fabricEdges(
-      edgeStatus,
-      debouncedEdgeKeyword,
-      edgePage,
-      edgePageSize,
-      edgeSource,
-    ),
-    queryFn: () =>
-      fetchFabricEdges({
-        status: edgeStatus === "all" ? "" : edgeStatus,
-        keyword: debouncedEdgeKeyword,
-        source: edgeSource || undefined,
-        page: edgePage,
-        pageSize: edgePageSize,
-      }),
+    queryKey: [...queryKeys.fabricEdges("all", "", edgePage, edgePageSize, ""), edgeColumns.key],
+    queryFn: () => fetchFabricEdges({ columnFilters: edgeColumns.filters, page: edgePage, pageSize: edgePageSize }),
     staleTime: 2000,
     refetchInterval: () => (dashQuery.data?.running_job ? POLL_MS : false),
   });
@@ -368,6 +328,9 @@ export function LldpLinksPage() {
   const edgeItems = edgesQuery.data?.items ?? [];
   const edgeTotal = Number(edgesQuery.data?.total || 0);
   const edgePages = pageCount(edgeTotal, edgePageSize);
+  if (edgesQuery.data && edgePage > edgePages) setEdgePage(edgePages);
+  if (jobsQuery.data && jobPage > jobPages) setJobPage(jobPages);
+  if (jobDetailQuery.data && itemPage > itemPages) setItemPage(itemPages);
 
   const exportEdgesCsv = async () => {
     setExportingEdges(true);
@@ -377,9 +340,7 @@ export function LldpLinksPage() {
         maxRows: 2000,
         fetchPage: (p, ps) =>
           fetchFabricEdges({
-            status: edgeStatus === "all" ? "" : edgeStatus,
-            keyword: debouncedEdgeKeyword,
-            source: edgeSource || undefined,
+            columnFilters: edgeColumns.filters,
             page: p,
             pageSize: ps,
           }),
@@ -440,8 +401,7 @@ export function LldpLinksPage() {
           fetchLldpCollectJobs({
             page: p,
             pageSize: ps,
-            status: jobStatus,
-            keyword: debouncedJobKeyword,
+            columnFilters: jobColumns.filters,
           }),
       });
       downloadCsv(
@@ -509,8 +469,7 @@ export function LldpLinksPage() {
           const job = await fetchLldpCollectJob(expandedJobId, {
             page: p,
             pageSize: ps,
-            status: itemStatus,
-            keyword: debouncedItemKeyword,
+            columnFilters: itemColumns.filters,
           });
           return { total: job.items_total, items: (job.items || []) as TopologyDiscoverJobItem[] };
         },
@@ -749,24 +708,15 @@ export function LldpLinksPage() {
         {scopeMode === "selected" ? (
           <div style={{ marginTop: 12 }}>
             <p className="muted">{t("lldpLinks.selectedCount", { count: String(selectedCount) })}</p>
-            <div className="filter-inline">
-              <input
-                value={targetKeyword}
-                placeholder={t("lldpLinks.targetKeywordPh")}
-                onChange={(e) => {
-                  setTargetKeyword(e.target.value);
-                  setTargetPage(1);
-                }}
-              />
-            </div>
-            <table className="data-table">
+            <Button size="sm" variant="tertiary" isDisabled={!targetColumns.active} onPress={targetColumns.reset}>{t("common.clearFilters")}</Button>
+            <table className="data-table pt-list-table">
               <thead>
                 <tr>
                   <th />
-                  <th>{t("lldpLinks.col.source")}</th>
-                  <th>{t("lldpLinks.col.name")}</th>
-                  <th>IP</th>
-                  <th>{t("lldpLinks.col.vendor")}</th>
+                  <th>{targetColumns.column("source", t("lldpLinks.col.source"))}</th>
+                  <th>{targetColumns.column("name", t("lldpLinks.col.name"))}</th>
+                  <th>{targetColumns.column("ip", "IP")}</th>
+                  <th>{targetColumns.column("vendor", t("lldpLinks.col.vendor"))}</th>
                 </tr>
               </thead>
               <tbody>
@@ -823,42 +773,12 @@ export function LldpLinksPage() {
       </div>
 
       <h3>{t("lldpLinks.edgesTitle")}</h3>
-      <div className="filter-inline" style={{ marginBottom: 8 }}>
-        <FieldSelect
-          value={edgeStatus}
-          onChange={(e) => {
-            const v = e.target.value;
-            setEdgeStatus(v === "active" || v === "missing" ? v : "all");
-            setEdgePage(1);
-          }}
-        >
-          <option value="all">{t("lldpLinks.edgeStatusAll")}</option>
-          <option value="active">{t("lldpLinks.edgeStatusActive")}</option>
-          <option value="missing">{t("lldpLinks.edgeStatusMissing")}</option>
-        </FieldSelect>
-        <FieldSelect
-          value={edgeSource}
-          onChange={(e) => {
-            setEdgeSource(e.target.value);
-            setEdgePage(1);
-          }}
-        >
-          <option value="">{t("lldpLinks.edgeSourceAll")}</option>
-          <option value="lldp">{t("lldpLinks.edgeSource.lldp")}</option>
-          <option value="manual">{t("lldpLinks.edgeSource.manual")}</option>
-        </FieldSelect>
-        <Input
-          value={edgeKeyword}
-          placeholder={t("lldpLinks.edgeKeywordPh")}
-          onChange={(e) => {
-            setEdgeKeyword(e.target.value);
-            setEdgePage(1);
-          }}
-        />
+      <div className="btn-row" style={{ marginBottom: 8 }}>
+        <Button size="sm" variant="tertiary" isDisabled={!edgeColumns.active} onPress={edgeColumns.reset}>{t("common.clearFilters")}</Button>
         <Button
           size="sm"
           variant="secondary"
-          isDisabled={exportingEdges || edgeTotal === 0}
+          isDisabled={exportingEdges || edgeTotal === 0 || edgesQuery.isFetching}
           onPress={() => void exportEdgesCsv()}
         >
           {exportingEdges ? t("common.exporting") : t("common.exportCsv")}
@@ -868,14 +788,14 @@ export function LldpLinksPage() {
         <table className="data-table pt-list-table">
           <thead>
             <tr>
-              <th>{t("lldpLinks.col.status")}</th>
-              <th>{t("lldpLinks.col.aSide")}</th>
-              <th>{t("lldpLinks.col.aPort")}</th>
-              <th>{t("lldpLinks.col.bSide")}</th>
-              <th>{t("lldpLinks.col.bPort")}</th>
-              <th>{t("lldpLinks.col.source")}</th>
-              <th>{t("lldpLinks.missCount")}</th>
-              <th>{t("lldpLinks.col.lastSeen")}</th>
+              <th>{edgeColumns.column("status", t("lldpLinks.col.status"), (value) => lldpEdgeStatusLabel(t, value))}</th>
+              <th>{edgeColumns.column("aSide", t("lldpLinks.col.aSide"))}</th>
+              <th>{edgeColumns.column("aPort", t("lldpLinks.col.aPort"))}</th>
+              <th>{edgeColumns.column("bSide", t("lldpLinks.col.bSide"))}</th>
+              <th>{edgeColumns.column("bPort", t("lldpLinks.col.bPort"))}</th>
+              <th>{edgeColumns.column("source", t("lldpLinks.col.source"), (value) => lldpEdgeSourceLabel(t, value))}</th>
+              <th>{edgeColumns.column("missCount", t("lldpLinks.missCount"))}</th>
+              <th>{edgeColumns.column("lastSeen", t("lldpLinks.col.lastSeen"), formatSystemTime)}</th>
             </tr>
           </thead>
           <tbody>
@@ -943,35 +863,12 @@ export function LldpLinksPage() {
       />
 
       <h3 style={{ marginTop: 24 }}>{t("lldpLinks.jobsTitle")}</h3>
-      <div className="filter-inline" style={{ marginBottom: 8 }}>
-        <FieldSelect
-          value={jobStatus}
-          onChange={(e) => {
-            setJobStatus(e.target.value);
-            setJobPage(1);
-          }}
-        >
-          <option value="">{t("lldpLinks.statusAll")}</option>
-          <option value="running">{t("lldpLinks.jobStatus.running")}</option>
-          <option value="pending">{t("lldpLinks.jobStatus.pending")}</option>
-          <option value="paused">{t("lldpLinks.jobStatus.paused")}</option>
-          <option value="done">{t("lldpLinks.jobStatus.done")}</option>
-          <option value="failed">{t("lldpLinks.jobStatus.failed")}</option>
-          <option value="cancelled">{t("lldpLinks.jobStatus.cancelled")}</option>
-          <option value="stopped">{t("lldpLinks.jobStatus.stopped")}</option>
-        </FieldSelect>
-        <Input
-          value={jobKeyword}
-          placeholder={t("lldpLinks.jobKeywordPh")}
-          onChange={(e) => {
-            setJobKeyword(e.target.value);
-            setJobPage(1);
-          }}
-        />
+      <div className="btn-row" style={{ marginBottom: 8 }}>
+        <Button size="sm" variant="tertiary" isDisabled={!jobColumns.active} onPress={jobColumns.reset}>{t("common.clearFilters")}</Button>
         <Button
           size="sm"
           variant="secondary"
-          isDisabled={exportingJobs || jobTotal === 0}
+          isDisabled={exportingJobs || jobTotal === 0 || jobsQuery.isFetching}
           onPress={() => void exportJobsCsv()}
         >
           {exportingJobs ? t("common.exporting") : t("common.exportCsv")}
@@ -982,15 +879,15 @@ export function LldpLinksPage() {
           <thead>
             <tr>
               <th />
-              <th>ID</th>
-              <th>{t("lldpLinks.col.trigger")}</th>
-              <th>{t("lldpLinks.col.scope")}</th>
-              <th>{t("lldpLinks.col.status")}</th>
-              <th>{t("lldpLinks.col.progress")}</th>
-              <th>{t("lldpLinks.col.edges")}</th>
-              <th>{t("lldpLinks.col.missingDelta")}</th>
-              <th>{t("lldpLinks.col.started")}</th>
-              <th>{t("lldpLinks.col.ended")}</th>
+              <th>{jobColumns.column("id", "ID", (value) => value.slice(0, 8))}</th>
+              <th>{jobColumns.column("trigger", t("lldpLinks.col.trigger"), (value) => lldpTriggerLabel(t, value))}</th>
+              <th>{jobColumns.column("scope", t("lldpLinks.col.scope"), (value) => lldpScopeLabel(t, value))}</th>
+              <th>{jobColumns.column("status", t("lldpLinks.col.status"), (value) => lldpJobStatusLabel(t, value))}</th>
+              <th>{jobColumns.column("progress", t("lldpLinks.col.progress"))}</th>
+              <th>{jobColumns.column("edges", t("lldpLinks.col.edges"), (value) => { const [added, updated] = value.split("/"); return `+${added} / ~${updated}`; })}</th>
+              <th>{jobColumns.column("missingDelta", t("lldpLinks.col.missingDelta"))}</th>
+              <th>{jobColumns.column("started", t("lldpLinks.col.started"), formatSystemTime)}</th>
+              <th>{jobColumns.column("ended", t("lldpLinks.col.ended"), formatSystemTime)}</th>
               <th />
             </tr>
           </thead>
@@ -1004,8 +901,7 @@ export function LldpLinksPage() {
                       variant="ghost"
                       onPress={() => {
                         setItemDetail(null);
-                        setItemStatus("");
-                        setItemKeyword("");
+                        itemColumns.reset();
                         setExpandedJobId(job.id);
                         setItemPage(1);
                       }}
@@ -1103,8 +999,7 @@ export function LldpLinksPage() {
         onClose={() => {
           setExpandedJobId("");
           setItemDetail(null);
-          setItemStatus("");
-          setItemKeyword("");
+          itemColumns.reset();
           setItemPage(1);
         }}
         size="lg"
@@ -1127,28 +1022,7 @@ export function LldpLinksPage() {
             })()}
           </p>
 
-          <div className="filter-inline">
-            <FieldSelect
-              value={itemStatus}
-              onChange={(e) => {
-                setItemStatus(e.target.value);
-                setItemPage(1);
-              }}
-            >
-              <option value="">{t("lldpLinks.itemResultAll")}</option>
-              <option value="ok">{t("lldpLinks.itemResult.ok")}</option>
-              <option value="warn">{t("lldpLinks.itemResult.warn")}</option>
-              <option value="fail">{t("lldpLinks.itemResult.fail")}</option>
-            </FieldSelect>
-            <Input
-              value={itemKeyword}
-              placeholder={t("lldpLinks.itemKeywordPh")}
-              onChange={(e) => {
-                setItemKeyword(e.target.value);
-                setItemPage(1);
-              }}
-            />
-          </div>
+          <Button size="sm" variant="tertiary" isDisabled={!itemColumns.active} onPress={itemColumns.reset}>{t("common.clearFilters")}</Button>
 
           {jobDetailQuery.isLoading ? <p className="muted">{t("common.refreshing")}</p> : null}
           {jobDetailQuery.data?.error ? (
@@ -1160,12 +1034,12 @@ export function LldpLinksPage() {
               <table className="data-table pt-list-table">
                 <thead>
                   <tr>
-                    <th>{t("lldpLinks.col.name")}</th>
-                    <th>IP</th>
-                    <th>{t("lldpLinks.col.status")}</th>
-                    <th>{t("lldpLinks.col.neighbors")}</th>
-                    <th>{t("lldpLinks.col.edges")}</th>
-                    <th>{t("lldpLinks.col.error")}</th>
+                    <th>{itemColumns.column("name", t("lldpLinks.col.name"))}</th>
+                    <th>{itemColumns.column("ip", "IP")}</th>
+                    <th>{itemColumns.column("status", t("lldpLinks.col.status"), (value) => t(`lldpLinks.itemResult.${value}`))}</th>
+                    <th>{itemColumns.column("neighbors", t("lldpLinks.col.neighbors"))}</th>
+                    <th>{itemColumns.column("edges", t("lldpLinks.col.edges"), (value) => { const [added, updated] = value.split("/"); return `+${added} / ~${updated}`; })}</th>
+                    <th>{itemColumns.column("error", t("lldpLinks.col.error"))}</th>
                     <th />
                   </tr>
                 </thead>
@@ -1202,7 +1076,7 @@ export function LldpLinksPage() {
                         </td>
                         <td className="muted">{it.error || "—"}</td>
                         <td>
-                          <Button size="sm" variant="tertiary" onPress={() => setItemDetail(it)}>
+                          <Button size="sm" variant="tertiary" onPress={() => { unmatchedColumns.reset(); setItemDetail(it); }}>
                             {t("topology.discoverViewDetail")}
                           </Button>
                         </td>
@@ -1238,7 +1112,7 @@ export function LldpLinksPage() {
         <Modal.Footer>
           <Button
             variant="secondary"
-            isDisabled={exportingItems || itemTotal === 0}
+            isDisabled={exportingItems || itemTotal === 0 || jobDetailQuery.isFetching}
             onPress={() => void exportItemsCsv()}
           >
             {exportingItems ? t("common.exporting") : t("common.exportCsv")}
@@ -1248,8 +1122,7 @@ export function LldpLinksPage() {
             onPress={() => {
               setExpandedJobId("");
               setItemDetail(null);
-              setItemStatus("");
-              setItemKeyword("");
+              itemColumns.reset();
               setItemPage(1);
             }}
           >
@@ -1307,16 +1180,16 @@ export function LldpLinksPage() {
                 <p className="panel__hint">{t("topology.discoverUnmatchedEmpty")}</p>
               ) : (
                 <div className="topo-discover-modal__table-wrap">
-                  <table className="topo-discover-modal__table">
+                  <table className="data-table pt-list-table topo-discover-modal__table">
                     <thead>
                       <tr>
-                        <th>{t("topology.discoverColRemote")}</th>
-                        <th>{t("topology.discoverColLocalPort")}</th>
-                        <th>{t("topology.discoverColRemotePort")}</th>
+                        <th>{unmatchedColumns.column("remote", t("topology.discoverColRemote"))}</th>
+                        <th>{unmatchedColumns.column("localPort", t("topology.discoverColLocalPort"))}</th>
+                        <th>{unmatchedColumns.column("remotePort", t("topology.discoverColRemotePort"))}</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {(itemDetail.unmatched || []).map((u, idx) => (
+                      {unmatchedColumns.items.map((u, idx) => (
                         <tr key={`${itemDetail.id}-u-${idx}`}>
                           <td>
                             {(u.remote_name || u.remote_ip || "?").trim()}
@@ -1326,6 +1199,7 @@ export function LldpLinksPage() {
                           <td>{u.remote_port || "?"}</td>
                         </tr>
                       ))}
+                      {!unmatchedColumns.items.length ? <tr><td colSpan={3}>{t("common.empty")}</td></tr> : null}
                     </tbody>
                   </table>
                 </div>

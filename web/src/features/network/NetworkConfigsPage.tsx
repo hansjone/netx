@@ -1,12 +1,11 @@
-import { Button, Input, Modal } from "@heroui/react";
-import { useEffect, useState } from "react";
+import { Button, Modal } from "@heroui/react";
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import { ListPager } from "../../components/ListPager";
 import { AppModalShell } from "../../components/ui/AppModalShell";
-import { FieldSelect } from "../../components/ui/FieldSelect";
+import { useTableColumnFilters } from "../../hooks/useTableColumnFilters";
 import { queryKeys } from "../../constants/queryKeys";
-import { useDebouncedValue } from "../../hooks/useDebouncedValue";
 import { useToast } from "../../hooks/useToast";
 import { useI18n } from "../../i18n";
 import {
@@ -35,41 +34,22 @@ export function NetworkConfigsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
-  const [keyword, setKeyword] = useState(() => String(searchParams.get("q") || ""));
-  const [source, setSource] = useState("");
-  const [vendor, setVendor] = useState("");
+  const keyword = searchParams.get("q") || "";
   const [selected, setSelected] = useState<{ source: string; id: string } | null>(null);
   const [tab, setTab] = useState<"primary" | "alt">("primary");
   const [exporting, setExporting] = useState("");
   const [exportingList, setExportingList] = useState(false);
 
-  const debouncedKeyword = useDebouncedValue(keyword, 300);
-  const debouncedVendor = useDebouncedValue(vendor, 300);
-
-  useEffect(() => {
-    const q = String(searchParams.get("q") || "").trim();
-    if (!q) return;
-    setKeyword(q);
-    setPage(1);
-    setSearchParams(
-      (prev) => {
-        const next = new URLSearchParams(prev);
-        if (next.get("q") === q) next.delete("q");
-        return next;
-      },
-      { replace: true },
-    );
-  }, [searchParams, setSearchParams]);
+  const columns = useTableColumnFilters("/v1/config-sync/snapshots", () => setPage(1), { keyword });
 
   const listQuery = useQuery({
-    queryKey: queryKeys.networkConfigs(page, debouncedKeyword, source, debouncedVendor, pageSize),
+    queryKey: [...queryKeys.networkConfigs(page, keyword, "", "", pageSize), columns.key],
     queryFn: () =>
       fetchNeConfigSnapshots({
         page,
         pageSize,
-        keyword: debouncedKeyword,
-        source,
-        vendor: debouncedVendor,
+        keyword,
+        columnFilters: columns.filters,
       }),
     staleTime: 5000,
   });
@@ -86,7 +66,8 @@ export function NetworkConfigsPage() {
   const pages = pageCount(total, pageSize);
   const detail = detailQuery.data;
   const showAlt = Boolean(detail?.has_alt);
-  const hasFilters = Boolean(keyword || source || vendor);
+  const hasFilters = Boolean(keyword) || columns.active;
+  if (listQuery.data && page > pages) setPage(pages);
 
   const exportConfig = async (
     src: string,
@@ -115,9 +96,8 @@ export function NetworkConfigsPage() {
           fetchNeConfigSnapshots({
             page: p,
             pageSize: ps,
-            keyword: debouncedKeyword,
-            source,
-            vendor: debouncedVendor,
+            keyword,
+            columnFilters: columns.filters,
           }),
       });
       downloadCsv(
@@ -154,10 +134,14 @@ export function NetworkConfigsPage() {
       <div className="panel__toolbar">
         <h2>{t("networkConfigs.title")}</h2>
         <div className="btn-row">
+          {keyword ? <span className="muted">{keyword}</span> : null}
+          <Button size="sm" variant="tertiary" isDisabled={!hasFilters} onPress={() => { columns.reset(); setSearchParams({}); }}>
+            {t("common.clearFilters")}
+          </Button>
           <Button
             size="sm"
             variant="secondary"
-            isDisabled={exportingList || total === 0}
+            isDisabled={exportingList || total === 0 || listQuery.isFetching}
             onPress={() => void exportListCsv()}
           >
             {exportingList ? t("common.exporting") : t("common.exportCsv")}
@@ -166,67 +150,19 @@ export function NetworkConfigsPage() {
       </div>
 
       <div className="pt-list">
-        <div className="filter-inline">
-          <Input
-            value={keyword}
-            placeholder={t("networkConfigs.keywordPh")}
-            onChange={(e) => {
-              setKeyword(e.target.value);
-              setPage(1);
-            }}
-          />
-          <FieldSelect
-            value={source}
-            onChange={(e) => {
-              setSource(e.target.value);
-              setPage(1);
-            }}
-          >
-            <option value="">{t("networkConfigs.allSource")}</option>
-            <option value="managed">managed</option>
-            <option value="ume">ume</option>
-          </FieldSelect>
-          <Input
-            value={vendor}
-            placeholder={t("networkConfigs.vendorPh")}
-            onChange={(e) => {
-              setVendor(e.target.value);
-              setPage(1);
-            }}
-          />
-          <Button
-            size="sm"
-            variant="tertiary"
-            isDisabled={!hasFilters}
-            onPress={() => {
-              setKeyword("");
-              setSource("");
-              setVendor("");
-              setPage(1);
-            }}
-          >
-            {t("common.clearFilters")}
-          </Button>
-        </div>
-
         {listQuery.isLoading ? <p className="muted">{t("common.refreshing")}</p> : null}
         {listQuery.isError ? <p className="error-text">{t("common.opFailed")}</p> : null}
 
-        {!items.length && !listQuery.isLoading ? (
-          <div className="pt-list-empty">
-            <p>{t("networkConfigs.empty")}</p>
-          </div>
-        ) : (
           <div className="pt-list-table-wrap">
             <table className="data-table pt-list-table">
               <thead>
                 <tr>
-                  <th>{t("networkConfigs.col.name")}</th>
-                  <th>IP</th>
-                  <th>{t("networkConfigs.col.vendor")}</th>
-                  <th>{t("networkConfigs.col.source")}</th>
-                  <th>{t("networkConfigs.col.size")}</th>
-                  <th>{t("networkConfigs.col.collected")}</th>
+                  <th>{columns.column("name", t("networkConfigs.col.name"))}</th>
+                  <th>{columns.column("ip", "IP")}</th>
+                  <th>{columns.column("vendor", t("networkConfigs.col.vendor"))}</th>
+                  <th>{columns.column("source", t("networkConfigs.col.source"))}</th>
+                  <th>{columns.column("size", t("networkConfigs.col.size"), (value) => fmtBytes(Number(value)))}</th>
+                  <th>{columns.column("collected", t("networkConfigs.col.collected"), formatSystemTime)}</th>
                   <th>{t("portTraffic.col.actions")}</th>
                 </tr>
               </thead>
@@ -292,10 +228,12 @@ export function NetworkConfigsPage() {
                     </tr>
                   );
                 })}
+                {!items.length && !listQuery.isFetching && !listQuery.isError ? (
+                  <tr><td colSpan={7} className="pt-list-empty">{t("networkConfigs.empty")}</td></tr>
+                ) : null}
               </tbody>
             </table>
           </div>
-        )}
 
         <ListPager
           page={page}

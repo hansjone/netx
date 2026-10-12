@@ -341,6 +341,126 @@
   margin: 0;
 }
 
+.ne-column-heading {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.ne-column-filter {
+  position: relative;
+  display: inline-flex;
+}
+
+.ne-column-filter > button.ne-column-filter__trigger {
+  display: inline-grid;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--nx-text-muted);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.ne-column-filter > button.ne-column-filter__trigger:hover,
+.ne-column-filter > button.ne-column-filter__trigger[aria-expanded="true"] {
+  color: var(--nx-text);
+}
+
+.ne-column-filter > button.ne-column-filter__trigger.is-active {
+  color: var(--nx-accent);
+}
+
+.ne-column-filter > button.ne-column-filter__trigger:focus-visible {
+  outline: 2px solid var(--nx-accent);
+  outline-offset: 2px;
+}
+
+.ne-column-filter__menu {
+  position: fixed;
+  z-index: 1200;
+  width: min(300px, calc(100vw - 16px));
+  max-height: calc(100dvh - 16px);
+  overflow-y: auto;
+  box-sizing: border-box;
+  padding: 10px;
+  border: 1px solid var(--nx-line-strong);
+  border-radius: 8px;
+  background: var(--nx-surface-2);
+  box-shadow: 0 12px 28px rgb(0 0 0 / 28%);
+  text-transform: none;
+}
+
+.ne-column-filter__select-all {
+  display: flex;
+  width: 100%;
+  margin: 8px 0 4px;
+  padding: 5px 2px 8px;
+  border-bottom: 1px solid var(--nx-line-soft);
+  align-items: center;
+  gap: 8px;
+  color: var(--nx-text);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.ne-column-filter__select-all input {
+  accent-color: var(--nx-accent-strong);
+}
+
+.ne-column-filter__options {
+  display: flex;
+  max-height: 220px;
+  flex-direction: column;
+  gap: 2px;
+  overflow: auto;
+  padding: 4px 0;
+}
+
+.ne-column-filter__option {
+  display: flex;
+  flex-shrink: 0;
+  min-height: 28px;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+  padding: 3px 2px;
+  color: var(--nx-text);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-overflow: ellipsis;
+  text-transform: none;
+  white-space: nowrap;
+}
+
+.ne-column-filter__option input {
+  flex: 0 0 auto;
+  accent-color: var(--nx-accent-strong);
+}
+
+.ne-column-filter__option span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ne-column-filter__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 8px;
+}
+
 .network-main .pt-list-table thead th {
   background: var(--nx-surface-3);
   color: var(--nx-text-muted);
@@ -689,3 +809,23 @@
   font-size: 12px;
   color: var(--nx-text-soft);
 }
+
+/* Native checkboxes must not inherit text-input dimensions/padding. */
+.ne-column-filter__menu input[type="checkbox"] {
+  appearance: auto;
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  cursor: pointer;
+}
+.ne-column-filter__menu input[type="checkbox"]:disabled {
+  cursor: wait;
+}
+.ne-column-filter__select-all:hover,
+.ne-column-filter__option:hover {
+  background: var(--nx-surface-3);
+}
+.ne-column-filter__menu .button { flex-shrink: 0; }

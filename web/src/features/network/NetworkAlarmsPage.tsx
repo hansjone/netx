@@ -1,11 +1,10 @@
-import { Button, Input } from "@heroui/react";
-import { useEffect, useState } from "react";
+import { Button } from "@heroui/react";
+import { useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { ListPager } from "../../components/ListPager";
-import { FieldSelect } from "../../components/ui/FieldSelect";
+import { useTableColumnFilters } from "../../hooks/useTableColumnFilters";
 import { queryKeys } from "../../constants/queryKeys";
-import { useDebouncedValue } from "../../hooks/useDebouncedValue";
 import { useToast } from "../../hooks/useToast";
 import { useI18n } from "../../i18n";
 import { fetchUmeCurrentAlarms, formatErr } from "../../services/api";
@@ -19,59 +18,34 @@ import { NmStatusChip, severityChipColor } from "../../components/NmChips";
 export function NetworkAlarmsPage() {
   const { t } = useI18n();
   const { showOk, showError } = useToast();
-  const [searchParams] = useSearchParams();
-  const [curSeverity, setCurSeverity] = useState("");
-  const [curCleared, setCurCleared] = useState("");
-  const [curHostName, setCurHostName] = useState("");
-  const [curKeyword, setCurKeyword] = useState("");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const curSeverity = searchParams.get("severity") || "";
+  const curCleared = searchParams.get("cleared") || "";
+  const curHostName = searchParams.get("host") || "";
+  const curKeyword = searchParams.get("keyword") || "";
   const [curPage, setCurPage] = useState(1);
   const [curPageSize, setCurPageSize] = useState(10);
   const [exporting, setExporting] = useState(false);
-
-  // Deep-link from topology (and similar): ?host=&cleared=&severity=&keyword=
-  useEffect(() => {
-    const host = searchParams.get("host");
-    const cleared = searchParams.get("cleared");
-    const severity = searchParams.get("severity");
-    const keyword = searchParams.get("keyword");
-    let touched = false;
-    if (host != null) {
-      setCurHostName(host);
-      touched = true;
-    }
-    if (cleared != null) {
-      setCurCleared(cleared);
-      touched = true;
-    }
-    if (severity != null) {
-      setCurSeverity(severity);
-      touched = true;
-    }
-    if (keyword != null) {
-      setCurKeyword(keyword);
-      touched = true;
-    }
-    if (touched) setCurPage(1);
-  }, [searchParams]);
-
-  const debouncedKeyword = useDebouncedValue(curKeyword, 300);
-  const debouncedHost = useDebouncedValue(curHostName, 300);
+  const columns = useTableColumnFilters("/v1/ume/alarms", () => setCurPage(1), {
+    severity: curSeverity, is_cleared: curCleared, host_name: curHostName, keyword: curKeyword,
+  });
 
   const currentQuery = useQuery({
-    queryKey: queryKeys.umeCurrentAlarms(
+    queryKey: [...queryKeys.umeCurrentAlarms(
       curSeverity,
       curCleared,
-      debouncedHost,
-      debouncedKeyword,
+      curHostName,
+      curKeyword,
       curPage,
       curPageSize,
-    ),
+    ), columns.key],
     queryFn: () =>
       fetchUmeCurrentAlarms({
+        columnFilters: columns.filters,
         severity: curSeverity,
         isCleared: curCleared,
-        hostName: debouncedHost,
-        keyword: debouncedKeyword,
+        hostName: curHostName,
+        keyword: curKeyword,
         page: curPage,
         pageSize: curPageSize,
       }),
@@ -81,7 +55,8 @@ export function NetworkAlarmsPage() {
   const items = currentQuery.data?.items || [];
   const curTotal = Number(currentQuery.data?.total || 0);
   const curPages = pageCount(curTotal, curPageSize);
-  const hasFilters = Boolean(curKeyword.trim() || curHostName.trim() || curSeverity || curCleared);
+  const hasFilters = columns.active || Boolean(curKeyword.trim() || curHostName.trim() || curSeverity || curCleared);
+  if (currentQuery.data && curPage > curPages) setCurPage(curPages);
 
   const exportCsv = async () => {
     setExporting(true);
@@ -91,10 +66,11 @@ export function NetworkAlarmsPage() {
         maxRows: 2000,
         fetchPage: (page, pageSize) =>
           fetchUmeCurrentAlarms({
+            columnFilters: columns.filters,
             severity: curSeverity,
             isCleared: curCleared,
-            hostName: debouncedHost,
-            keyword: debouncedKeyword,
+            hostName: curHostName,
+            keyword: curKeyword,
             page,
             pageSize,
           }),
@@ -128,10 +104,14 @@ export function NetworkAlarmsPage() {
       <div className="panel__toolbar">
         <h2>{t("ume.alarms.title")}</h2>
         <div className="btn-row">
+          {curHostName || curKeyword ? <span className="muted">{curHostName || curKeyword}</span> : null}
+          <Button size="sm" variant="tertiary" isDisabled={!hasFilters} onPress={() => { columns.reset(); setSearchParams({}); }}>
+            {t("common.clearFilters")}
+          </Button>
           <Button
             size="sm"
             variant="secondary"
-            isDisabled={exporting || curTotal === 0}
+            isDisabled={exporting || curTotal === 0 || currentQuery.isFetching}
             onPress={() => void exportCsv()}
           >
             {exporting ? t("common.exporting") : t("common.exportCsv")}
@@ -140,83 +120,20 @@ export function NetworkAlarmsPage() {
       </div>
 
       <div className="pt-list">
-        <div className="filter-inline">
-          <Input
-            value={curKeyword}
-            placeholder={t("ume.alarms.keywordPh")}
-            onChange={(e) => {
-              setCurKeyword(e.target.value);
-              setCurPage(1);
-            }}
-          />
-          <Input
-            value={curHostName}
-            placeholder={t("ume.alarms.hostNamePh")}
-            onChange={(e) => {
-              setCurHostName(e.target.value);
-              setCurPage(1);
-            }}
-          />
-          <FieldSelect
-            value={curSeverity}
-            onChange={(e) => {
-              setCurSeverity(e.target.value);
-              setCurPage(1);
-            }}
-          >
-            <option value="">{t("ume.alarms.allSeverity")}</option>
-            <option value="critical">critical</option>
-            <option value="major">major</option>
-            <option value="minor">minor</option>
-            <option value="warning">warning</option>
-            <option value="info">info</option>
-          </FieldSelect>
-          <FieldSelect
-            value={curCleared}
-            onChange={(e) => {
-              setCurCleared(e.target.value);
-              setCurPage(1);
-            }}
-          >
-            <option value="">{t("ume.alarms.clearedAll")}</option>
-            <option value="false">{t("ume.alarms.clearedNo")}</option>
-            <option value="true">{t("ume.alarms.clearedYes")}</option>
-          </FieldSelect>
-          <Button
-            size="sm"
-            variant="tertiary"
-            aria-label={t("ume.alarms.clearTitle")}
-            onPress={() => {
-              setCurKeyword("");
-              setCurHostName("");
-              setCurSeverity("");
-              setCurCleared("");
-              setCurPage(1);
-            }}
-            isDisabled={!hasFilters}
-          >
-            {t("common.clearFilters")}
-          </Button>
-        </div>
-
         {currentQuery.isLoading ? <p className="muted">{t("common.refreshing")}</p> : null}
         {currentQuery.isError ? <p className="error-text">{t("common.opFailed")}</p> : null}
 
-        {!items.length && !currentQuery.isLoading ? (
-          <div className="pt-list-empty">
-            <p>{t("common.empty")}</p>
-          </div>
-        ) : (
           <div className="pt-list-table-wrap">
             <table className="data-table pt-list-table">
               <thead>
                 <tr>
-                  <th>{t("ume.alarms.col.time")}</th>
-                  <th>{t("ume.alarms.col.severity")}</th>
-                  <th>{t("ume.alarms.col.neId")}</th>
-                  <th>{t("ume.alarms.col.hostName")}</th>
-                  <th>{t("ume.alarms.col.neType")}</th>
-                  <th>{t("ume.alarms.col.cause")}</th>
+                  <th>{columns.column("time", t("ume.alarms.col.time"), formatSystemTime)}</th>
+                  <th>{columns.column("severity", t("ume.alarms.col.severity"))}</th>
+                  <th>{columns.column("neId", t("ume.alarms.col.neId"))}</th>
+                  <th>{columns.column("hostName", t("ume.alarms.col.hostName"))}</th>
+                  <th>{columns.column("neType", t("ume.alarms.col.neType"))}</th>
+                  <th>{columns.column("cause", t("ume.alarms.col.cause"))}</th>
+                  <th>{columns.column("cleared", t("ume.alarms.col.cleared"), (value) => t(value === "true" ? "ume.alarms.clearedYes" : "ume.alarms.clearedNo"))}</th>
                 </tr>
               </thead>
               <tbody>
@@ -236,9 +153,7 @@ export function NetworkAlarmsPage() {
                           variant="ghost"
                           className="link-btn pt-list-task-name"
                           onPress={() => {
-                            setCurHostName(x.host_name || "");
-                            setCurKeyword("");
-                            setCurPage(1);
+                            columns.setFilter("hostName", { mode: "include", values: [x.host_name || ""] });
                           }}
                           aria-label={t("ume.alarms.filterByHost")}
                         >
@@ -252,12 +167,15 @@ export function NetworkAlarmsPage() {
                     </td>
                     <td>{x.ne_type ?? ""}</td>
                     <td>{x.native_probable_cause}</td>
+                    <td>{t(x.is_cleared === "true" ? "ume.alarms.clearedYes" : "ume.alarms.clearedNo")}</td>
                   </tr>
                 ))}
+                {!items.length && !currentQuery.isFetching && !currentQuery.isError ? (
+                  <tr><td colSpan={7} className="pt-list-empty">{t("common.empty")}</td></tr>
+                ) : null}
               </tbody>
             </table>
           </div>
-        )}
 
         <ListPager
           page={curPage}

@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
+from .table_filters import TableFilterParams, table_filter_params
 from .db import get_db
 from .topology_classify import (
     apply_classify,
@@ -107,6 +108,7 @@ def api_fabric_nodes(
     ),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=100, ge=1, le=2000),
+    table_filters: TableFilterParams = Depends(table_filter_params),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     return list_fabric_nodes(
@@ -118,6 +120,7 @@ def api_fabric_nodes(
         region_folder_id=region_folder_id,
         unmatched=unmatched,
         link_status=link_status,
+        table_filters=table_filters,
         page=page,
         page_size=page_size,
     )
@@ -132,6 +135,7 @@ def api_fabric_edges(
     keyword: str = "",
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=100, ge=1, le=2000),
+    table_filters: TableFilterParams = Depends(table_filter_params),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     return list_fabric_edges(
@@ -141,6 +145,7 @@ def api_fabric_edges(
         status=status,
         source=source,
         keyword=keyword,
+        table_filters=table_filters,
         page=page,
         page_size=page_size,
     )

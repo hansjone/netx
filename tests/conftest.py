@@ -1,5 +1,31 @@
-"""Shared test hygiene."""
+"""Shared test hygiene: never connect the test suite to the application database."""
+import os
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
 import pytest
+
+
+# Set this before any test imports netx_api.config/db. Several older unittest
+# cases use the global SessionLocal and delete entire tables in setUp.
+_TEST_STATE = TemporaryDirectory(prefix="netx-tests-", ignore_cleanup_errors=True)
+_TEST_DATABASE_URL = f"sqlite:///{(Path(_TEST_STATE.name) / 'netx.sqlite').as_posix()}"
+os.environ["NETX_DATABASE_URL"] = _TEST_DATABASE_URL
+os.environ["NETX_CREDENTIAL_SECRET_FILE"] = str(Path(_TEST_STATE.name) / "credential_secret")
+
+
+def pytest_sessionstart(session):
+    from netx_api.db import engine
+
+    if str(engine.url) != _TEST_DATABASE_URL:
+        raise pytest.UsageError("NetX tests require the isolated temporary database")
+
+
+def pytest_sessionfinish(session, exitstatus):
+    from netx_api.db import engine
+
+    engine.dispose()
+    _TEST_STATE.cleanup()
 
 
 @pytest.fixture(autouse=True)

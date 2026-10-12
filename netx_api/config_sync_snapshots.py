@@ -7,7 +7,7 @@ import zipfile
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from .config_sync_codec import decompress_text
@@ -16,6 +16,7 @@ from .config_sync_schemas import (
     NeConfigSnapshotDetailOut,
     NeConfigSnapshotMetaOut,
 )
+from .table_filters import TableFilterParams, filter_query
 from .models import NeConfigHistory, NeConfigSnapshot
 
 def _snap_meta(row: NeConfigSnapshot) -> NeConfigSnapshotMetaOut:
@@ -48,6 +49,7 @@ def list_snapshots(
     keyword: str = "",
     source: str = "",
     vendor: str = "",
+    table_filters: TableFilterParams | None = None,
 ) -> dict[str, Any]:
     q = db.query(NeConfigSnapshot)
     src = str(source or "").strip().lower()
@@ -66,6 +68,14 @@ def list_snapshots(
                 NeConfigSnapshot.target_id.ilike(like),
             )
         )
+    q, options = filter_query(q, {
+        "name": func.coalesce(func.nullif(NeConfigSnapshot.ne_name, ""), NeConfigSnapshot.target_id),
+        "ip": NeConfigSnapshot.ne_ip, "vendor": NeConfigSnapshot.vendor,
+        "source": NeConfigSnapshot.source, "size": NeConfigSnapshot.plain_size,
+        "collected": NeConfigSnapshot.collected_at,
+    }, table_filters)
+    if options is not None:
+        return options
     total = int(q.count())
     rows = q.order_by(NeConfigSnapshot.collected_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
     return {"total": total, "page": page, "page_size": page_size, "items": [_snap_meta(r) for r in rows]}

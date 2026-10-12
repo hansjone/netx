@@ -1,3 +1,5 @@
+import type { TableColumnFilters } from "../../types/tableFilters";
+import { appendColumnFilters } from "./tableFilters";
 import type {
   FabricEdge,
   FabricSummary,
@@ -203,6 +205,7 @@ export const patchTopologyEdgeStyle = (
 export const fetchFabricSummary = () => apiGet<FabricSummary>("/v1/topology/fabric/summary");
 
 export const fetchFabricNodes = (params?: {
+  columnFilters?: TableColumnFilters;
   keyword?: string;
   role?: string;
   level?: string;
@@ -214,6 +217,7 @@ export const fetchFabricNodes = (params?: {
   pageSize?: number;
 }) => {
   const p = new URLSearchParams();
+  appendColumnFilters(p, params?.columnFilters);
   if (params?.keyword) p.set("keyword", params.keyword);
   if (params?.role) p.set("role", params.role);
   if (params?.level) p.set("level", params.level);
@@ -309,6 +313,7 @@ export const searchFabricNodes = (params?: { q?: string; page?: number; pageSize
 };
 
 export const fetchFabricEdges = (params?: {
+  columnFilters?: TableColumnFilters;
   keyword?: string;
   status?: string;
   source?: string;
@@ -317,6 +322,7 @@ export const fetchFabricEdges = (params?: {
   pageSize?: number;
 }) => {
   const p = new URLSearchParams();
+  appendColumnFilters(p, params?.columnFilters);
   if (params?.keyword) p.set("keyword", params.keyword);
   if (params?.status) p.set("status", params.status);
   if (params?.source) p.set("source", params.source);
@@ -370,12 +376,14 @@ export const stopLldpCollectJob = (jobId: string) =>
   apiPost<TopologyDiscoverJob>(`/v1/topology/lldp-collect/jobs/${encodeURIComponent(jobId)}/stop`, {});
 
 export const fetchLldpCollectJobs = (params: {
+  columnFilters?: TableColumnFilters;
   page?: number;
   pageSize?: number;
   status?: string;
   keyword?: string;
 }) => {
   const p = new URLSearchParams();
+  appendColumnFilters(p, params?.columnFilters);
   p.set("page", String(Math.max(1, Number(params.page || 1))));
   p.set("page_size", String(Math.max(1, Math.min(100, Number(params.pageSize || 20)))));
   if (params.status?.trim()) p.set("status", params.status.trim());
@@ -387,9 +395,10 @@ export const fetchLldpCollectJobs = (params: {
 
 export const fetchLldpCollectJob = (
   jobId: string,
-  params?: { page?: number; pageSize?: number; status?: string; keyword?: string },
+  params?: { page?: number; pageSize?: number; status?: string; keyword?: string; columnFilters?: TableColumnFilters },
 ) => {
   const p = new URLSearchParams();
+  appendColumnFilters(p, params?.columnFilters);
   p.set("page", String(Math.max(1, Number(params?.page || 1))));
   p.set("page_size", String(Math.max(1, Math.min(100, Number(params?.pageSize || 20)))));
   if (params?.status?.trim()) p.set("status", params.status.trim());

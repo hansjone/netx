@@ -1,3 +1,5 @@
+import type { TableColumnFilters } from "../../types/tableFilters";
+import { appendColumnFilters } from "./tableFilters";
 import type {
   ConfigSyncCycle,
   ConfigSyncDashboard,
@@ -62,6 +64,7 @@ export const fetchConfigSyncCycleTasks = (params: {
 };
 
 export const fetchNeConfigSnapshots = (params: {
+  columnFilters?: TableColumnFilters;
   page?: number;
   pageSize?: number;
   keyword?: string;
@@ -69,6 +72,7 @@ export const fetchNeConfigSnapshots = (params: {
   vendor?: string;
 }) => {
   const p = new URLSearchParams();
+  appendColumnFilters(p, params?.columnFilters);
   p.set("page", String(Math.max(1, Number(params.page || 1))));
   p.set("page_size", String(Math.max(1, Math.min(100, Number(params.pageSize || 20)))));
   if (params.keyword?.trim()) p.set("keyword", params.keyword.trim());
