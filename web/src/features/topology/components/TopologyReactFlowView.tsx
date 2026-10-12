@@ -1,4 +1,11 @@
-import { createContext, memo, useContext, type Dispatch, type SetStateAction } from "react";
+import {
+  createContext,
+  memo,
+  useContext,
+  useRef,
+  type Dispatch,
+  type SetStateAction,
+} from "react";
 import {
   ReactFlow,
   Background,
@@ -24,6 +31,7 @@ import {
 import "@xyflow/react/dist/style.css";
 import { WorldScatterLayer, type WorldScatterPoint } from "./WorldScatterLayer";
 import { ParallelEdge } from "./ParallelEdge";
+import { fitToNodes } from "../lib/fitNodes";
 import { isAggregateEdgeId } from "../lib/linkDisplay";
 import type { ToolMode, ToolModeBehavior } from "../lib/toolMode";
 import type { TopologyViewRole, TopologyWorldTransform } from "../../../types";
@@ -36,6 +44,13 @@ export { isPlaceholderSource };
 
 export type NeNodeData = {
   label: string;
+  /** Current label override to persist; "" clears override. */
+  label_override?: string;
+  /** Last server label_override; used to decide whether to send label on save. */
+  label_override_saved?: string;
+  /** Inventory / fabric display name (for restoring after clearing override). */
+  name?: string;
+  locked?: boolean;
   managed_ne_id: string;
   ume_ne_id: string;
   ne_ip: string;
@@ -215,6 +230,16 @@ const NeNode = memo(function NeNode({ id, data, selected }: NodeProps<Node<NeNod
           isConnectable={connectMode && !isRegion}
         />
         {!isRegion ? <RouterIcon /> : <RegionCanvasIcon />}
+        {data.locked ? (
+          <span className="topo-node__lock" title="Locked" aria-label="Locked">
+            <svg viewBox="0 0 24 24" width="10" height="10" aria-hidden="true">
+              <path
+                fill="currentColor"
+                d="M12 17a2 2 0 1 0 0-4 2 2 0 0 0 0 4zm6-6h-1V9a5 5 0 0 0-10 0v2H6a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7a2 2 0 0 0-2-2zm-3 0H9V9a3 3 0 1 1 6 0v2z"
+              />
+            </svg>
+          </span>
+        ) : null}
         {showConnectStatus && !isRegion ? (
           <span className={`topo-node__conn topo-node__conn--${connect}`} aria-hidden />
         ) : null}
@@ -328,6 +353,8 @@ export type TopologyReactFlowViewProps = {
   pendingFitRef: { current: boolean };
   markDirty: () => void;
   pushHistory: () => void;
+  /** Drop the latest undo frame when a drag was cancelled / no real move. */
+  popHistory: () => void;
   onConnect: (connection: Connection) => void;
   isValidConnection: (connection: Connection | Edge) => boolean;
   onNodeClick: (e: React.MouseEvent, node: Node<NeNodeData>) => void;
@@ -376,6 +403,7 @@ export default function TopologyReactFlowView(props: TopologyReactFlowViewProps)
     pendingFitRef,
     markDirty,
     pushHistory,
+    popHistory,
     onConnect,
     isValidConnection,
     onNodeClick,
@@ -391,6 +419,24 @@ export default function TopologyReactFlowView(props: TopologyReactFlowViewProps)
     scheduleFlatViewportRefresh,
     toggleFullscreen,
   } = props;
+
+  /** Pre-drag positions of every node being dragged (single node or a box selection). */
+  const dragStartRef = useRef<Map<string, { x: number; y: number }> | null>(null);
+  const beginDrag = (dragged: Node<NeNodeData>[]) => {
+    dragStartRef.current = new Map(dragged.map((n) => [n.id, { x: n.position.x, y: n.position.y }]));
+    pushHistory();
+  };
+  const endDrag = (dragged: Node<NeNodeData>[]) => {
+    const start = dragStartRef.current;
+    dragStartRef.current = null;
+    if (!start) return;
+    const moved = dragged.some((n) => {
+      const s0 = start.get(n.id);
+      return Boolean(s0) && (Math.abs(n.position.x - s0!.x) > 1 || Math.abs(n.position.y - s0!.y) > 1);
+    });
+    if (moved) markDirty();
+    else popHistory();
+  };
 
   return (
     <TopoDisplayContext.Provider value={displayOpts}>
@@ -439,13 +485,26 @@ export default function TopologyReactFlowView(props: TopologyReactFlowViewProps)
         multiSelectionKeyCode="Shift"
         snapToGrid={snapToGrid}
         snapGrid={SNAP_GRID}
-        onNodeDragStart={() => {
-          pushHistory();
-        }}
+        onNodeDragStart={(_e, _node, dragged) => beginDrag(dragged)}
+        onNodeDragStop={(_e, _node, dragged) => endDrag(dragged)}
+        // Dragging an existing box selection fires selection events, not node drag events.
+        onSelectionDragStart={(_e, dragged) => beginDrag(dragged)}
+        onSelectionDragStop={(_e, dragged) => endDrag(dragged)}
         onNodesChange={(changes: NodeChange<Node<NeNodeData>>[]) => {
-          if (changes.some((c) => c.type === "position" || c.type === "remove" || c.type === "add")) {
-            markDirty();
+          // Position changes alone (click / select jitter) must not mark dirty; pointer
+          // drags are settled in endDrag. Outside a drag, a real position change comes from
+          // keyboard arrows (xyflow a11y move) and is an edit.
+          let edited = changes.some((c) => c.type === "remove" || c.type === "add");
+          if (!edited && !dragStartRef.current) {
+            const before = new Map(nodes.map((n) => [n.id, n.position]));
+            edited = changes.some((c) => {
+              if (c.type !== "position" || c.dragging || !c.position) return false;
+              const p0 = before.get(c.id);
+              return Boolean(p0) && (p0!.x !== c.position.x || p0!.y !== c.position.y);
+            });
+            if (edited) pushHistory();
           }
+          if (edited) markDirty();
           setNodes((nds) => applyNodeChanges(changes, nds));
         }}
         onEdgesChange={(changes: EdgeChange<Edge>[]) => {
@@ -522,8 +581,8 @@ export default function TopologyReactFlowView(props: TopologyReactFlowViewProps)
               const bounds = isWorldFlatCanvas ? worldDisplayBounds(worldTransform) : null;
               if (bounds) {
                 inst.fitBounds(bounds, { padding: 0.12, duration: 0 });
-              } else if (nodesRef.current.length > 0) {
-                inst.fitView({ ...FIT_VIEW_OPTS, duration: 0 });
+              } else {
+                fitToNodes(inst, nodesRef.current, { padding: FIT_VIEW_OPTS.padding });
               }
               setCanvasZoom(inst.getZoom());
             });

@@ -157,7 +157,12 @@ def get_view_graph(db: Session, view_id: str) -> TopologyViewGraphOut:
     # Save/mutate return_graph must use the same UME synthetic graph as GET.
     if is_ume_canvas_view(view):
         return get_ume_canvas_graph(db, view_id)
-    vnodes = db.query(TopoViewNode).filter(TopoViewNode.view_id == view.id).all()
+    vnodes = (
+        db.query(TopoViewNode)
+        .filter(TopoViewNode.view_id == view.id)
+        .order_by(TopoViewNode.created_at.asc(), TopoViewNode.id.asc())
+        .all()
+    )
     truncated = False
     reason = ""
     if len(vnodes) > VIEW_GRAPH_NODE_HARD_CAP:
@@ -169,6 +174,19 @@ def get_view_graph(db: Session, view_id: str) -> TopologyViewGraphOut:
         n.id: n for n in db.query(TopoFabricNode).filter(TopoFabricNode.id.in_(fids)).all()
     } if fids else {}
     managed_by_id, ume_by_id = _batch_ne_lookups(db, fabric_nodes)
+    region_folder_ids = [
+        region_folder_id_from_node(vn.fabric_node_id)
+        for vn in vnodes
+        if is_region_canvas_node_id(vn.fabric_node_id)
+    ]
+    folders_by_id = {
+        f.id: f
+        for f in (
+            db.query(TopoFolder).filter(TopoFolder.id.in_(region_folder_ids)).all()
+            if region_folder_ids
+            else []
+        )
+    }
     filt = dict(view.filter or {})
     layer = str(filt.get("layer") or "physical").strip() or "physical"
     status = str(filt.get("status") or "").strip().lower()
@@ -176,7 +194,7 @@ def get_view_graph(db: Session, view_id: str) -> TopologyViewGraphOut:
     region_ids_seen: set[str] = set()
     for vn in vnodes:
         if is_region_canvas_node_id(vn.fabric_node_id):
-            folder = db.get(TopoFolder, region_folder_id_from_node(vn.fabric_node_id))
+            folder = folders_by_id.get(region_folder_id_from_node(vn.fabric_node_id))
             if folder is None or str(folder.kind or "") != "region":
                 continue
             region_ids_seen.add(folder.id)
@@ -187,12 +205,13 @@ def get_view_graph(db: Session, view_id: str) -> TopologyViewGraphOut:
                     x=float(vn.x or 0),
                     y=float(vn.y or 0),
                     locked=bool(vn.locked),
-                    label=str(vn.label or folder.name or ""),
+                    label_override=str(vn.label or ""),
                 )
             )
             continue
         fn = fabric_nodes.get(vn.fabric_node_id)
-        label = (vn.label or "").strip()
+        label_override = str(vn.label or "")
+        label = label_override.strip()
         if not label and fn is not None:
             label = (fn.name or fn.ip or vn.fabric_node_id)[:256]
         connect_status = ""
@@ -216,6 +235,7 @@ def get_view_graph(db: Session, view_id: str) -> TopologyViewGraphOut:
                 managed_ne_id=(fn.managed_ne_id if fn else "") or "",
                 ume_ne_id=(fn.ume_ne_id if fn else "") or "",
                 label=label,
+                label_override=label_override[:256],
                 x=float(vn.x or 0),
                 y=float(vn.y or 0),
                 locked=bool(vn.locked),
@@ -348,22 +368,31 @@ def _outside_peers_for_view(
     member_ids: set[str],
     layer: str,
     limit: int = 50,
+    edge_scan_limit: int = 5000,
 ) -> list[dict[str, str]]:
     if not member_ids:
         return []
+    members = list(member_ids)
+    # Exclude edges whose both ends are already on the view so dense canvases
+    # do not burn the scan budget before any external neighbor is found.
+    both_internal = and_(
+        TopoFabricEdge.a_node_id.in_(members),
+        TopoFabricEdge.b_node_id.in_(members),
+    )
     edges = (
         db.query(TopoFabricEdge)
         .filter(
             TopoFabricEdge.layer == layer,
             or_(
-                TopoFabricEdge.a_node_id.in_(list(member_ids)),
-                TopoFabricEdge.b_node_id.in_(list(member_ids)),
+                TopoFabricEdge.a_node_id.in_(members),
+                TopoFabricEdge.b_node_id.in_(members),
             ),
+            ~both_internal,
         )
-        .limit(5000)
+        .limit(max(1, int(edge_scan_limit or 5000)))
         .all()
     )
-    out: list[dict[str, str]] = []
+    peer_via: list[tuple[str, str]] = []
     seen: set[str] = set()
     for e in edges:
         for peer_id, local_id in ((e.b_node_id, e.a_node_id), (e.a_node_id, e.b_node_id)):
@@ -372,17 +401,29 @@ def _outside_peers_for_view(
             if peer_id in seen:
                 continue
             seen.add(peer_id)
-            fn = db.get(TopoFabricNode, peer_id)
-            out.append(
-                {
-                    "fabric_node_id": peer_id,
-                    "name": (fn.name if fn else "") or "",
-                    "ip": (fn.ip if fn else "") or "",
-                    "via_node_id": local_id,
-                }
-            )
-            if len(out) >= limit:
-                return out
+            peer_via.append((peer_id, local_id))
+            if len(peer_via) >= limit:
+                break
+        if len(peer_via) >= limit:
+            break
+    if not peer_via:
+        return []
+    peer_ids = [p for p, _ in peer_via]
+    peers = {
+        n.id: n
+        for n in db.query(TopoFabricNode).filter(TopoFabricNode.id.in_(peer_ids)).all()
+    }
+    out: list[dict[str, str]] = []
+    for peer_id, local_id in peer_via:
+        fn = peers.get(peer_id)
+        out.append(
+            {
+                "fabric_node_id": peer_id,
+                "name": (fn.name if fn else "") or "",
+                "ip": (fn.ip if fn else "") or "",
+                "via_node_id": local_id,
+            }
+        )
     return out
 
 
@@ -646,6 +687,7 @@ def patch_view_positions(
     layout = str(body.layout or "").strip().lower()
     updated = 0
     skipped_locked = 0
+    skipped_missing = 0
     matched = 0
 
     existing = {
@@ -706,45 +748,54 @@ def patch_view_positions(
                 row.updated_at = now
                 updated += 1
     else:
+        from .topology_region_canvas import add_missing_region_placement, is_region_canvas_node_id
+
         positions = list(body.positions or [])
         if len(positions) > VIEW_GRAPH_NODE_HARD_CAP:
             raise HTTPException(status_code=400, detail="too_many_positions")
         matched = len(positions)
+        # One IN query instead of per-node db.get (N+1).
+        check_ids = [
+            str(p.fabric_node_id or "").strip()
+            for p in positions
+            if str(p.fabric_node_id or "").strip()
+            and not is_region_canvas_node_id(str(p.fabric_node_id or "").strip())
+        ]
+        fabric_alive: set[str] = set()
+        if check_ids:
+            fabric_alive = {
+                str(x[0])
+                for x in db.query(TopoFabricNode.id)
+                .filter(TopoFabricNode.id.in_(check_ids))
+                .all()
+            }
         for p in positions:
             fid = str(p.fabric_node_id or "").strip()
             if not fid:
                 continue
-            from .topology_region_canvas import is_region_canvas_node_id
-
-            if not is_region_canvas_node_id(fid) and db.get(TopoFabricNode, fid) is None:
+            if not is_region_canvas_node_id(fid) and fid not in fabric_alive:
                 raise HTTPException(status_code=400, detail=f"fabric_node_not_found:{fid}")
             row = existing.get(fid)
             if row is None:
-                row = TopoViewNode(
-                    id=uuid4().hex,
-                    view_id=view.id,
-                    fabric_node_id=fid,
-                    x=float(p.x or 0),
-                    y=float(p.y or 0),
-                    label=str(p.label or "")[:256],
-                    locked=bool(p.locked),
-                    created_at=now,
-                    updated_at=now,
-                )
-                db.add(row)
-                existing[fid] = row
-                updated += 1
-            else:
-                if row.locked and bool(p.locked):
-                    skipped_locked += 1
+                # Child-region icons may be synthesized without a placement row; persist those.
+                # Fabric NEs must not bypass membership caps / freeze (MCP adds via /nodes).
+                row = add_missing_region_placement(db, view, fid, x=p.x, y=p.y)
+                if row is None:
+                    skipped_missing += 1
                     continue
-                row.x = float(p.x or 0)
-                row.y = float(p.y or 0)
-                if p.label is not None:
-                    row.label = str(p.label or "")[:256]
+                existing[fid] = row
+            # Locked rows stay put unless the client explicitly unlocks (locked=False).
+            if row.locked and p.locked is not False:
+                skipped_locked += 1
+                continue
+            row.x = float(p.x or 0)
+            row.y = float(p.y or 0)
+            if p.label is not None:
+                row.label = str(p.label or "")[:256]
+            if p.locked is not None:
                 row.locked = bool(p.locked)
-                row.updated_at = now
-                updated += 1
+            row.updated_at = now
+            updated += 1
 
     view.updated_at = now
     db.commit()
@@ -756,6 +807,7 @@ def patch_view_positions(
         matched=matched,
         updated=updated,
         skipped_locked=skipped_locked,
+        skipped_missing=skipped_missing,
     )
 
 
@@ -1353,42 +1405,48 @@ _LINE_STYLES = {"", "solid", "dashed", "dotted"}
 def patch_view_edge_style(
     db: Session, view_id: str, body: ViewEdgeStylePatch
 ) -> TopologyViewGraphOut:
+    from .topology_views_commit import normalize_edge_style_items
+
     view = _get_view_or_404(db, view_id)
-    eid = str(body.fabric_edge_id or "").strip()
-    if not eid or db.get(TopoFabricEdge, eid) is None:
-        raise HTTPException(status_code=404, detail="fabric_edge_not_found")
-    color = str(body.stroke_color or "").strip()
-    if color and not _HEX_COLOR_RE.match(color):
-        raise HTTPException(status_code=400, detail="invalid_stroke_color")
-    width = int(body.stroke_width or 0)
-    if width < 0 or width > 12:
-        raise HTTPException(status_code=400, detail="invalid_stroke_width")
-    style = str(body.line_style or "").strip().lower()
-    if style not in _LINE_STYLES:
-        raise HTTPException(status_code=400, detail="invalid_line_style")
+    items = normalize_edge_style_items(body)
+    if not items:
+        raise HTTPException(status_code=400, detail="fabric_edge_id_required")
     now = _utcnow()
-    row = (
-        db.query(TopoViewEdgeStyle)
-        .filter(TopoViewEdgeStyle.view_id == view.id, TopoViewEdgeStyle.fabric_edge_id == eid)
-        .one_or_none()
-    )
-    if row is None:
-        row = TopoViewEdgeStyle(
-            id=uuid4().hex,
-            view_id=view.id,
-            fabric_edge_id=eid,
-            stroke_color=color,
-            stroke_width=width,
-            line_style=style,
-            created_at=now,
-            updated_at=now,
+    for item in items:
+        eid = str(item.fabric_edge_id or "").strip()
+        if not eid or db.get(TopoFabricEdge, eid) is None:
+            raise HTTPException(status_code=404, detail="fabric_edge_not_found")
+        color = str(item.stroke_color or "").strip()
+        if color and not _HEX_COLOR_RE.match(color):
+            raise HTTPException(status_code=400, detail="invalid_stroke_color")
+        width = int(item.stroke_width or 0)
+        if width < 0 or width > 12:
+            raise HTTPException(status_code=400, detail="invalid_stroke_width")
+        style = str(item.line_style or "").strip().lower()
+        if style not in _LINE_STYLES:
+            raise HTTPException(status_code=400, detail="invalid_line_style")
+        row = (
+            db.query(TopoViewEdgeStyle)
+            .filter(TopoViewEdgeStyle.view_id == view.id, TopoViewEdgeStyle.fabric_edge_id == eid)
+            .one_or_none()
         )
-        db.add(row)
-    else:
-        row.stroke_color = color
-        row.stroke_width = width
-        row.line_style = style
-        row.updated_at = now
+        if row is None:
+            row = TopoViewEdgeStyle(
+                id=uuid4().hex,
+                view_id=view.id,
+                fabric_edge_id=eid,
+                stroke_color=color,
+                stroke_width=width,
+                line_style=style,
+                created_at=now,
+                updated_at=now,
+            )
+            db.add(row)
+        else:
+            row.stroke_color = color
+            row.stroke_width = width
+            row.line_style = style
+            row.updated_at = now
     view.updated_at = now
     db.commit()
     return get_view_graph(db, view.id)

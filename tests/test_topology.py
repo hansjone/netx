@@ -27,12 +27,17 @@ from netx_api.models import (
     TopoViewEdgeStyle,
     TopoViewNode,
 )
+from netx_api.ne_crypto import encrypt_secret
 from netx_api.topology_schemas import (
     FabricDiscoverRequest,
     TopologyFolderCreate,
     TopologyPlaceholderCreate,
     TopologyViewCreate,
     TopologyViewUpdate,
+    ViewCommitEdgeCreate,
+    ViewCommitEdgePortEdit,
+    ViewCommitIn,
+    ViewEdgeStyleItem,
     ViewNodesAdd,
     ViewPopulateRequest,
     ViewPositionsPatch,
@@ -384,6 +389,388 @@ class FabricTopologyTests(unittest.TestCase):
             self.db.refresh(view)
         return view.id
 
+    def test_patch_manual_edge_ports(self) -> None:
+        suffix = uuid4().hex[:8]
+        ne_a = ManagedNE(
+            id=f"ne-mp-a-{suffix}",
+            name=f"MPA-{suffix}",
+            vendor="Cisco",
+            device_type="cisco_ios",
+            ip_address=f"10.5.0.{(int(suffix[:2], 16) % 200) + 1}",
+        )
+        ne_b = ManagedNE(
+            id=f"ne-mp-b-{suffix}",
+            name=f"MPB-{suffix}",
+            vendor="Cisco",
+            device_type="cisco_ios",
+            ip_address=f"10.5.1.{(int(suffix[:2], 16) % 200) + 1}",
+        )
+        self.db.add_all([ne_a, ne_b])
+        self.db.commit()
+        fa = svc.ensure_fabric_node_for_managed(self.db, ne_a)
+        fb = svc.ensure_fabric_node_for_managed(self.db, ne_b)
+        edge, _ = svc.upsert_fabric_edge(
+            self.db,
+            a_node_id=fa.id,
+            b_node_id=fb.id,
+            a_port="gi0/1",
+            b_port="gi0/2",
+            source="manual",
+        )
+        self.db.commit()
+        assert edge is not None
+        updated = svc.patch_manual_edge_ports(
+            self.db, edge.id, a_port="Gi0/10", b_port="Gi0/20", commit=True
+        )
+        self.assertEqual(updated.a_port.lower(), "gi0/10")
+        self.assertEqual(updated.b_port.lower(), "gi0/20")
+        for ne in (ne_a, ne_b):
+            self.db.delete(ne)
+        self.db.commit()
+
+    def test_patch_non_manual_edge_ports_rejected(self) -> None:
+        from fastapi import HTTPException
+
+        suffix = uuid4().hex[:8]
+        ne_a = ManagedNE(
+            id=f"ne-nm-a-{suffix}",
+            name=f"NMA-{suffix}",
+            vendor="Cisco",
+            device_type="cisco_ios",
+            ip_address=f"10.5.2.{(int(suffix[:2], 16) % 200) + 1}",
+        )
+        ne_b = ManagedNE(
+            id=f"ne-nm-b-{suffix}",
+            name=f"NMB-{suffix}",
+            vendor="Cisco",
+            device_type="cisco_ios",
+            ip_address=f"10.5.3.{(int(suffix[:2], 16) % 200) + 1}",
+        )
+        self.db.add_all([ne_a, ne_b])
+        self.db.commit()
+        fa = svc.ensure_fabric_node_for_managed(self.db, ne_a)
+        fb = svc.ensure_fabric_node_for_managed(self.db, ne_b)
+        edge, _ = svc.upsert_fabric_edge(
+            self.db,
+            a_node_id=fa.id,
+            b_node_id=fb.id,
+            a_port="gi0/1",
+            b_port="gi0/2",
+            source="lldp",
+        )
+        self.db.commit()
+        assert edge is not None
+        with self.assertRaises(HTTPException) as ctx:
+            svc.patch_manual_edge_ports(
+                self.db, edge.id, a_port="gi0/9", b_port="gi0/8", commit=True
+            )
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertEqual(ctx.exception.detail, "edge_not_manual")
+        for ne in (ne_a, ne_b):
+            self.db.delete(ne)
+        self.db.commit()
+
+    def test_patch_manual_edge_ports_conflict_409(self) -> None:
+        from fastapi import HTTPException
+
+        suffix = uuid4().hex[:8]
+        ne_a = ManagedNE(
+            id=f"ne-cf-a-{suffix}",
+            name=f"CFA-{suffix}",
+            vendor="Cisco",
+            device_type="cisco_ios",
+            ip_address=f"10.5.4.{(int(suffix[:2], 16) % 200) + 1}",
+        )
+        ne_b = ManagedNE(
+            id=f"ne-cf-b-{suffix}",
+            name=f"CFB-{suffix}",
+            vendor="Cisco",
+            device_type="cisco_ios",
+            ip_address=f"10.5.5.{(int(suffix[:2], 16) % 200) + 1}",
+        )
+        self.db.add_all([ne_a, ne_b])
+        self.db.commit()
+        fa = svc.ensure_fabric_node_for_managed(self.db, ne_a)
+        fb = svc.ensure_fabric_node_for_managed(self.db, ne_b)
+        e1, _ = svc.upsert_fabric_edge(
+            self.db,
+            a_node_id=fa.id,
+            b_node_id=fb.id,
+            a_port="gi0/1",
+            b_port="gi0/2",
+            source="manual",
+        )
+        e2, _ = svc.upsert_fabric_edge(
+            self.db,
+            a_node_id=fa.id,
+            b_node_id=fb.id,
+            a_port="gi0/3",
+            b_port="gi0/4",
+            source="manual",
+        )
+        self.db.commit()
+        assert e1 is not None and e2 is not None
+        # Use the canonical A/B ports already stored on e1 (normalize may have swapped).
+        with self.assertRaises(HTTPException) as ctx:
+            svc.patch_manual_edge_ports(
+                self.db,
+                e2.id,
+                a_port=e1.a_port,
+                b_port=e1.b_port,
+                commit=True,
+            )
+        self.assertEqual(ctx.exception.status_code, 409)
+        self.assertEqual(ctx.exception.detail, "edge_port_conflict")
+        for ne in (ne_a, ne_b):
+            self.db.delete(ne)
+        self.db.commit()
+
+    def test_view_commit_atomic_rollback(self) -> None:
+        from fastapi import HTTPException
+
+        suffix = uuid4().hex[:8]
+        ne = ManagedNE(
+            id=f"ne-cmt-fail-{suffix}",
+            name=f"CFail-{suffix}",
+            vendor="Cisco",
+            device_type="cisco_ios",
+            ip_address=f"10.4.0.{(int(suffix[:2], 16) % 200) + 1}",
+        )
+        self.db.add(ne)
+        self.db.commit()
+        view_id = self._canvas(f"CFail-{suffix}")
+        fa = svc.ensure_fabric_node_for_managed(self.db, ne)
+        self.db.commit()
+        before_nodes = (
+            self.db.query(TopoViewNode).filter(TopoViewNode.view_id == view_id).count()
+        )
+        before_edges = self.db.query(TopoFabricEdge).count()
+        with self.assertRaises(HTTPException) as ctx:
+            svc.commit_view_changes(
+                self.db,
+                view_id,
+                ViewCommitIn(
+                    edge_creates=[
+                        ViewCommitEdgeCreate(
+                            client_id="local-loop",
+                            a_node_id=fa.id,
+                            b_node_id=fa.id,
+                            a_port="gi0/1",
+                            b_port="gi0/2",
+                        )
+                    ],
+                    node_adds=[fa.id],
+                    positions=[ViewNodeIn(fabric_node_id=fa.id, x=99, y=99)],
+                ),
+            )
+        detail = ctx.exception.detail
+        self.assertIsInstance(detail, dict)
+        self.assertEqual(detail.get("failed_step"), "edge_creates")
+        self.assertEqual(
+            self.db.query(TopoViewNode).filter(TopoViewNode.view_id == view_id).count(),
+            before_nodes,
+        )
+        self.assertEqual(self.db.query(TopoFabricEdge).count(), before_edges)
+        self.db.delete(ne)
+        self.db.commit()
+
+    def test_view_commit_happy_path(self) -> None:
+        suffix = uuid4().hex[:8]
+        ne_a = ManagedNE(
+            id=f"ne-cmt-a-{suffix}",
+            name=f"CA-{suffix}",
+            vendor="Cisco",
+            device_type="cisco_ios",
+            ip_address=f"10.4.1.{(int(suffix[:2], 16) % 200) + 1}",
+        )
+        ne_b = ManagedNE(
+            id=f"ne-cmt-b-{suffix}",
+            name=f"CB-{suffix}",
+            vendor="Cisco",
+            device_type="cisco_ios",
+            ip_address=f"10.4.2.{(int(suffix[:2], 16) % 200) + 1}",
+        )
+        ne_c = ManagedNE(
+            id=f"ne-cmt-c-{suffix}",
+            name=f"CC-{suffix}",
+            vendor="Cisco",
+            device_type="cisco_ios",
+            ip_address=f"10.4.3.{(int(suffix[:2], 16) % 200) + 1}",
+        )
+        self.db.add_all([ne_a, ne_b, ne_c])
+        self.db.commit()
+        view_id = self._canvas(f"COk-{suffix}")
+        fa = svc.ensure_fabric_node_for_managed(self.db, ne_a)
+        fb = svc.ensure_fabric_node_for_managed(self.db, ne_b)
+        fc = svc.ensure_fabric_node_for_managed(self.db, ne_c)
+        self.db.commit()
+        svc.add_nodes_to_view(
+            self.db, view_id, ViewNodesAdd(fabric_node_ids=[fa.id, fb.id])
+        )
+        old_edge, _ = svc.upsert_fabric_edge(
+            self.db,
+            a_node_id=fa.id,
+            b_node_id=fb.id,
+            a_port="gi0/9",
+            b_port="gi0/9",
+            source="manual",
+        )
+        self.db.commit()
+        assert old_edge is not None
+
+        out = svc.commit_view_changes(
+            self.db,
+            view_id,
+            ViewCommitIn(
+                edge_creates=[
+                    ViewCommitEdgeCreate(
+                        client_id="local-new",
+                        a_node_id=fa.id,
+                        b_node_id=fc.id,
+                        a_port="gi0/1",
+                        b_port="gi0/2",
+                    )
+                ],
+                edge_deletes=[old_edge.id],
+                node_adds=[fc.id],
+                node_removes=[fb.id],
+                positions=[
+                    ViewNodeIn(fabric_node_id=fa.id, x=11, y=22),
+                    ViewNodeIn(fabric_node_id=fc.id, x=33, y=44),
+                ],
+            ),
+        )
+        self.assertTrue(out.ok)
+        self.assertIn("local-new", out.edge_id_map)
+        self.assertIsNotNone(out.graph)
+        ids = {n.fabric_node_id for n in out.graph.nodes}
+        self.assertIn(fa.id, ids)
+        self.assertIn(fc.id, ids)
+        self.assertNotIn(fb.id, ids)
+        old_edge_id = str(old_edge.id)
+        self.db.expire_all()
+        self.assertIsNone(self.db.get(TopoFabricEdge, old_edge_id))
+        new_eid = out.edge_id_map["local-new"]
+        self.assertIsNotNone(self.db.get(TopoFabricEdge, new_eid))
+        pos_a = next(n for n in out.graph.nodes if n.fabric_node_id == fa.id)
+        self.assertEqual(float(pos_a.x), 11.0)
+        self.assertEqual(float(pos_a.y), 22.0)
+        # Node added in the same commit must also take its position (autoflush=False).
+        pos_c = next(n for n in out.graph.nodes if n.fabric_node_id == fc.id)
+        self.assertEqual((float(pos_c.x), float(pos_c.y)), (33.0, 44.0))
+        for ne in (ne_a, ne_b, ne_c):
+            self.db.delete(ne)
+        self.db.commit()
+
+    def _two_node_canvas(self, tag: str):
+        suffix = uuid4().hex[:8]
+        nes = [
+            ManagedNE(
+                id=f"ne-{tag}-{i}-{suffix}",
+                name=f"{tag.upper()}{i}-{suffix}",
+                vendor="Cisco",
+                device_type="cisco_ios",
+                ip_address=f"10.7.{i}.{(int(suffix[:2], 16) % 200) + 1}",
+            )
+            for i in (1, 2)
+        ]
+        self.db.add_all(nes)
+        self.db.commit()
+        view_id = self._canvas(f"{tag}-{suffix}")
+        fa, fb = (svc.ensure_fabric_node_for_managed(self.db, ne) for ne in nes)
+        self.db.commit()
+        svc.add_nodes_to_view(self.db, view_id, ViewNodesAdd(fabric_node_ids=[fa.id, fb.id]))
+        return view_id, fa, fb
+
+    def test_view_commit_skips_edits_on_edges_deleted_in_same_commit(self) -> None:
+        view_id, fa, fb = self._two_node_canvas("cdel")
+        edge, _ = svc.upsert_fabric_edge(
+            self.db, a_node_id=fa.id, b_node_id=fb.id, a_port="gi0/1", b_port="gi0/1", source="manual"
+        )
+        self.db.commit()
+        assert edge is not None
+        eid = str(edge.id)
+        out = svc.commit_view_changes(
+            self.db,
+            view_id,
+            ViewCommitIn(
+                edge_deletes=[eid],
+                edge_port_edits=[ViewCommitEdgePortEdit(id=eid, a_port="gi0/5", b_port="gi0/6")],
+                edge_styles=[ViewEdgeStyleItem(fabric_edge_id=eid, stroke_color="#ff0000")],
+            ),
+        )
+        self.assertTrue(out.ok)
+        self.db.expire_all()
+        self.assertIsNone(self.db.get(TopoFabricEdge, eid))
+
+    def test_view_commit_styles_new_edge_by_client_id(self) -> None:
+        view_id, fa, fb = self._two_node_canvas("csty")
+        out = svc.commit_view_changes(
+            self.db,
+            view_id,
+            ViewCommitIn(
+                edge_creates=[
+                    ViewCommitEdgeCreate(client_id="local:s1", a_node_id=fa.id, b_node_id=fb.id)
+                ],
+                edge_styles=[
+                    ViewEdgeStyleItem(fabric_edge_id="local:s1", stroke_color="#00ff00", stroke_width=3)
+                ],
+            ),
+        )
+        new_id = out.edge_id_map["local:s1"]
+        edge_out = next(e for e in out.graph.edges if e.id == new_id)
+        self.assertEqual(edge_out.stroke_color, "#00ff00")
+        self.assertEqual(edge_out.stroke_width, 3)
+
+    def test_positions_persist_child_region_icon_without_placement(self) -> None:
+        suffix = uuid4().hex[:8]
+        parent_id = self._region(f"Rg-{suffix}")
+        view = self._physical_view(parent_id)
+        child = svc.create_folder(
+            self.db, TopologyFolderCreate(name=f"Sub-{suffix}", kind="region", parent_id=parent_id)
+        )
+        nid = f"region:{child.id}"
+        # Legacy data: drop the icon's placement row so it is only synthesized.
+        self.db.query(TopoViewNode).filter(
+            TopoViewNode.view_id == view.id, TopoViewNode.fabric_node_id == nid
+        ).delete(synchronize_session=False)
+        self.db.commit()
+        g = svc.get_view_graph(self.db, view.id)
+        self.assertIn(nid, {n.fabric_node_id for n in g.nodes})
+
+        svc.patch_view_positions(
+            self.db, view.id, ViewPositionsPatch(positions=[ViewNodeIn(fabric_node_id=nid, x=321, y=123)])
+        )
+        g = svc.get_view_graph(self.db, view.id)
+        icon = next(n for n in g.nodes if n.fabric_node_id == nid)
+        self.assertEqual((icon.x, icon.y), (321.0, 123.0))
+
+        self.db.query(TopoViewNode).filter(
+            TopoViewNode.view_id == view.id, TopoViewNode.fabric_node_id == nid
+        ).delete(synchronize_session=False)
+        self.db.commit()
+        out = svc.commit_view_changes(
+            self.db, view.id, ViewCommitIn(positions=[ViewNodeIn(fabric_node_id=nid, x=55, y=66)])
+        )
+        icon = next(n for n in out.graph.nodes if n.fabric_node_id == nid)
+        self.assertEqual((icon.x, icon.y), (55.0, 66.0))
+        # Placement follows the folder name (no frozen label).
+        self.assertEqual(icon.label_override, "")
+
+    def test_positions_do_not_place_foreign_region_icon(self) -> None:
+        suffix = uuid4().hex[:8]
+        view_id = self._canvas(f"Rf-{suffix}")
+        other = svc.create_folder(self.db, TopologyFolderCreate(name=f"Other-{suffix}", kind="region"))
+        out = svc.patch_view_positions(
+            self.db,
+            view_id,
+            ViewPositionsPatch(
+                positions=[ViewNodeIn(fabric_node_id=f"region:{other.id}", x=1, y=1)],
+                return_graph=False,
+            ),
+        )
+        self.assertEqual(out.skipped_missing, 1)
+
     def test_view_crud_and_positions(self) -> None:
         suffix = uuid4().hex[:8]
         ne = ManagedNE(
@@ -415,6 +802,420 @@ class FabricTopologyTests(unittest.TestCase):
 
         svc.delete_view(self.db, view_id, force=True)
         self.db.delete(ne)
+        self.db.commit()
+
+    def test_positions_preserve_lock_when_omitted(self) -> None:
+        suffix = uuid4().hex[:8]
+        ne = ManagedNE(
+            id=f"ne-lock-{suffix}",
+            name=f"L-{suffix}",
+            vendor="Cisco",
+            device_type="cisco_ios",
+            ip_address=f"10.1.0.{(int(suffix[:2], 16) % 200) + 1}",
+        )
+        self.db.add(ne)
+        self.db.commit()
+        view_id = self._canvas(f"Lock-{suffix}")
+        graph = svc.add_nodes_to_view(self.db, view_id, ViewNodesAdd(managed_ne_ids=[ne.id]))
+        fid = graph.nodes[0].fabric_node_id
+        svc.patch_view_positions(
+            self.db,
+            view_id,
+            ViewPositionsPatch(
+                positions=[ViewNodeIn(fabric_node_id=fid, x=500, y=500, locked=True)],
+                return_graph=False,
+            ),
+        )
+        # UI-style save: omit locked — must not move or unlock.
+        out = svc.patch_view_positions(
+            self.db,
+            view_id,
+            ViewPositionsPatch(
+                positions=[ViewNodeIn(fabric_node_id=fid, x=10, y=10)],
+                return_graph=False,
+            ),
+        )
+        self.assertEqual(out.skipped_locked, 1)
+        self.assertEqual(out.updated, 0)
+        row = (
+            self.db.query(TopoViewNode)
+            .filter(TopoViewNode.view_id == view_id, TopoViewNode.fabric_node_id == fid)
+            .one()
+        )
+        self.assertTrue(row.locked)
+        self.assertEqual(float(row.x), 500.0)
+        self.assertEqual(float(row.y), 500.0)
+        svc.delete_view(self.db, view_id, force=True)
+        self.db.delete(ne)
+        self.db.commit()
+
+    def test_positions_explicit_unlock_moves(self) -> None:
+        suffix = uuid4().hex[:8]
+        ne = ManagedNE(
+            id=f"ne-ulock-{suffix}",
+            name=f"U-{suffix}",
+            vendor="Cisco",
+            device_type="cisco_ios",
+            ip_address=f"10.1.1.{(int(suffix[:2], 16) % 200) + 1}",
+        )
+        self.db.add(ne)
+        self.db.commit()
+        view_id = self._canvas(f"ULock-{suffix}")
+        graph = svc.add_nodes_to_view(self.db, view_id, ViewNodesAdd(managed_ne_ids=[ne.id]))
+        fid = graph.nodes[0].fabric_node_id
+        svc.patch_view_positions(
+            self.db,
+            view_id,
+            ViewPositionsPatch(
+                positions=[ViewNodeIn(fabric_node_id=fid, x=500, y=500, locked=True)],
+                return_graph=False,
+            ),
+        )
+        out = svc.patch_view_positions(
+            self.db,
+            view_id,
+            ViewPositionsPatch(
+                positions=[ViewNodeIn(fabric_node_id=fid, x=10, y=20, locked=False)],
+                return_graph=False,
+            ),
+        )
+        self.assertEqual(out.skipped_locked, 0)
+        self.assertEqual(out.updated, 1)
+        row = (
+            self.db.query(TopoViewNode)
+            .filter(TopoViewNode.view_id == view_id, TopoViewNode.fabric_node_id == fid)
+            .one()
+        )
+        self.assertFalse(row.locked)
+        self.assertEqual(float(row.x), 10.0)
+        self.assertEqual(float(row.y), 20.0)
+        svc.delete_view(self.db, view_id, force=True)
+        self.db.delete(ne)
+        self.db.commit()
+
+    def test_positions_without_label_keeps_following_name(self) -> None:
+        suffix = uuid4().hex[:8]
+        ne = ManagedNE(
+            id=f"ne-lbl-{suffix}",
+            name="OLD-NAME",
+            vendor="Cisco",
+            device_type="cisco_ios",
+            ip_address=f"10.2.0.{(int(suffix[:2], 16) % 200) + 1}",
+        )
+        self.db.add(ne)
+        self.db.commit()
+        view_id = self._canvas(f"Lbl-{suffix}")
+        graph = svc.add_nodes_to_view(self.db, view_id, ViewNodesAdd(managed_ne_ids=[ne.id]))
+        fid = graph.nodes[0].fabric_node_id
+        self.assertEqual(graph.nodes[0].label, "OLD-NAME")
+        self.assertEqual(graph.nodes[0].label_override, "")
+        # Save positions without label — must not freeze the device name.
+        svc.patch_view_positions(
+            self.db,
+            view_id,
+            ViewPositionsPatch(
+                positions=[ViewNodeIn(fabric_node_id=fid, x=40, y=60)],
+                return_graph=False,
+            ),
+        )
+        fn = self.db.get(TopoFabricNode, fid)
+        assert fn is not None
+        fn.name = "NEW-NAME"
+        self.db.commit()
+        refreshed = svc.get_view_graph(self.db, view_id)
+        self.assertEqual(refreshed.nodes[0].label, "NEW-NAME")
+        self.assertEqual(refreshed.nodes[0].label_override, "")
+        svc.delete_view(self.db, view_id, force=True)
+        self.db.delete(ne)
+        self.db.commit()
+
+    def test_label_override_survives_rename(self) -> None:
+        suffix = uuid4().hex[:8]
+        ne = ManagedNE(
+            id=f"ne-ov-{suffix}",
+            name="DEVICE-A",
+            vendor="Cisco",
+            device_type="cisco_ios",
+            ip_address=f"10.2.1.{(int(suffix[:2], 16) % 200) + 1}",
+        )
+        self.db.add(ne)
+        self.db.commit()
+        view_id = self._canvas(f"Ov-{suffix}")
+        graph = svc.add_nodes_to_view(self.db, view_id, ViewNodesAdd(managed_ne_ids=[ne.id]))
+        fid = graph.nodes[0].fabric_node_id
+        svc.patch_view_positions(
+            self.db,
+            view_id,
+            ViewPositionsPatch(
+                positions=[
+                    ViewNodeIn(fabric_node_id=fid, x=1, y=2, label="CUSTOM"),
+                ],
+                return_graph=False,
+            ),
+        )
+        fn = self.db.get(TopoFabricNode, fid)
+        assert fn is not None
+        fn.name = "DEVICE-B"
+        self.db.commit()
+        refreshed = svc.get_view_graph(self.db, view_id)
+        self.assertEqual(refreshed.nodes[0].label, "CUSTOM")
+        self.assertEqual(refreshed.nodes[0].label_override, "CUSTOM")
+        # Clear override → follow device name again.
+        svc.patch_view_positions(
+            self.db,
+            view_id,
+            ViewPositionsPatch(
+                positions=[ViewNodeIn(fabric_node_id=fid, x=1, y=2, label="")],
+                return_graph=False,
+            ),
+        )
+        cleared = svc.get_view_graph(self.db, view_id)
+        self.assertEqual(cleared.nodes[0].label, "DEVICE-B")
+        self.assertEqual(cleared.nodes[0].label_override, "")
+        svc.delete_view(self.db, view_id, force=True)
+        self.db.delete(ne)
+        self.db.commit()
+
+    def test_clear_frozen_labels_script_dry_run_and_apply(self) -> None:
+        from scripts.topology_clear_frozen_labels import clear_frozen_labels
+
+        suffix = uuid4().hex[:8]
+        ne = ManagedNE(
+            id=f"ne-frz-{suffix}",
+            name="FROZEN-NAME",
+            vendor="Cisco",
+            device_type="cisco_ios",
+            ip_address=f"10.3.0.{(int(suffix[:2], 16) % 200) + 1}",
+        )
+        self.db.add(ne)
+        self.db.commit()
+        view_id = self._canvas(f"Frz-{suffix}")
+        graph = svc.add_nodes_to_view(self.db, view_id, ViewNodesAdd(managed_ne_ids=[ne.id]))
+        fid = graph.nodes[0].fabric_node_id
+        # Simulate a pre-T2 save that froze the device name into vn.label.
+        row = (
+            self.db.query(TopoViewNode)
+            .filter(TopoViewNode.view_id == view_id, TopoViewNode.fabric_node_id == fid)
+            .one()
+        )
+        row.label = "FROZEN-NAME"
+        self.db.commit()
+
+        scanned, cleared = clear_frozen_labels(self.db, apply=False)
+        self.assertGreaterEqual(scanned, 1)
+        self.assertGreaterEqual(cleared, 1)
+        self.db.refresh(row)
+        self.assertEqual(row.label, "FROZEN-NAME")
+
+        scanned2, cleared2 = clear_frozen_labels(self.db, apply=True)
+        self.db.commit()
+        self.assertEqual(cleared2, cleared)
+        self.db.refresh(row)
+        self.assertEqual(row.label, "")
+
+        scanned3, cleared3 = clear_frozen_labels(self.db, apply=False)
+        self.assertEqual(cleared3, 0)
+        self.assertGreaterEqual(scanned3, 0)
+
+        svc.delete_view(self.db, view_id, force=True)
+        self.db.delete(ne)
+        self.db.commit()
+
+    def test_outside_peers_found_when_many_internal_edges(self) -> None:
+        """Internal edges must not consume the outside-peer scan budget."""
+        from netx_api.topology_views_graph import _outside_peers_for_view
+
+        suffix = uuid4().hex[:8]
+        nodes: list[TopoFabricNode] = []
+        for i in range(6):
+            ne = ManagedNE(
+                id=f"ne-op-{suffix}-{i}",
+                name=f"OP-{suffix}-{i}",
+                vendor="Cisco",
+                device_type="cisco_ios",
+                ip_address=f"10.8.{i}.{(int(suffix[:2], 16) % 200) + 1}",
+            )
+            self.db.add(ne)
+            self.db.flush()
+            nodes.append(svc.ensure_fabric_node_for_managed(self.db, ne))
+        outside = TopoFabricNode(
+            id=f"out-{suffix}",
+            name=f"OUT-{suffix}",
+            ip="10.8.99.1",
+        )
+        self.db.add(outside)
+        self.db.commit()
+        # Dense internal mesh among the first 5 nodes.
+        for i, a in enumerate(nodes[:5]):
+            for j, b in enumerate(nodes[:5]):
+                if i >= j:
+                    continue
+                svc.upsert_fabric_edge(
+                    self.db,
+                    a_node_id=a.id,
+                    b_node_id=b.id,
+                    a_port=f"gi0/{i}",
+                    b_port=f"gi0/{j}",
+                    source="manual",
+                )
+        # One external edge after the internal flood.
+        svc.upsert_fabric_edge(
+            self.db,
+            a_node_id=nodes[0].id,
+            b_node_id=outside.id,
+            a_port="gi0/99",
+            b_port="gi0/1",
+            source="manual",
+        )
+        self.db.commit()
+        view_id = self._canvas(f"OP-{suffix}")
+        view = self.db.get(TopoView, view_id)
+        assert view is not None
+        svc.add_nodes_to_view(
+            self.db,
+            view_id,
+            ViewNodesAdd(fabric_node_ids=[n.id for n in nodes[:5]]),
+        )
+        peers = _outside_peers_for_view(
+            self.db,
+            view,
+            member_ids={n.id for n in nodes[:5]},
+            layer="physical",
+            limit=50,
+            edge_scan_limit=10,  # would miss the peer if internals counted
+        )
+        peer_ids = {p["fabric_node_id"] for p in peers}
+        self.assertIn(outside.id, peer_ids)
+        svc.delete_view(self.db, view_id, force=True)
+        self.db.commit()
+
+    def test_view_truncation_is_deterministic(self) -> None:
+        from unittest.mock import patch
+
+        from netx_api import topology_views_graph as vg
+
+        suffix = uuid4().hex[:8]
+        view_id = self._canvas(f"Trunc-{suffix}")
+        fids: list[str] = []
+        for i in range(5):
+            ne = ManagedNE(
+                id=f"ne-tr-{suffix}-{i}",
+                name=f"TR-{suffix}-{i}",
+                vendor="Cisco",
+                device_type="cisco_ios",
+                ip_address=f"10.9.{i}.{(int(suffix[:2], 16) % 200) + 1}",
+            )
+            self.db.add(ne)
+            self.db.flush()
+            fn = svc.ensure_fabric_node_for_managed(self.db, ne)
+            fids.append(fn.id)
+        self.db.commit()
+        svc.add_nodes_to_view(self.db, view_id, ViewNodesAdd(fabric_node_ids=fids))
+        with patch.object(vg, "VIEW_GRAPH_NODE_HARD_CAP", 3):
+            g1 = svc.get_view_graph(self.db, view_id)
+            g2 = svc.get_view_graph(self.db, view_id)
+        ids1 = [n.fabric_node_id for n in g1.nodes]
+        ids2 = [n.fabric_node_id for n in g2.nodes]
+        self.assertEqual(len(ids1), 3)
+        self.assertEqual(ids1, ids2)
+        self.assertTrue(g1.truncated)
+        svc.delete_view(self.db, view_id, force=True)
+        self.db.commit()
+
+    def test_positions_batch_lookup_avoids_n_plus_one(self) -> None:
+        """200-node positions patch should issue a handful of SQL statements, not 200+."""
+        from sqlalchemy import event
+
+        suffix = uuid4().hex[:8]
+        view_id = self._canvas(f"N1-{suffix}")
+        fids: list[str] = []
+        for i in range(40):
+            ne = ManagedNE(
+                id=f"ne-n1-{suffix}-{i}",
+                name=f"N1-{suffix}-{i}",
+                vendor="Cisco",
+                device_type="cisco_ios",
+                ip_address=f"10.10.{i // 200}.{(i % 200) + 1}",
+            )
+            self.db.add(ne)
+            self.db.flush()
+            fids.append(svc.ensure_fabric_node_for_managed(self.db, ne).id)
+        self.db.commit()
+        svc.add_nodes_to_view(self.db, view_id, ViewNodesAdd(fabric_node_ids=fids))
+        statements: list[str] = []
+
+        def _count(conn, cursor, statement, parameters, context, executemany):  # noqa: ANN001
+            statements.append(str(statement))
+
+        bind = self.db.get_bind()
+        event.listen(bind, "before_cursor_execute", _count)
+        try:
+            svc.patch_view_positions(
+                self.db,
+                view_id,
+                ViewPositionsPatch(
+                    positions=[
+                        ViewNodeIn(fabric_node_id=fid, x=float(i), y=float(i))
+                        for i, fid in enumerate(fids)
+                    ],
+                    return_graph=False,
+                ),
+            )
+        finally:
+            event.remove(bind, "before_cursor_execute", _count)
+        # Cap well below one-query-per-node (40+).
+        self.assertLessEqual(len(statements), 15)
+        svc.delete_view(self.db, view_id, force=True)
+        self.db.commit()
+
+    def test_positions_respects_max_nodes(self) -> None:
+        """Positions must skip unknown placements instead of inserting past the cap."""
+        suffix = uuid4().hex[:8]
+        view_id = self._canvas(
+            f"Cap-{suffix}",
+            filter={"membership": {"max_nodes": 2, "mode": "manual"}},
+        )
+        nes = []
+        fids = []
+        for i in range(3):
+            ne = ManagedNE(
+                id=f"ne-cap-{suffix}-{i}",
+                name=f"CAP-{suffix}-{i}",
+                vendor="Cisco",
+                device_type="cisco_ios",
+                ip_address=f"10.11.{i}.{(int(suffix[:2], 16) % 200) + 1}",
+            )
+            self.db.add(ne)
+            self.db.flush()
+            nes.append(ne)
+            fids.append(svc.ensure_fabric_node_for_managed(self.db, ne).id)
+        self.db.commit()
+        svc.add_nodes_to_view(
+            self.db, view_id, ViewNodesAdd(fabric_node_ids=fids[:2], return_graph=False)
+        )
+        before = (
+            self.db.query(TopoViewNode).filter(TopoViewNode.view_id == view_id).count()
+        )
+        self.assertEqual(before, 2)
+        out = svc.patch_view_positions(
+            self.db,
+            view_id,
+            ViewPositionsPatch(
+                positions=[
+                    ViewNodeIn(fabric_node_id=fids[0], x=1, y=1),
+                    ViewNodeIn(fabric_node_id=fids[2], x=9, y=9),  # not on view
+                ],
+                return_graph=False,
+            ),
+        )
+        self.assertGreaterEqual(out.skipped_missing, 1)
+        after = (
+            self.db.query(TopoViewNode).filter(TopoViewNode.view_id == view_id).count()
+        )
+        self.assertEqual(after, 2)
+        svc.delete_view(self.db, view_id, force=True)
+        for ne in nes:
+            self.db.delete(ne)
         self.db.commit()
 
     def test_create_topology_placeholder_on_view(self) -> None:
@@ -1249,6 +2050,8 @@ class FabricTopologyTests(unittest.TestCase):
             vendor="Cisco",
             device_type="cisco_ios",
             ip_address=f"203.0.113.{(int(suffix[:2], 16) % 100) + 1}",
+            username="u",
+            password_enc=encrypt_secret("p"),
         )
         ne_b = ManagedNE(
             id=f"neb-{suffix}",
@@ -1256,6 +2059,8 @@ class FabricTopologyTests(unittest.TestCase):
             vendor="Cisco",
             device_type="cisco_ios",
             ip_address=f"203.0.113.{(int(suffix[2:4], 16) % 100) + 101}",
+            username="u",
+            password_enc=encrypt_secret("p"),
         )
         self.db.add(ne_a)
         self.db.add(ne_b)
@@ -1270,7 +2075,12 @@ class FabricTopologyTests(unittest.TestCase):
             "output": CISCO_LLDP_DETAIL,
             "commands": ["show lldp neighbors detail"],
         }
-        with patch("netx_api.topology_discover_scan.execute_managed_ne_commands", return_value=fake_exec):
+        # Background workers open SessionLocal(); point them at this in-memory engine.
+        with (
+            patch("netx_api.topology_discover_jobs.SessionLocal", self.Session),
+            patch("netx_api.topology_discover_scan.SessionLocal", self.Session),
+            patch("netx_api.topology_discover_scan.execute_managed_ne_commands", return_value=fake_exec),
+        ):
             job = svc.start_discover_job(
                 self.db,
                 FabricDiscoverRequest(scope="ne_ids", ne_ids=[ne_a.id], concurrency=1),
@@ -1422,6 +2232,8 @@ class FabricTopologyTests(unittest.TestCase):
             device_type="cisco_ios",
             ip_address=f"203.0.113.{(int(suffix[:2], 16) % 80) + 40}",
             source="manual",
+            username="u",
+            password_enc=encrypt_secret("p"),
         )
         self.db.add(ne_a)
         self.db.commit()
@@ -1442,7 +2254,11 @@ Management Addresses:
             "output": lldp_out,
             "commands": ["show lldp neighbors detail"],
         }
-        with patch("netx_api.topology_discover_scan.execute_managed_ne_commands", return_value=fake_exec):
+        with (
+            patch("netx_api.topology_discover_jobs.SessionLocal", self.Session),
+            patch("netx_api.topology_discover_scan.SessionLocal", self.Session),
+            patch("netx_api.topology_discover_scan.execute_managed_ne_commands", return_value=fake_exec),
+        ):
             job = svc.start_discover_job(
                 self.db,
                 FabricDiscoverRequest(
@@ -2283,7 +3099,9 @@ Management Addresses:
         self.db.add(orphan)
         self.db.commit()
 
-        stats = run_fabric_reconcile_once()
+        # run_fabric_reconcile_once opens SessionLocal(); bind it to this engine.
+        with patch("netx_api.fabric_reconcile_scheduler.SessionLocal", self.Session):
+            stats = run_fabric_reconcile_once()
         self.assertGreaterEqual(int(stats.get("purged_orphans") or 0), 1)
         self.db.expire_all()
         self.assertIsNone(self.db.get(TopoFabricNode, orphan_id))

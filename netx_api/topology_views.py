@@ -1,6 +1,7 @@
 """Topology folder tree and leaf view operations (facade)."""
 from __future__ import annotations
 
+from .topology_views_commit import commit_view_changes, patch_manual_edge_ports
 from .topology_views_graph import (
     _place_fabric_ids_on_view,
     add_nodes_to_view,
@@ -29,6 +30,7 @@ __all__ = [
     "_place_fabric_ids_on_view",
     "add_nodes_to_view",
     "bootstrap_topology_tree",
+    "commit_view_changes",
     "create_folder",
     "create_topology_placeholder_on_view",
     "create_view",
@@ -38,6 +40,7 @@ __all__ = [
     "get_topology_tree",
     "get_view_graph",
     "list_views",
+    "patch_manual_edge_ports",
     "patch_view_edge_style",
     "patch_view_positions",
     "populate_view",

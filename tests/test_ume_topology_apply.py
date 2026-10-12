@@ -345,20 +345,12 @@ class UmeFabricApplyTests(unittest.TestCase):
         edge.source = "ume"
         edge.attrs = {"sources": ["ume"], "ume_link_id": "link-1"}
         self.db.commit()
-        a = (
-            self.db.query(TopoFabricNode)
-            .filter(TopoFabricNode.ume_ne_id == "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
-            .one()
-        )
-        b = (
-            self.db.query(TopoFabricNode)
-            .filter(TopoFabricNode.ume_ne_id == "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
-            .one()
-        )
+        # Ports are already assigned to the edge's canonical A/B order; pass the
+        # same node ids so _normalize_endpoints cannot swap ports onto the wrong ends.
         edge2, action = upsert_fabric_edge(
             self.db,
-            a_node_id=a.id,
-            b_node_id=b.id,
+            a_node_id=edge.a_node_id,
+            b_node_id=edge.b_node_id,
             a_port=rich_a,
             b_port=rich_b,
             source="lldp",

@@ -132,6 +132,14 @@ export const deleteTopologyView = (viewId: string, force = false) =>
     `/v1/topology/views/${encodeURIComponent(viewId)}?force=${force ? "true" : "false"}`,
   );
 
+export type TopologyPositionsMutation = {
+  ok?: boolean;
+  skipped_locked?: number;
+  updated?: number;
+  matched?: number;
+  graph?: TopologyViewGraph | null;
+};
+
 export const patchTopologyPositions = (
   viewId: string,
   positions: Array<{
@@ -141,10 +149,17 @@ export const patchTopologyPositions = (
     label?: string;
     locked?: boolean;
   }>,
-) =>
-  apiPatch<TopologyViewGraph>(`/v1/topology/views/${encodeURIComponent(viewId)}/positions`, {
-    positions,
-  });
+  opts?: { return_graph?: boolean },
+) => {
+  const returnGraph = opts?.return_graph !== false;
+  return apiPatch<TopologyViewGraph | TopologyPositionsMutation>(
+    `/v1/topology/views/${encodeURIComponent(viewId)}/positions`,
+    {
+      positions,
+      return_graph: returnGraph,
+    },
+  );
+};
 
 export const addTopologyViewNodes = (
   viewId: string,
@@ -399,6 +414,62 @@ export const deleteFabricEdges = (edgeIds: string[]) =>
 export const deleteFabricEdge = (edgeId: string) =>
   apiDelete<{ ok: boolean; deleted: number }>(
     `/v1/topology/fabric/edges/${encodeURIComponent(edgeId)}`,
+  );
+
+export const patchFabricEdgePorts = (
+  edgeId: string,
+  body: { a_port?: string; b_port?: string },
+) =>
+  apiPatch<{
+    id: string;
+    a_node_id: string;
+    b_node_id: string;
+    a_port: string;
+    b_port: string;
+    source: string;
+    status: string;
+    layer: string;
+  }>(`/v1/topology/fabric/edges/${encodeURIComponent(edgeId)}`, body);
+
+export type TopologyViewCommitBody = {
+  edge_creates?: Array<{
+    client_id?: string;
+    a_node_id: string;
+    b_node_id: string;
+    a_port?: string;
+    b_port?: string;
+  }>;
+  edge_deletes?: string[];
+  edge_port_edits?: Array<{ id: string; a_port?: string; b_port?: string }>;
+  edge_styles?: Array<{
+    fabric_edge_id: string;
+    stroke_color?: string;
+    stroke_width?: number;
+    line_style?: string;
+  }>;
+  node_adds?: string[];
+  node_removes?: string[];
+  positions?: Array<{
+    fabric_node_id: string;
+    x?: number;
+    y?: number;
+    label?: string;
+    locked?: boolean;
+  }>;
+};
+
+export type TopologyViewCommitResult = {
+  ok: boolean;
+  view_id: string;
+  edge_id_map: Record<string, string>;
+  skipped_locked: number;
+  graph: TopologyViewGraph | null;
+};
+
+export const commitTopologyView = (viewId: string, body: TopologyViewCommitBody) =>
+  apiPost<TopologyViewCommitResult>(
+    `/v1/topology/views/${encodeURIComponent(viewId)}/commit`,
+    body,
   );
 
 /** Back-compat aliases used by older call sites during cutover. */

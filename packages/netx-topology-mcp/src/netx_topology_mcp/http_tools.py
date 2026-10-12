@@ -1976,15 +1976,18 @@ def _update_topology_view_positions(args: dict[str, Any]) -> dict[str, Any]:
         fid = str(p.get("fabric_node_id") or "").strip()
         if not fid:
             continue
-        cleaned.append(
-            {
-                "fabric_node_id": fid,
-                "x": float(p.get("x") or 0),
-                "y": float(p.get("y") or 0),
-                "label": str(p.get("label") or ""),
-                "locked": bool(p.get("locked") or False),
-            }
-        )
+        row: dict[str, Any] = {
+            "fabric_node_id": fid,
+            "x": float(p.get("x") or 0),
+            "y": float(p.get("y") or 0),
+        }
+        # Omitted label/locked = keep server value (a UI rename or an existing lock).
+        # label "" clears the override; locked false explicitly unlocks.
+        if p.get("label") is not None:
+            row["label"] = str(p.get("label"))
+        if p.get("locked") is not None:
+            row["locked"] = bool(p.get("locked"))
+        cleaned.append(row)
     if not cleaned:
         return {"ok": False, "error": "positions_required"}
     parts: list[dict[str, Any]] = []
@@ -3727,8 +3730,14 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
                             "fabric_node_id": {"type": "string"},
                             "x": {"type": "number"},
                             "y": {"type": "number"},
-                            "label": {"type": "string"},
-                            "locked": {"type": "boolean"},
+                            "label": {
+                                "type": "string",
+                                "description": "Omit to keep the current label; \"\" clears a rename (follow device name).",
+                            },
+                            "locked": {
+                                "type": "boolean",
+                                "description": "Omit to keep the lock. Locked nodes are skipped unless locked=false (unlock + move).",
+                            },
                         },
                         "required": ["fabric_node_id"],
                         "additionalProperties": False,

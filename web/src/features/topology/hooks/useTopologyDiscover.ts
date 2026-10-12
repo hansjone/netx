@@ -47,6 +47,8 @@ export type UseTopologyDiscoverOptions = {
   appliedMapIdRef: React.MutableRefObject<string>;
   markDirty: () => void;
   clearDirty: () => void;
+  /** Prefer atomic /commit when provided (T6). */
+  commitCanvas?: () => Promise<unknown>;
   showOk: (msg: string) => void;
   showError: (msg: string) => void;
   t: (key: string) => string;
@@ -72,6 +74,7 @@ export function useTopologyDiscover(opts: UseTopologyDiscoverOptions) {
     appliedMapIdRef,
     markDirty,
     clearDirty,
+    commitCanvas,
     showOk,
     showError,
     t,
@@ -95,6 +98,10 @@ export function useTopologyDiscover(opts: UseTopologyDiscoverOptions) {
 
   const flushDirtyCanvas = useCallback(async () => {
     if (!mapId || !dirtyRef.current) return;
+    if (commitCanvas) {
+      await commitCanvas();
+      return;
+    }
     const createIds = [...pendingEdgeCreatesRef.current];
     for (const id of createIds) {
       const e = edges.find((x) => x.id === id);
@@ -136,6 +143,7 @@ export function useTopologyDiscover(opts: UseTopologyDiscoverOptions) {
     pendingEdgeCreatesRef,
     pendingEdgeDeletesRef,
     clearDirty,
+    commitCanvas,
   ]);
 
   const runDiscover = useCallback(

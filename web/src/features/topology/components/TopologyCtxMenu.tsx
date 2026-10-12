@@ -399,8 +399,10 @@ export function TopologyCtxMenu({
                       className="topo-ctx__style-input"
                       value={selectedEdgeData.source_port || ""}
                       placeholder="?"
+                      readOnly={String(selectedEdgeData.source || "").toLowerCase() !== "manual"}
                       disabled={
-                        Number(selectedEdgeData.member_count || 1) > 1 && !expandPhysicalLinks
+                        String(selectedEdgeData.source || "").toLowerCase() !== "manual" ||
+                        (Number(selectedEdgeData.member_count || 1) > 1 && !expandPhysicalLinks)
                       }
                       onFocus={() => onPushHistory()}
                       onChange={(e) =>
@@ -421,8 +423,10 @@ export function TopologyCtxMenu({
                       className="topo-ctx__style-input"
                       value={selectedEdgeData.target_port || ""}
                       placeholder="?"
+                      readOnly={String(selectedEdgeData.source || "").toLowerCase() !== "manual"}
                       disabled={
-                        Number(selectedEdgeData.member_count || 1) > 1 && !expandPhysicalLinks
+                        String(selectedEdgeData.source || "").toLowerCase() !== "manual" ||
+                        (Number(selectedEdgeData.member_count || 1) > 1 && !expandPhysicalLinks)
                       }
                       onFocus={() => onPushHistory()}
                       onChange={(e) =>

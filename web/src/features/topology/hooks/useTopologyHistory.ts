@@ -19,6 +19,12 @@ export function useTopologyHistory(
   const historyLockRef = useRef(false);
   const pendingEdgeDeletesRef = useRef<Set<string>>(new Set());
   const pendingEdgeCreatesRef = useRef<Set<string>>(new Set());
+  const pendingEdgePortEditsRef = useRef<Map<string, { a_port: string; b_port: string }>>(
+    new Map(),
+  );
+  const pendingEdgeStyleRef = useRef<
+    Map<string, { stroke_color: string; stroke_width: number; line_style: string }>
+  >(new Map());
 
   const canUndo = historyTick >= 0 && historyRef.current.length > 0;
   const canRedo = historyTick >= 0 && redoRef.current.length > 0;
@@ -48,6 +54,8 @@ export function useTopologyHistory(
       edges: edges.map((e) => ({ ...e })),
       pendingEdgeDeletes: [...pendingEdgeDeletesRef.current],
       pendingEdgeCreates: [...pendingEdgeCreatesRef.current],
+      pendingEdgePortEdits: [...pendingEdgePortEditsRef.current.entries()],
+      pendingEdgeStyles: [...pendingEdgeStyleRef.current.entries()],
     }),
     [nodes, edges],
   );
@@ -59,6 +67,14 @@ export function useTopologyHistory(
     bumpHistory();
   }, [snapshot, bumpHistory]);
 
+  /** Drop the latest undo frame without applying it (e.g. click that never moved). */
+  const popHistory = useCallback(() => {
+    if (historyLockRef.current) return;
+    if (!historyRef.current.length) return;
+    historyRef.current.pop();
+    bumpHistory();
+  }, [bumpHistory]);
+
   const undo = useCallback(() => {
     const prev = historyRef.current.pop();
     if (!prev) return;
@@ -68,6 +84,8 @@ export function useTopologyHistory(
     setEdges(prev.edges);
     pendingEdgeDeletesRef.current = new Set(prev.pendingEdgeDeletes);
     pendingEdgeCreatesRef.current = new Set(prev.pendingEdgeCreates || []);
+    pendingEdgePortEditsRef.current = new Map(prev.pendingEdgePortEdits || []);
+    pendingEdgeStyleRef.current = new Map(prev.pendingEdgeStyles || []);
     markDirty();
     bumpHistory();
     historyLockRef.current = false;
@@ -82,6 +100,8 @@ export function useTopologyHistory(
     setEdges(next.edges);
     pendingEdgeDeletesRef.current = new Set(next.pendingEdgeDeletes);
     pendingEdgeCreatesRef.current = new Set(next.pendingEdgeCreates || []);
+    pendingEdgePortEditsRef.current = new Map(next.pendingEdgePortEdits || []);
+    pendingEdgeStyleRef.current = new Map(next.pendingEdgeStyles || []);
     markDirty();
     bumpHistory();
     historyLockRef.current = false;
@@ -97,11 +117,14 @@ export function useTopologyHistory(
     historyLockRef,
     pendingEdgeDeletesRef,
     pendingEdgeCreatesRef,
+    pendingEdgePortEditsRef,
+    pendingEdgeStyleRef,
     markDirty,
     clearDirty,
     bumpHistory,
     confirmDiscardIfDirty,
     pushHistory,
+    popHistory,
     undo,
     redo,
   };

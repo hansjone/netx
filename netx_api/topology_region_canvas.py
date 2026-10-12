@@ -121,6 +121,39 @@ def place_child_region_on_parent_canvas(
     return row
 
 
+def add_missing_region_placement(
+    db: Session, view: TopoView, fabric_node_id: str, *, x: float, y: float
+) -> TopoViewNode | None:
+    """Persist a child-region icon that was only synthesized (no placement row yet).
+
+    Returns None unless ``fabric_node_id`` is a manual child region of the view's folder.
+    """
+    if not is_region_canvas_node_id(fabric_node_id) or _is_world_flat(view):
+        return None
+    folder = db.get(TopoFolder, region_folder_id_from_node(fabric_node_id))
+    if (
+        folder is None
+        or str(folder.kind or "") != "region"
+        or str(folder.parent_id or "") != str(view.folder_id or "")
+        or _is_ume_managed_folder(folder)
+    ):
+        return None
+    now = _utcnow()
+    row = TopoViewNode(
+        id=uuid4().hex,
+        view_id=view.id,
+        fabric_node_id=fabric_node_id,
+        x=float(x),
+        y=float(y),
+        label="",
+        locked=False,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(row)
+    return row
+
+
 def remove_region_canvas_placements(db: Session, folder_id: str) -> int:
     """Drop this folder's icon from any parent canvas."""
     nid = region_canvas_node_id(folder_id)
@@ -139,6 +172,7 @@ def region_node_out(
     y: float,
     locked: bool = False,
     label: str = "",
+    label_override: str | None = None,
 ) -> ViewNodeOut:
     child_view = _child_primary_view(db, folder.id)
     kids = (
@@ -154,12 +188,14 @@ def region_node_out(
             .filter(TopoViewNode.view_id == child_view.id)
             .count()
         )
-    display = (label or folder.name or folder.id)[:256]
+    raw = str(label_override if label_override is not None else label or "")
+    display = (raw or folder.name or folder.id)[:256]
     return ViewNodeOut(
         fabric_node_id=region_canvas_node_id(folder.id),
         managed_ne_id="",
         ume_ne_id="",
         label=display,
+        label_override=raw[:256],
         x=float(x),
         y=float(y),
         locked=bool(locked),

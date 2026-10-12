@@ -115,6 +115,8 @@ export type TopologyViewNodeItem = {
   managed_ne_id: string;
   ume_ne_id: string;
   label: string;
+  /** Raw placement override; empty means follow device name/ip. */
+  label_override?: string;
   x: number;
   y: number;
   locked: boolean;

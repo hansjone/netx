@@ -6,6 +6,10 @@ export type HistorySnap = {
   edges: Edge[];
   pendingEdgeDeletes: string[];
   pendingEdgeCreates: string[];
+  pendingEdgePortEdits: Array<[string, { a_port: string; b_port: string }]>;
+  pendingEdgeStyles: Array<
+    [string, { stroke_color: string; stroke_width: number; line_style: string }]
+  >;
 };
 
 export type PaletteSource = "managed" | "ume";

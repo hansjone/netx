@@ -190,7 +190,6 @@ export function useTopologyCreateNe({
                 fabric_node_id: added.fabric_node_id,
                 x: at.flowX,
                 y: at.flowY,
-                label: added.label || added.name || item.name || "",
               },
             ]);
             graph = await fetchTopologyGraph(mapId);

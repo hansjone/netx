@@ -31,18 +31,25 @@ export function graphToFlow(
     const position = isRegion ? regionFlowPosition(apiX, apiY) : neFlowPosition(apiX, apiY);
     const hx = isRegion ? TOPO_REGION_HANDLE_X : TOPO_HANDLE_X;
     const hy = isRegion ? TOPO_REGION_HANDLE_Y : TOPO_HANDLE_Y;
+    const locked = Boolean(n.locked);
+    const labelOverride = String(n.label_override ?? "");
     return {
       id: n.fabric_node_id,
       type: "neNode",
       position,
       width: TOPO_NODE_W,
       height: isRegion ? TOPO_REGION_ICON_H : TOPO_NODE_H,
+      draggable: locked ? false : undefined,
       handles: [
         { type: "target", position: "left" as Position, x: hx, y: hy },
         { type: "source", position: "right" as Position, x: hx, y: hy },
       ],
       data: {
         label: n.label || n.name || n.ip || n.fabric_node_id,
+        label_override: labelOverride,
+        label_override_saved: labelOverride,
+        name: n.name || "",
+        locked,
         managed_ne_id: n.managed_ne_id || "",
         ume_ne_id: n.ume_ne_id || "",
         ne_ip: n.ip || "",
@@ -93,12 +100,23 @@ export function flowToPositions(nodes: Node<NeNodeData>[]) {
     const pos = isRegion
       ? regionApiPosition(n.position.x, n.position.y)
       : neApiPosition(n.position.x, n.position.y);
-    return {
+    const out: {
+      fabric_node_id: string;
+      x: number;
+      y: number;
+      label?: string;
+    } = {
       fabric_node_id: n.id,
       x: pos.x,
       y: pos.y,
-      label: n.data.label || "",
     };
+    // Omit locked so the server keeps the existing lock; omit label unless overridden locally.
+    const currentOverride = String(n.data.label_override ?? "");
+    const savedOverride = String(n.data.label_override_saved ?? "");
+    if (currentOverride !== savedOverride) {
+      out.label = currentOverride;
+    }
+    return out;
   });
 }
 

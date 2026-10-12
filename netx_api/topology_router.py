@@ -38,6 +38,8 @@ from .topology_schemas import (
     TopologyPlaceholderCreate,
     TopologyViewCreate,
     TopologyViewUpdate,
+    FabricEdgePortsPatch,
+    ViewCommitIn,
     ViewEdgeStylePatch,
     ViewNodesAdd,
     ViewNodesRemove,
@@ -61,6 +63,7 @@ from .topology_fabric import (
 from .topology_views import (
     add_nodes_to_view,
     bootstrap_topology_tree,
+    commit_view_changes,
     create_folder,
     create_topology_placeholder_on_view,
     create_view,
@@ -69,6 +72,7 @@ from .topology_views import (
     get_topology_tree,
     get_view_graph,
     list_views,
+    patch_manual_edge_ports,
     patch_view_edge_style,
     patch_view_positions,
     populate_view,
@@ -479,6 +483,32 @@ def api_edge_style(
     view_id: str, body: ViewEdgeStylePatch, db: Session = Depends(get_db)
 ) -> dict[str, Any]:
     return patch_view_edge_style(db, view_id, body).model_dump()
+
+
+@router.post("/views/{view_id}/commit")
+def api_commit_view(
+    view_id: str, body: ViewCommitIn, db: Session = Depends(get_db)
+) -> dict[str, Any]:
+    return commit_view_changes(db, view_id, body).model_dump()
+
+
+@router.patch("/fabric/edges/{edge_id}")
+def api_patch_fabric_edge_ports(
+    edge_id: str, body: FabricEdgePortsPatch, db: Session = Depends(get_db)
+) -> dict[str, Any]:
+    edge = patch_manual_edge_ports(
+        db, edge_id, a_port=body.a_port, b_port=body.b_port, commit=True
+    )
+    return {
+        "id": edge.id,
+        "a_node_id": edge.a_node_id,
+        "b_node_id": edge.b_node_id,
+        "a_port": edge.a_port or "",
+        "b_port": edge.b_port or "",
+        "source": edge.source or "manual",
+        "status": edge.status or "active",
+        "layer": edge.layer or "physical",
+    }
 
 
 # --- Classify rules / slices / search ---------------------------------------

@@ -273,8 +273,10 @@ class ViewNodeIn(BaseModel):
     fabric_node_id: str = Field(min_length=1, max_length=64)
     x: float = 0.0
     y: float = 0.0
-    label: str = ""
-    locked: bool = False
+    # None = leave existing override unchanged; "" = clear override (follow device name).
+    label: str | None = None
+    # None = leave lock unchanged; False unlocks (and allows move); True locks after move.
+    locked: bool | None = None
 
 
 class ViewNodeOut(BaseModel):
@@ -282,6 +284,8 @@ class ViewNodeOut(BaseModel):
     managed_ne_id: str = ""
     ume_ne_id: str = ""
     label: str = ""
+    # Raw placement override (empty = follow fabric name/ip). ``label`` is the display value.
+    label_override: str = ""
     x: float = 0.0
     y: float = 0.0
     locked: bool = False
@@ -448,6 +452,16 @@ class ViewNodesRemove(BaseModel):
 
 
 class ViewEdgeStylePatch(BaseModel):
+    """Single-edge style patch (legacy). Prefer ``items`` for batch."""
+
+    fabric_edge_id: str = ""
+    stroke_color: str = ""
+    stroke_width: int = Field(default=0, ge=0, le=12)
+    line_style: str = Field(default="", max_length=16)
+    items: list["ViewEdgeStyleItem"] = Field(default_factory=list)
+
+
+class ViewEdgeStyleItem(BaseModel):
     fabric_edge_id: str
     stroke_color: str = ""
     stroke_width: int = Field(default=0, ge=0, le=12)
@@ -461,12 +475,51 @@ class FabricManualEdgeIn(BaseModel):
     b_port: str = ""
 
 
+class FabricEdgePortsPatch(BaseModel):
+    a_port: str = ""
+    b_port: str = ""
+
+
 class FabricEdgesDeleteRequest(BaseModel):
     edge_ids: list[str] = Field(default_factory=list, min_length=1)
 
 
 class FabricEdgesDeleteOut(BaseModel):
     deleted: int = 0
+
+
+class ViewCommitEdgeCreate(BaseModel):
+    client_id: str = ""
+    a_node_id: str = Field(min_length=1, max_length=64)
+    b_node_id: str = Field(min_length=1, max_length=64)
+    a_port: str = ""
+    b_port: str = ""
+
+
+class ViewCommitEdgePortEdit(BaseModel):
+    id: str = Field(min_length=1, max_length=64)
+    a_port: str = ""
+    b_port: str = ""
+
+
+class ViewCommitIn(BaseModel):
+    """Atomic canvas save: all steps succeed or the whole request rolls back."""
+
+    edge_creates: list[ViewCommitEdgeCreate] = Field(default_factory=list)
+    edge_deletes: list[str] = Field(default_factory=list)
+    edge_port_edits: list[ViewCommitEdgePortEdit] = Field(default_factory=list)
+    edge_styles: list[ViewEdgeStyleItem] = Field(default_factory=list)
+    node_adds: list[str] = Field(default_factory=list)
+    node_removes: list[str] = Field(default_factory=list)
+    positions: list[ViewNodeIn] = Field(default_factory=list)
+
+
+class ViewCommitOut(BaseModel):
+    ok: bool = True
+    view_id: str = ""
+    edge_id_map: dict[str, str] = Field(default_factory=dict)
+    skipped_locked: int = 0
+    graph: TopologyViewGraphOut | None = None
 
 
 # ---------------------------------------------------------------------------

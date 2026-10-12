@@ -614,3 +614,24 @@ def test_analyze_topology_view_layout_single() -> None:
     assert "sparsity" in payload
     assert "verdict" in payload
     assert "total" in payload["verdict"]
+
+
+def test_update_positions_omits_label_and_locked_unless_given() -> None:
+    from netx_topology_mcp.http_tools import _update_topology_view_positions
+
+    with patch("netx_topology_mcp.http_tools.http_json") as mock_http:
+        mock_http.return_value = {"ok": True, "data": {"ok": True, "updated": 3}}
+        _update_topology_view_positions(
+            {
+                "view_id": "v1",
+                "positions": [
+                    {"fabric_node_id": "a", "x": 1, "y": 2},
+                    {"fabric_node_id": "b", "x": 3, "y": 4, "label": "", "locked": False},
+                    {"fabric_node_id": "c", "x": 5, "y": 6, "label": "Core-1", "locked": True},
+                ],
+            }
+        )
+    sent = mock_http.call_args[1]["body"]["positions"]
+    assert sent[0] == {"fabric_node_id": "a", "x": 1.0, "y": 2.0}
+    assert sent[1]["label"] == "" and sent[1]["locked"] is False
+    assert sent[2]["label"] == "Core-1" and sent[2]["locked"] is True

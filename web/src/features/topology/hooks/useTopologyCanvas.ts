@@ -27,6 +27,7 @@ import {
   worldVisualLodFromZoom,
 } from "../lib/treeUtils";
 import { mergeFlatWorldGraph } from "../lib/worldGraph";
+import { fitToNodes } from "../lib/fitNodes";
 import type { HistorySnap } from "../lib/pageTypes";
 
 export type UseTopologyCanvasOptions = {
@@ -62,6 +63,10 @@ export type UseTopologyCanvasOptions = {
   redoRef: React.MutableRefObject<HistorySnap[]>;
   pendingEdgeDeletesRef: React.MutableRefObject<Set<string>>;
   pendingEdgeCreatesRef: React.MutableRefObject<Set<string>>;
+  pendingEdgePortEditsRef?: React.MutableRefObject<Map<string, { a_port: string; b_port: string }>>;
+  pendingEdgeStyleRef?: React.MutableRefObject<
+    Map<string, { stroke_color: string; stroke_width: number; line_style: string }>
+  >;
   clearDirty: () => void;
   bumpHistory: () => void;
   showError: (msg: string) => void;
@@ -102,6 +107,8 @@ export function useTopologyCanvas(opts: UseTopologyCanvasOptions) {
     redoRef,
     pendingEdgeDeletesRef,
     pendingEdgeCreatesRef,
+    pendingEdgePortEditsRef,
+    pendingEdgeStyleRef,
     clearDirty,
     bumpHistory,
     showError,
@@ -288,7 +295,7 @@ export function useTopologyCanvas(opts: UseTopologyCanvasOptions) {
       ? worldDisplayBounds(worldTransformRef.current || graphQuery.data?.world_transform)
       : null;
     if (bounds) inst.fitBounds(bounds, { padding: 0.12, duration: 0 });
-    else inst.fitView({ ...FIT_VIEW_OPTS });
+    else fitToNodes(inst, nodesRef.current, { padding: FIT_VIEW_OPTS.padding });
     setCanvasZoom(inst.getZoom());
   }, [isWorldFlatCanvas, graphQuery.data?.world_transform]);
 
@@ -345,14 +352,17 @@ export function useTopologyCanvas(opts: UseTopologyCanvasOptions) {
     setEdges(rfEdges);
     appliedGraphFpRef.current = fp;
     appliedOverlayFpRef.current = overlayFingerprint(graphQuery.data);
+    // Full server overwrite (enter map or clean live sync): drop local edit queues/undo.
+    historyRef.current = [];
+    redoRef.current = [];
+    pendingEdgeDeletesRef.current = new Set();
+    pendingEdgeCreatesRef.current = new Set();
+    pendingEdgePortEditsRef?.current.clear();
+    pendingEdgeStyleRef?.current.clear();
+    clearDirty();
+    bumpHistory();
     if (entering) {
       appliedMapIdRef.current = mapId;
-      historyRef.current = [];
-      redoRef.current = [];
-      pendingEdgeDeletesRef.current = new Set();
-      pendingEdgeCreatesRef.current = new Set();
-      clearDirty();
-      bumpHistory();
       const hasScatter = (graphQuery.data.scatter?.length || 0) > 0;
       const hasWorld = Boolean(worldDisplayBounds(graphQuery.data.world_transform));
       pendingFitRef.current = nextNodes.length > 0 || hasScatter || hasWorld;
@@ -373,6 +383,8 @@ export function useTopologyCanvas(opts: UseTopologyCanvasOptions) {
     redoRef,
     pendingEdgeDeletesRef,
     pendingEdgeCreatesRef,
+    pendingEdgePortEditsRef,
+    pendingEdgeStyleRef,
   ]);
 
   useEffect(() => {
@@ -394,7 +406,7 @@ export function useTopologyCanvas(opts: UseTopologyCanvasOptions) {
       if (bounds) {
         inst.fitBounds(bounds, { padding: 0.12, duration: 0 });
       } else {
-        inst.fitView({ ...FIT_VIEW_OPTS, duration: 0 });
+        fitToNodes(inst, nodesRef.current, { padding: FIT_VIEW_OPTS.padding });
       }
       setCanvasZoom(inst.getZoom());
     };
@@ -509,12 +521,9 @@ export function useTopologyCanvas(opts: UseTopologyCanvasOptions) {
       }
 
       window.setTimeout(() => {
-        rfRef.current?.fitView({
-          nodes: [{ id: nodeId }],
-          padding: 0.45,
-          duration: 280,
-          includeHiddenNodes: true,
-        });
+        const inst = rfRef.current;
+        const target = nodesRef.current.filter((n) => n.id === nodeId);
+        if (inst) fitToNodes(inst, target, { padding: 0.45, duration: 280, minWidth: 600, minHeight: 360 });
       }, 30);
     },
     [focusNode, focusWorldAround, showError, t, setSearchHitIds, searchHitTimerRef],
