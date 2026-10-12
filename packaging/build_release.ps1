@@ -36,13 +36,16 @@ if (-not $SkipWebBuild) {
         throw "npm_not_found"
     }
     Write-Host "==> npm build"
-    if (-not (Test-Path (Join-Path $webRoot "node_modules"))) {
-        & npm.cmd install --prefix $webRoot
+    Push-Location $webRoot
+    try {
+        & npm.cmd ci
         if ($LASTEXITCODE -ne 0) { throw "npm_install_failed" }
+        # Release packaging skips tsc (dev CI still uses `npm run build`).
+        & npm.cmd run build:release
+        if ($LASTEXITCODE -ne 0) { throw "web_build_failed" }
+    } finally {
+        Pop-Location
     }
-    # Release packaging skips tsc (dev CI still uses `npm run build`).
-    & npm.cmd run build:release --prefix $webRoot
-    if ($LASTEXITCODE -ne 0) { throw "web_build_failed" }
 }
 if (-not (Test-Path (Join-Path $dist "index.html"))) {
     throw "web_dist_missing: build web/ or drop -SkipWebBuild"
