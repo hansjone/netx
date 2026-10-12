@@ -143,7 +143,7 @@ def test_template_usage_counts_are_batched(db, monkeypatch):
     event.listen(db.get_bind(), "before_cursor_execute", lambda c, cur, statement, p, ctx, many: sql.append(statement))
     counts = {t["id"]: t["job_count"] for t in svc.list_templates(db)}
     assert counts == {used["id"]: 2, unused["id"]: 0}
-    assert len(sql) == 2  # one template query and one grouped reference query
+    assert len(sql) == 3  # template query + one grouped query each for jobs and monitor templates
 
 
 @pytest.mark.parametrize("status", ["queued", "running", "failed", "cancelled", "partial"])
@@ -188,3 +188,93 @@ def test_legacy_invalid_template_cannot_execute_as_partial_or_fail_open(db, bad)
     assert exc.value.detail["error"] == "invalid_template"
     assert "metrics[1]" in exc.value.detail["path"]
     assert db.query(BizCompareRun).count() == 0
+
+
+def _builtin_sheet(row, metric_id):
+    return next(s for s in svc.template_metrics(row) if s["metric_id"] == metric_id)
+
+
+def _rule(sheet, field):
+    return next(r for r in sheet["field_rules"] if r["field"] == field)
+
+
+def test_packaged_status_template_uses_corrected_defaults(db):
+    row = svc.ensure_default_zte_status_template(db)
+    detail = _builtin_sheet(row, "interface_detail")
+    assert _rule(detail, "output_bps")["compare"] == "percent"
+    for f in ("input_bps", "output_bps", "in_util", "out_util"):
+        assert f not in detail["compare_fields"] and f in detail["display_fields"]
+    rx = _rule(_builtin_sheet(row, "optical_brief"), "rx_power")
+    assert (rx["compare"], rx["tolerance"]) == ("numeric", 2)
+    assert _builtin_sheet(row, "l2vpn_mac")["iface_fields"] == ["ac_port"]
+
+
+def _store_old_packaged_values(db, row):
+    sheets = svc.template_metrics(row)
+    for s in sheets:
+        if s["metric_id"] == "interface_detail":
+            _rule(s, "output_bps").update(compare="numeric", tolerance=5)
+            s["compare_fields"] = list(svc._INTERFACE_DETAIL_OLD_COMPARE)
+        elif s["metric_id"] == "optical_brief":
+            _rule(s, "rx_power").update(compare="percent", tolerance=5)
+        elif s["metric_id"] == "l2vpn_mac":
+            s["iface_fields"] = []
+    svc._apply_sheets_to_row(row, sheets)
+    db.commit()
+
+
+def test_old_packaged_values_are_upgraded_in_place(db):
+    row = svc.ensure_default_zte_status_template(db)
+    _store_old_packaged_values(db, row)
+    row = svc.ensure_default_zte_status_template(db)
+    detail = _builtin_sheet(row, "interface_detail")
+    assert _rule(detail, "output_bps")["compare"] == "percent"
+    assert "output_bps" not in detail["compare_fields"]
+    assert _rule(_builtin_sheet(row, "optical_brief"), "rx_power")["compare"] == "numeric"
+    assert _builtin_sheet(row, "l2vpn_mac")["iface_fields"] == ["ac_port"]
+
+
+def test_operator_customised_values_survive_upgrade(db):
+    row = svc.ensure_default_zte_status_template(db)
+    _store_old_packaged_values(db, row)
+    sheets = svc.template_metrics(row)
+    for s in sheets:
+        if s["metric_id"] == "optical_brief":
+            _rule(s, "rx_power").update(compare="percent", tolerance=1)  # operator tightened it
+        elif s["metric_id"] == "interface_detail":
+            s["compare_fields"] = ["admin", "output_bps"]  # operator trimmed the list
+        elif s["metric_id"] == "l2vpn_mac":
+            s["iface_fields"] = ["neighbor"]
+    svc._apply_sheets_to_row(row, sheets)
+    db.commit()
+    row = svc.ensure_default_zte_status_template(db)
+    rx = _rule(_builtin_sheet(row, "optical_brief"), "rx_power")
+    assert (rx["compare"], rx["tolerance"]) == ("percent", 1)
+    assert _builtin_sheet(row, "interface_detail")["compare_fields"] == ["admin", "output_bps"]
+    assert _builtin_sheet(row, "l2vpn_mac")["iface_fields"] == ["neighbor"]
+
+
+def test_packaged_arp_filter_uses_canonical_entry_type_and_old_filter_is_upgraded(db):
+    from netx_api.biz_state.compare_rules import arp_dynamic_row_filters
+
+    row = svc.ensure_default_zte_status_template(db)
+    assert _builtin_sheet(row, "arp")["row_filters"] == arp_dynamic_row_filters()
+    sheets = svc.template_metrics(row)
+    for s in sheets:
+        if s["metric_id"] == "arp":
+            s["row_filters"] = [{"op": "age_timer", "field": "age", "value": ""}]
+    svc._apply_sheets_to_row(row, sheets)
+    db.commit()
+    assert _builtin_sheet(svc.ensure_default_zte_status_template(db), "arp")["row_filters"] == arp_dynamic_row_filters()
+
+
+def test_customised_arp_filter_is_left_alone(db):
+    row = svc.ensure_default_zte_status_template(db)
+    sheets = svc.template_metrics(row)
+    mine = [{"op": "eq", "field": "entry_type", "value": "static"}]
+    for s in sheets:
+        if s["metric_id"] == "arp":
+            s["row_filters"] = mine
+    svc._apply_sheets_to_row(row, sheets)
+    db.commit()
+    assert _builtin_sheet(svc.ensure_default_zte_status_template(db), "arp")["row_filters"] == mine

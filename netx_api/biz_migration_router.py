@@ -151,6 +151,12 @@ def api_baseline_ports(project_id: str, db: Session = Depends(get_db)):
     return svc.list_baseline_ports(db, project_id)
 
 
+@router.get("/projects/{project_id}/preflight")
+@router.post("/projects/{project_id}/preflight")
+def api_project_preflight(project_id: str, db: Session = Depends(get_db)):
+    return svc.preflight_project(db, project_id)
+
+
 @router.get("/projects/{project_id}/baseline-expect")
 def api_baseline_expect(project_id: str, db: Session = Depends(get_db)):
     """Multi-metric baseline keys for expect-set picking (from monitor template sheets)."""
@@ -222,8 +228,13 @@ def api_finish_batch(
     mark_done: bool = False,
     db: Session = Depends(get_db),
 ):
-    """本批完成：终验 + 小结 + 红单（允许带红继续）."""
-    return svc.finish_batch(db, batch_id, mark_done=mark_done)
+    """本批完成：终验 + 小结 + 红单（允许带红继续）. Runs in the background; poll the run."""
+    return svc.enqueue_finish(db, batch_id, mark_done=mark_done)
+
+
+@router.post("/projects/{project_id}/red-tickets/resolve-resolvable")
+def api_resolve_resolvable(project_id: str, db: Session = Depends(get_db)):
+    return svc.resolve_resolvable_red_tickets(db, project_id)
 
 
 @router.get("/projects/{project_id}/red-tickets")
@@ -258,9 +269,10 @@ def api_patch_batch(batch_id: str, body: BatchPatchIn, db: Session = Depends(get
 @router.post("/batches/{batch_id}/evaluate")
 def api_evaluate(batch_id: str, body: EvaluateIn | None = None, db: Session = Depends(get_db)):
     payload = body.model_dump() if body else {}
-    return svc.run_evaluate(
+    # Returns the ``running`` run at once; poll GET /runs/{id} until ``status`` settles.
+    return svc.enqueue_evaluate(
         db,
-        batch_id=batch_id,
+        batch_id,
         old_batch_id=str(payload.get("old_batch_id") or ""),
         new_batch_id=str(payload.get("new_batch_id") or ""),
     )

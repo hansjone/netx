@@ -90,6 +90,33 @@ class CompareSnapshotTests(unittest.TestCase):
         self.assertEqual(detail["sheets"][0]["compare_fields"], ["state"])
         self.assertEqual(self.run.summary_json["config_snapshot"], original)
 
+    def _use_raw_port_map(self, version: int):
+        # Map written exactly as the device prints it (not the normalized form).
+        self.pair.before_if, self.pair.after_if = "GE-1", "GE-2"
+        self.db.commit()
+        self.run = _create_running_run(
+            self.db, job=self.job, tpl=self.tpl, before_batch_id="before",
+            after_batch_id="after", sheets_cfg=template_metrics(self.tpl),
+        )
+        snap = deepcopy(self.run.summary_json)
+        snap["config_snapshot"]["version"] = version
+        self.run.summary_json = snap
+        self.db.commit()
+
+    def test_v2_run_normalizes_raw_port_map_names(self):
+        self._use_raw_port_map(2)
+        detail = self.execute()
+        self.assertEqual(detail["summary"]["unchanged"], 1)
+        self.assertEqual(detail["summary"]["added"], 0)
+        self.assertEqual(detail["summary"]["removed"], 0)
+
+    def test_v1_run_keeps_legacy_port_map_matching(self):
+        self._use_raw_port_map(1)
+        detail = self.execute()
+        self.assertEqual(detail["summary"]["unchanged"], 0)
+        self.assertEqual(detail["summary"]["added"], 1)
+        self.assertEqual(detail["summary"]["removed"], 1)
+
     def test_compact_hydration_restores_original_normalized_values(self):
         self.execute()
         self.edit_current_settings()
@@ -97,6 +124,15 @@ class CompareSnapshotTests(unittest.TestCase):
         self.assertEqual(diff["before"]["interface"], "GE-1.100")
         self.assertEqual(diff["mapped_before"]["interface"], "gei-2.100")
         self.assertEqual(diff["after"]["interface"], "gei-2.100")
+
+    def test_diff_rows_expose_the_before_side_name_as_printed(self):
+        self.execute()
+        diff = list_run_diffs(self.db, self.run.id, metric_id="sheet", kind="unchanged")["items"][0]
+        self.assertEqual(diff["key"]["interface"], "gei-2.100")
+        self.assertEqual(diff["raw_key_before"], {"id": "1", "interface": "GE-1.100"})
+        with zipfile.ZipFile(io.BytesIO(export_run_zip(self.db, self.run.id))) as archive:
+            rows = list(csv.DictReader(io.StringIO(archive.read("tables/sheet.csv").decode("utf-8-sig"))))
+        self.assertEqual(rows[0]["interface__raw_before"], "GE-1.100")
 
     def test_live_search_does_not_inherit_new_filters_or_transforms(self):
         with patch("netx_api.biz_state.compare_service._UNCHANGED_SAMPLE_MAX", 0):
@@ -132,7 +168,7 @@ class CompareSnapshotTests(unittest.TestCase):
         self.edit_current_settings()
         detail = get_run(self.db, self.run.id)
         self.assertEqual(detail["job_name"], "Original job")
-        self.assertEqual(detail["config_snapshot_version"], 1)
+        self.assertEqual(detail["config_snapshot_version"], 2)
         self.assertEqual(detail["template"]["iface_normalize_rules"], [{"from": "GE", "to": "gei"}])
         self.assertNotIn("config_snapshot", detail["summary"])
         detail["template"]["iface_normalize_rules"].clear()

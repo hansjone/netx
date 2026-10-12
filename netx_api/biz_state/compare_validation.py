@@ -8,7 +8,10 @@ from typing import Any
 from fastapi import HTTPException
 
 FILTER_OPS = {"eq", "==", "ci_eq", "ne", "!=", "in", "not_in", "nin", "contains", "empty", "not_empty", "nonempty", "regex", "age_timer"}
-COMPARE_MODES = {"", "eq", "ignore", "skip", "off", "numeric", "number", "int", "float", "percent", "pct", "rel"}
+COMPARE_MODES = {"", "eq", "ignore", "skip", "off", "numeric", "number", "int", "float", "percent", "pct", "rel",
+                 "not_worse", "numeric_min", "numeric_max"}
+SIDES = {"", "both", "before", "after"}
+MAX_VALUE_MAP = 500
 NORMALIZE_MODES = {"", "none", "strip", "lower", "upper", "mac", "empty_as_blank"}
 
 
@@ -34,6 +37,8 @@ def validate_filters(value: Any, path: str, depth: int = 0) -> None:
         here = f"{path}[{i}]"
         if not isinstance(node, dict) or not node:
             invalid(here, "filter_required")
+        if depth == 0 and str(node.get("side") or "").strip().lower() not in SIDES:
+            invalid(here, "unknown_filter_side")
         groups = [key for key in ("any", "all") if key in node]
         if groups:
             if len(groups) != 1 or any(node.get(key) is not None for key in ("field", "op", "value")):
@@ -73,6 +78,12 @@ def validate_sheet(sheet: Any, path: str, *, partial: bool = False) -> None:
     for key in ("key_fields", "iface_fields", "compare_fields", "display_fields", "ignore_fields"):
         if key in sheet or (key == "key_fields" and not partial):
             _strings(sheet.get(key), f"{path}.{key}", required=key == "key_fields")
+    for opt, allowed in (("unmapped_port_policy", {"by_name", "ignore_port"}),
+                         ("duplicate_pairing", {"sorted", "ordered"})):
+        if str(sheet.get(opt) or "").strip() and str(sheet[opt]).strip().lower() not in allowed:
+            invalid(path, f"unknown_{opt}")
+    if sheet.get("builtin_vendor_canonical") is not None and not isinstance(sheet["builtin_vendor_canonical"], bool):
+        invalid(path, "boolean_builtin_vendor_canonical_required")
     if "ignore_port_changes" in sheet and sheet["ignore_port_changes"] is not None and not isinstance(sheet["ignore_port_changes"], bool):
         invalid(path, "boolean_port_policy_required")
     if "row_filters" in sheet:
@@ -87,9 +98,30 @@ def validate_sheet(sheet: Any, path: str, *, partial: bool = False) -> None:
             if not isinstance(rule, dict) or not isinstance(rule.get("field"), str) or not rule["field"].strip():
                 invalid(here, "rule_field_required")
             field = rule["field"].strip()
-            if field in seen:
+            rule_side = str(rule.get("side") or "").strip().lower()
+            if rule_side not in SIDES:
+                invalid(here, "unknown_rule_side")
+            marker = (field, "" if rule_side == "both" else rule_side)
+            if marker in seen:
                 invalid(here, "duplicate_field_rule")
-            seen.add(field)
+            seen.add(marker)
+            vmap = rule.get("value_map")
+            if vmap is not None:
+                if not isinstance(vmap, dict) or any(
+                    not isinstance(k, str) or not isinstance(v, str) for k, v in vmap.items()
+                ):
+                    invalid(here, "value_map_string_pairs_required")
+                if len(vmap) > MAX_VALUE_MAP:
+                    invalid(here, "value_map_too_large")
+            if rule.get("apply_to_key") is not None and not isinstance(rule["apply_to_key"], bool):
+                invalid(here, "boolean_apply_to_key_required")
+            mode = str(rule.get("compare") or "").strip().lower()
+            if mode == "not_worse":
+                rank = rule.get("rank")
+                if not isinstance(rank, list) or len(rank) < 2 or any(not isinstance(x, str) or not x.strip() for x in rank):
+                    invalid(here, "rank_list_required")
+            elif rule.get("rank") is not None:
+                invalid(here, "rank_only_for_not_worse")
             if str(rule.get("compare") or "").strip().lower() not in COMPARE_MODES:
                 invalid(here, "unknown_compare_mode")
             if str(rule.get("normalize") or "").strip().lower() not in NORMALIZE_MODES:
@@ -124,7 +156,13 @@ def validate_template_body(body: dict[str, Any], *, partial: bool = False) -> No
             path = f"iface_normalize_rules[{i}]"
             if not isinstance(rule, dict) or any(not isinstance(rule.get(k), str) or not rule[k].strip() for k in ("from", "to")):
                 invalid(path, "alias_pair_required")
-            key = rule["from"].strip().lower()
+            rside = str(rule.get("side") or "").strip().lower()
+            if rside not in SIDES:
+                invalid(path, "unknown_alias_side")
+            if rule.get("vendor") is not None and not isinstance(rule["vendor"], str):
+                invalid(path, "alias_vendor_string_required")
+            key = (rule["from"].strip().lower(), "" if rside == "both" else rside,
+                   str(rule.get("vendor") or "").strip().lower())
             if key in seen:
                 invalid(path, "duplicate_alias")
             seen.add(key)

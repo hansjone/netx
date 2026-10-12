@@ -10,7 +10,15 @@ export type MetricSheet = {
   row_filters?: RowFilter[];
   field_rules?: FieldRule[];
   ignore_port_changes?: boolean | null;
+  /** Partial port map: unmapped ports match by name (default) or by content only. */
+  unmapped_port_policy?: "" | "by_name" | "ignore_port";
+  /** Same-key rows pair by value (default for new runs) or by collection order. */
+  duplicate_pairing?: "" | "sorted" | "ordered";
+  /** false = skip the built-in per-vendor interface names (GigabitEthernet → GE …). */
+  builtin_vendor_canonical?: boolean;
 };
+
+export type Side = "" | "both" | "before" | "after";
 
 export type FieldRule = {
   field: string;
@@ -18,6 +26,12 @@ export type FieldRule = {
   normalize?: string;
   ignore?: boolean;
   tolerance?: number;
+  /** Cross-vendor value aliases, e.g. {"estab": "established"}; matched case-insensitively. */
+  value_map?: Record<string, string>;
+  side?: Side;
+  apply_to_key?: boolean;
+  /** Order for compare=not_worse: earlier entries are better. */
+  rank?: string[];
 };
 
 export type RowFilter = {
@@ -26,13 +40,50 @@ export type RowFilter = {
   value?: string | number | boolean | (string | number | boolean)[];
   any?: RowFilter[];
   all?: RowFilter[];
+  /** Only evaluate this filter on one side of the comparison. */
+  side?: Side;
 };
+
+export type IfaceRule = { from: string; to: string; side?: Side; vendor?: string };
+
+export const DIRECTIONAL_COMPARE = ["not_worse", "numeric_min", "numeric_max"] as const;
+export const MAX_VALUE_MAP = 500;
+
+const SHEET_OPTION_KEYS = ["unmapped_port_policy", "duplicate_pairing", "builtin_vendor_canonical"] as const;
+
+/** The sheet exactly as the API stores it: every identity/compare setting survives a round trip. */
+export function sheetPayload(s: MetricSheet, identity?: string): Record<string, unknown> {
+  const id = identity ?? (s.sheet_id || s.metric_id);
+  const out: Record<string, unknown> = {
+    sheet_id: id,
+    title: s.title || id,
+    metric_id: s.metric_id,
+    key_fields: s.key_fields,
+    iface_fields: s.iface_fields,
+    compare_fields: s.compare_fields,
+    display_fields: s.display_fields || [...s.key_fields, ...s.compare_fields],
+    row_filters: s.row_filters || [],
+    field_rules: s.field_rules || [],
+    ignore_port_changes: s.ignore_port_changes,
+  };
+  for (const key of SHEET_OPTION_KEYS) {
+    const value = s[key];
+    if (value !== undefined && value !== "") out[key] = value;
+  }
+  return out;
+}
+
+export function sheetOptions(raw: Record<string, unknown>): Partial<MetricSheet> {
+  const out: Record<string, unknown> = {};
+  for (const key of SHEET_OPTION_KEYS) if (raw[key] !== undefined && raw[key] !== null) out[key] = raw[key];
+  return out as Partial<MetricSheet>;
+}
 
 export function parseTemplateImport(raw: unknown): {
   name: string;
   note: string;
   metrics: MetricSheet[];
-  iface_normalize_rules?: { from: string; to: string }[];
+  iface_normalize_rules?: IfaceRule[];
 } | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const o = raw as Record<string, unknown>;
@@ -89,11 +140,12 @@ export function parseTemplateImport(raw: unknown): {
       row_filters: (m.row_filters ?? []) as RowFilter[],
       field_rules: fieldRules,
       ignore_port_changes: m.ignore_port_changes as boolean | null | undefined,
+      ...sheetOptions(m),
     });
   }
   if (!metrics.length) return null;
   const normRaw = o.iface_normalize_rules;
-  const iface_normalize_rules: { from: string; to: string }[] = [];
+  const iface_normalize_rules: IfaceRule[] = [];
   if (Array.isArray(normRaw)) {
     for (const item of normRaw) {
       if (!item || typeof item !== "object") throw new Error("iface_normalize_rules: alias_pair_required");
@@ -101,8 +153,13 @@ export function parseTemplateImport(raw: unknown): {
       const fr = String(r.from || "").trim();
       const to = String(r.to || "").trim();
       if (!fr || !to) throw new Error("iface_normalize_rules: alias_pair_required");
-      if (iface_normalize_rules.some((x) => x.from.toLowerCase() === fr.toLowerCase())) throw new Error("iface_normalize_rules: duplicate_alias");
-      iface_normalize_rules.push({ from: fr, to });
+      const rule: IfaceRule = { from: fr, to };
+      const side = String(r.side || "").trim().toLowerCase();
+      if (side === "before" || side === "after") rule.side = side;
+      const vendor = String(r.vendor || "").trim().toLowerCase();
+      if (vendor) rule.vendor = vendor;
+      if (iface_normalize_rules.some((x) => sameAlias(x, rule))) throw new Error("iface_normalize_rules: duplicate_alias");
+      iface_normalize_rules.push(rule);
     }
   }
   if (normRaw != null && !Array.isArray(normRaw)) throw new Error("iface_normalize_rules: list_required");
@@ -110,33 +167,52 @@ export function parseTemplateImport(raw: unknown): {
   return { name, note, metrics, iface_normalize_rules };
 }
 
-export function parseIfaceNormText(text: string): { from: string; to: string }[] {
-  const out: { from: string; to: string }[] = [];
+function sameAlias(a: IfaceRule, b: IfaceRule): boolean {
+  return a.from.toLowerCase() === b.from.toLowerCase() && (a.side || "") === (b.side || "") && (a.vendor || "") === (b.vendor || "");
+}
+
+/** `from,to[,side[,vendor]]` per line; side is before/after, vendor a vendor key such as huawei. */
+export function parseIfaceNormText(text: string): IfaceRule[] {
+  const out: IfaceRule[] = [];
   for (const [index, line] of text.split(/\r?\n/).entries()) {
     const s = line.trim();
     if (!s || s.startsWith("#")) continue;
-    let fr = "";
-    let to = "";
-    if (s.includes(",")) {
-      const i = s.indexOf(",");
-      fr = s.slice(0, i).trim();
-      to = s.slice(i + 1).trim();
-    } else if (s.includes("\t")) {
-      const i = s.indexOf("\t");
-      fr = s.slice(0, i).trim();
-      to = s.slice(i + 1).trim();
-    } else {
-      const parts = s.split(/\s+/);
-      if (parts.length >= 2) {
-        fr = parts[0];
-        to = parts.slice(1).join(" ");
-      }
-    }
+    const parts = (s.includes(",") ? s.split(",") : s.includes("\t") ? s.split("\t") : s.split(/\s+/)).map((x) => x.trim());
+    const [fr = "", to = "", side = "", vendor = ""] = parts;
     if (!fr || !to) throw new Error(`iface_normalize_rules:${index + 1}: alias_pair_required`);
-    if (out.some((x) => x.from.toLowerCase() === fr.toLowerCase())) throw new Error(`iface_normalize_rules:${index + 1}: duplicate_alias`);
-    out.push({ from: fr, to });
+    const sideN = side.toLowerCase();
+    if (sideN && !["before", "after", "both"].includes(sideN)) throw new Error(`iface_normalize_rules:${index + 1}: unknown_alias_side`);
+    const rule: IfaceRule = { from: fr, to };
+    if (sideN === "before" || sideN === "after") rule.side = sideN;
+    if (vendor) rule.vendor = vendor.toLowerCase();
+    if (out.some((x) => sameAlias(x, rule))) throw new Error(`iface_normalize_rules:${index + 1}: duplicate_alias`);
+    out.push(rule);
   }
   return out;
+}
+
+export function formatIfaceNormText(rules?: IfaceRule[]): string {
+  return (rules || [])
+    .map((r) => [r.from, r.to, r.side || (r.vendor ? "both" : ""), r.vendor || ""].filter((x, i, arr) => x || i < 2 || arr.slice(i).some(Boolean)).join(","))
+    .join("\n");
+}
+
+/** `source,canonical` per line (blank lines and # comments ignored) → value_map. */
+export function parseValueMapText(text: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [index, line] of text.split(/\r?\n/).entries()) {
+    const s = line.trim();
+    if (!s || s.startsWith("#")) continue;
+    const parts = (s.includes(",") ? s.split(",") : s.includes("\t") ? s.split("\t") : s.split(/\s+/)).map((x) => x.trim());
+    if (parts.length < 2 || !parts[0] || !parts[1]) throw new Error(`value_map:${index + 1}: pair_required`);
+    out[parts[0]] = parts.slice(1).join(" ");
+  }
+  if (Object.keys(out).length > MAX_VALUE_MAP) throw new Error("value_map: too_large");
+  return out;
+}
+
+export function formatValueMapText(map?: Record<string, string>): string {
+  return Object.entries(map || {}).map(([k, v]) => `${k},${v}`).join("\n");
 }
 
 function isLeafFilter(f: RowFilter): boolean {
@@ -182,9 +258,17 @@ export function validateTemplateDraft(metrics: MetricSheet[]): void {
     for (const key of ["iface_fields", "compare_fields", "display_fields"] as const) if (s[key] !== undefined) stringList(s[key], `${path}.${key}`);
     const fields = new Set<string>();
     for (const r of s.field_rules || []) {
-      if (!r?.field?.trim() || fields.has(r.field.trim())) throw new Error(`${path}.field_rules: invalid_or_duplicate_field`);
-      fields.add(r.field.trim());
-      if (!["", "eq", "ignore", "skip", "off", "numeric", "number", "int", "float", "percent", "pct", "rel"].includes((r.compare || "").toLowerCase())) throw new Error(`${path}.field_rules: unknown_compare_mode`);
+      // one rule per (field, side): a field may carry a different value_map on each side
+      const marker = `${r?.field?.trim()}\u0000${r?.side === "before" || r?.side === "after" ? r.side : ""}`;
+      if (!r?.field?.trim() || fields.has(marker)) throw new Error(`${path}.field_rules: invalid_or_duplicate_field`);
+      fields.add(marker);
+      if (!["", "eq", "ignore", "skip", "off", "numeric", "number", "int", "float", "percent", "pct", "rel", ...DIRECTIONAL_COMPARE].includes((r.compare || "").toLowerCase())) throw new Error(`${path}.field_rules: unknown_compare_mode`);
+      if ((r.compare || "").toLowerCase() === "not_worse" && (!Array.isArray(r.rank) || r.rank.length < 2)) throw new Error(`${path}.${r.field}: rank_list_required`);
+      if (r.value_map != null) {
+        const entries = Object.entries(r.value_map);
+        if (typeof r.value_map !== "object" || entries.some(([k, v]) => typeof k !== "string" || typeof v !== "string")) throw new Error(`${path}.${r.field}: value_map_string_pairs_required`);
+        if (entries.length > MAX_VALUE_MAP) throw new Error(`${path}.${r.field}: value_map_too_large`);
+      }
       if (!["", "none", "strip", "lower", "upper", "mac", "empty_as_blank"].includes((r.normalize || "").toLowerCase())) throw new Error(`${path}.field_rules: unknown_normalize_mode`);
       if (r.tolerance != null && (typeof r.tolerance !== "number" || !Number.isFinite(r.tolerance) || r.tolerance < 0)) throw new Error(`${path}.${r.field}: finite_nonnegative_tolerance_required`);
     }
@@ -219,6 +303,7 @@ export function fromOrGroups(groups: RowFilter[][]): RowFilter[] {
           field: f.field || "",
           op: f.op || "eq",
           value: f.value ?? "",
+          ...(f.side === "before" || f.side === "after" ? { side: f.side } : {}),
         }))
         .filter((f) => f.field),
     )

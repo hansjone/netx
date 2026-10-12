@@ -9,6 +9,7 @@ from netx_api.biz_state.iface_normalize import (
     default_zte_iface_normalize_rules,
     normalize_iface_name,
     normalize_iface_rules,
+    normalize_port_map,
     resolve_mapped_iface,
 )
 
@@ -69,6 +70,32 @@ class PortMapSubifTests(unittest.TestCase):
             port_map={"gei-0/0/0/1": "xgei-0/1/0/1"},
         )
         self.assertEqual(row["interface"], "xgei-0/1/0/1.55")
+
+
+class NormalizePortMapTests(unittest.TestCase):
+    def test_keys_and_values_use_template_rules(self) -> None:
+        out, conflicts = normalize_port_map(
+            {"GE0/1/0/1": "GE0/2/0/1"},
+            normalize_iface_rules([{"from": "GE", "to": "gei"}]),
+        )
+        self.assertEqual(out, {"gei0/1/0/1": "gei0/2/0/1"})
+        self.assertEqual(conflicts, [])
+
+    def test_conflicting_keys_are_reported_first_wins(self) -> None:
+        out, conflicts = normalize_port_map(
+            {"GE0/1": "gei0/2", "gei0/1": "gei0/3"},
+            normalize_iface_rules([{"from": "GE", "to": "gei"}]),
+        )
+        self.assertEqual(out, {"gei0/1": "gei0/2"})
+        self.assertEqual(len(conflicts), 1)
+        self.assertEqual(conflicts[0]["dropped_to"], "gei0/3")
+
+    def test_same_target_duplicate_is_not_a_conflict(self) -> None:
+        _, conflicts = normalize_port_map(
+            {"GE0/1": "gei0/2", "gei0/1": "gei0/2"},
+            normalize_iface_rules([{"from": "GE", "to": "gei"}]),
+        )
+        self.assertEqual(conflicts, [])
 
 
 class ComparePipelineTests(unittest.TestCase):

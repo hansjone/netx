@@ -176,3 +176,17 @@ export const bizMigrationListDiffs = (params: {
     `/v1/biz-migration/runs/${encodeURIComponent(params.runId)}/diffs${qs ? `?${qs}` : ""}`,
   );
 };
+
+
+/** Evaluate / finish run in the background: poll this until ``status`` leaves ``running``. */
+export const bizMigrationGetRun = (runId: string) =>
+  apiGet<Record<string, unknown>>(`/v1/biz-migration/runs/${encodeURIComponent(runId)}`);
+
+export const bizMigrationPreflight = (projectId: string) =>
+  apiGet<Record<string, unknown>>(`/v1/biz-migration/projects/${encodeURIComponent(projectId)}/preflight`);
+
+export const bizMigrationResolveResolvable = (projectId: string) =>
+  apiPost<Record<string, unknown>>(
+    `/v1/biz-migration/projects/${encodeURIComponent(projectId)}/red-tickets/resolve-resolvable`,
+    {},
+  );

@@ -95,7 +95,8 @@ class BizStateClaimTests(unittest.TestCase):
         self.assertEqual(r2.get("reason"), "already_collecting")
 
     def test_claim_ne_mutex_skips_same_ne(self) -> None:
-        with patch.object(claim_mod, "max_concurrent_tasks", return_value=10):
+        # Session cap 1 reproduces the classic "one collection per NE" mutex.
+        with patch.object(claim_mod, "max_concurrent_tasks", return_value=10),                 patch.object(claim_mod, "max_sessions_per_ne", return_value=1):
             ra = claim_mod.enqueue_collect("ta", manual=True)
             rb = claim_mod.enqueue_collect("tb", manual=True)
             rc = claim_mod.enqueue_collect("tc", manual=True)
@@ -110,6 +111,47 @@ class BizStateClaimTests(unittest.TestCase):
         self.assertEqual(self.db.get(BizStateBatch, ra["batch_id"]).status, "running")
         self.assertEqual(self.db.get(BizStateBatch, rb["batch_id"]).status, "queued")
         self.assertEqual(self.db.get(BizStateBatch, rc["batch_id"]).status, "running")
+
+    def test_a_ne_runs_up_to_its_session_cap_and_no_more(self) -> None:
+        self.db.add_all([BizStateTask(id=f"x{i}", source="managed", ne_id="ne-a", status="running") for i in range(3)])
+        for i in range(3):
+            self.db.add(BizStateTaskItem(id=uuid4().hex, task_id=f"x{i}", source_profile_id="zte.arp",
+                                         kind="catalog", enabled=True))
+        self.db.commit()
+        with patch.object(claim_mod, "max_concurrent_tasks", return_value=10),                 patch.object(claim_mod, "max_sessions_per_ne", return_value=2):
+            queued = [claim_mod.enqueue_collect(f"x{i}", manual=True)["batch_id"] for i in range(3)]
+            first = claim_mod.claim_queued_batches(10)
+            again = claim_mod.claim_queued_batches(10)
+        self.assertEqual(len(first), 2)  # three batches queued for ne-a, only two sessions allowed
+        self.assertEqual(again, [])
+        self.db.expire_all()
+        states = sorted(self.db.get(BizStateBatch, b).status for b in queued)
+        self.assertEqual(states, ["queued", "running", "running"])
+
+    def test_default_session_cap_is_two(self) -> None:
+        self.assertEqual(claim_mod.max_sessions_per_ne(), 2)
+
+    def test_single_task_group_is_a_valid_round_for_a_same_device_cutover(self) -> None:
+        task = self.db.get(BizStateTask, "ta")
+        task.collect_group_id = "solo"
+        self.db.commit()
+        with patch.object(claim_mod, "max_concurrent_tasks", return_value=10):
+            r = claim_mod.enqueue_collect("ta", manual=True)
+            self.assertTrue(r["queued"], r)
+            claimed = claim_mod.claim_queued_batches(10)
+        self.assertEqual([c["task_id"] for c in claimed], ["ta"])
+
+    def test_a_pair_needs_both_sides_before_it_is_claimed(self) -> None:
+        for tid, group in (("ta", "pair"), ("tc", "pair")):
+            self.db.get(BizStateTask, tid).collect_group_id = group
+        self.db.commit()
+        with patch.object(claim_mod, "max_concurrent_tasks", return_value=10):
+            r = claim_mod.enqueue_collect("ta", manual=True)
+            self.assertTrue(r["queued"], r)
+            self.db.expire_all()
+            self.db.query(BizStateBatch).filter(BizStateBatch.task_id == "tc").delete()
+            self.db.commit()
+            self.assertEqual(claim_mod.claim_queued_batches(10), [])
 
     def test_claim_respects_slot_ceiling(self) -> None:
         with patch.object(claim_mod, "max_concurrent_tasks", return_value=1):

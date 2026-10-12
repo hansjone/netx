@@ -137,6 +137,8 @@ def field_rule_map(rules: Sequence[Mapping[str, Any]] | None) -> dict[str, dict[
         name = str(raw.get("field") or "").strip()
         if not name:
             continue
+        if str(raw.get("side") or "").strip():
+            continue  # side-scoped rules feed the identity pipeline, not the compare
         out[name] = dict(raw)
     return out
 
@@ -210,6 +212,50 @@ def _parse_float(text: str) -> float | None:
         return None
 
 
+DIRECTIONAL_MODES = ("not_worse", "numeric_min", "numeric_max")
+
+
+def _rank_index(value: str, rank: Sequence[Any]) -> int | None:
+    wanted = value.strip().lower()
+    for i, item in enumerate(rank or []):
+        if scalar_text(item).strip().lower() == wanted:
+            return i
+    return None
+
+
+def _tolerance(rule: Mapping[str, Any]) -> float:
+    try:
+        return float(rule.get("tolerance") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _directional_verdict(bv: str, av: str, rule: Mapping[str, Any]) -> tuple[bool, str]:
+    """``(equal_or_better, reason)`` for not_worse / numeric_min / numeric_max."""
+    mode = str(rule.get("compare") or "").strip().lower()
+    if mode == "not_worse":
+        rank = rule.get("rank") or []
+        bi, ai = _rank_index(bv, rank), _rank_index(av, rank)
+        if bi is None or ai is None:
+            return bv == av, "neq"
+        return ai <= bi, (f"worse: {bv}→{av}" if ai > bi else "")
+    bn, an = _parse_float(bv), _parse_float(av)
+    if bn is None or an is None:
+        return bv == av, "neq"
+    tol = _tolerance(rule)
+    if mode == "numeric_min":
+        floor = bn * (1 - tol / 100.0)
+        if an >= floor:
+            return True, ""
+        drop = (bn - an) / abs(bn) * 100.0 if bn else 0.0
+        return False, f"drop {drop:.0f}% > {tol:g}%"
+    ceil = bn * (1 + tol / 100.0)
+    if an <= ceil:
+        return True, ""
+    rise = (an - bn) / abs(bn) * 100.0 if bn else 0.0
+    return False, f"rise {rise:.0f}% > {tol:g}%"
+
+
 def explain_diff(
     before: Any,
     after: Any,
@@ -222,6 +268,8 @@ def explain_diff(
     bv = normalize_value(before, norm)
     av = normalize_value(after, norm)
     mode = str(rule.get("compare") or "eq").strip().lower() or "eq"
+    if mode in DIRECTIONAL_MODES:
+        return _directional_verdict(bv, av, rule)[1]
     if mode in ("percent", "pct", "rel"):
         bn = _parse_float(bv)
         an = _parse_float(av)
@@ -262,6 +310,8 @@ def values_equal(
     mode = str(rule.get("compare") or "eq").strip().lower() or "eq"
     if mode in ("ignore", "skip", "off"):
         return True
+    if mode in DIRECTIONAL_MODES:
+        return _directional_verdict(bv, av, rule)[0]
     if mode in ("numeric", "number", "int", "float", "percent", "pct", "rel"):
         bn = _parse_float(bv)
         an = _parse_float(av)

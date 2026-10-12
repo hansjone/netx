@@ -47,6 +47,15 @@ def _maybe_purge_retention() -> None:
         from .biz_state.retention import purge_all_tasks
 
         info = purge_all_tasks(db)
+        from .biz_state.retention import purge_auto_runs
+
+        runs = purge_auto_runs(
+            db,
+            migration_keep=int(getattr(settings, "biz_migration_auto_run_keep", 300) or 300),
+            compare_keep=int(getattr(settings, "biz_compare_auto_run_keep", 50) or 50),
+        )
+        if any(runs.values()):
+            _log.info("biz_state periodic run purge %s", runs)
         if info.get("dropped"):
             _log.info(
                 "biz_state periodic retention dropped=%s tasks=%s",

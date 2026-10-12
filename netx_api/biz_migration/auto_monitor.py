@@ -44,6 +44,11 @@ def try_auto_monitor_for_task(db: Session, task_id: str) -> int:
         if not batch or proj.status == "done":
             db.rollback()
             continue
+        if db.query(BizMigrationRun.id).filter(
+            BizMigrationRun.project_id == proj.id, BizMigrationRun.status == "running"
+        ).first():
+            db.rollback()  # a manual / acceptance evaluation owns the project right now
+            continue
         mt = db.get(BizMonitorTemplate, proj.monitor_template_id) if proj.monitor_template_id else None
         if not mt:
             db.rollback()
@@ -60,7 +65,8 @@ def try_auto_monitor_for_task(db: Session, task_id: str) -> int:
                    batch.expect_set_json, service._port_map_dict(db, proj.mapping_id),
                    sheets, overrides, defaults, norms, service.resolve_collect_metric_ids(db, proj)]
         fingerprint = hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
-        last = db.query(BizMigrationRun).filter(BizMigrationRun.batch_id == batch.id).order_by(
+        last = db.query(BizMigrationRun).filter(
+            BizMigrationRun.batch_id == batch.id, BizMigrationRun.status == "success").order_by(
             BizMigrationRun.created_at.desc()).first()
         if last and (last.summary_json or {}).get("auto_fingerprint") == fingerprint:
             db.rollback()

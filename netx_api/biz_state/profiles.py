@@ -85,6 +85,9 @@ class ParseProfile:
     enrich_joins: list[EnrichJoin] = field(default_factory=list)
     # light: default shared SSH lane; heavy: dedicated long-timeout connection
     collect_lane: str = "light"
+    # Which slice of the metric this command produces, e.g. {"afi": "ipv4"}.
+    # Empty = the command covers the whole metric (or its slicing is unknown).
+    slice: dict[str, str] = field(default_factory=dict)
 
 
 _LLDP_FIELDS: list[FieldDef] = [
@@ -1651,6 +1654,11 @@ _HEAVY_LANE_METRICS = frozenset(
 )
 
 
+def metric_lane(metric_id: str) -> str:
+    """``heavy`` for huge CLI dumps (own SSH connection), else ``light``."""
+    return "heavy" if str(metric_id or "").strip() in _HEAVY_LANE_METRICS else "light"
+
+
 def _apply_collect_lanes(profiles: list[ParseProfile]) -> list[ParseProfile]:
     for p in profiles:
         if str(p.metric_id or "").strip() in _HEAVY_LANE_METRICS:
@@ -1752,12 +1760,41 @@ def _validate_profiles(profiles: list[ParseProfile]) -> None:
         )
 
 
+# profile_id -> slice. Compare sheets filter on these fields (``afi``/``af``/``direction``),
+# so a missing command is detected as "slice not collected" instead of "business lost".
+_PROFILE_SLICES: dict[str, dict[str, str]] = {
+    **{f"zte.bgp_{afi}_summary": {"afi": afi} for afi in ("vpnv4", "ipv4", "vpnv6", "ipv6", "evpn", "vpls")},
+    "zte.bgp_vpnv4_vrf_summary": {"afi": "vpnv4"},
+    "zte.bgp_vpnv6_vrf_summary": {"afi": "vpnv6"},
+    "zte.vrrp_ipv4": {"af": "ipv4"},
+    "zte.vrrp_ipv6": {"af": "ipv6"},
+    **{
+        f"zte.bgp_{afi}_neighbor_{direction}": {"afi": afi, "direction": direction}
+        for afi in ("vpnv4", "vpnv6", "ipv4", "ipv6")
+        for direction in ("in", "out")
+    },
+    **{
+        f"zte.bgp_{afi}_vrf_neighbor_{direction}": {"afi": afi, "direction": direction}
+        for afi in ("vpnv4", "vpnv6")
+        for direction in ("in", "out")
+    },
+}
+
+
+def _apply_profile_slices(profiles: list[ParseProfile]) -> list[ParseProfile]:
+    for p in profiles:
+        declared = _PROFILE_SLICES.get(p.profile_id)
+        if declared and not p.slice:
+            p.slice = dict(declared)
+    return profiles
+
+
 def _finalize_profiles(profiles: list[ParseProfile]) -> list[ParseProfile]:
     """Normalize discover→aux, validate, apply collect lanes."""
     for p in profiles:
         _normalize_discover_aux(p)
     _validate_profiles(profiles)
-    return _apply_collect_lanes(profiles)
+    return _apply_profile_slices(_apply_collect_lanes(profiles))
 
 
 def all_profiles() -> list[ParseProfile]:

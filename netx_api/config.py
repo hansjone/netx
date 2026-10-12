@@ -137,6 +137,13 @@ class Settings(BaseSettings):
     biz_state_dedicated_workers: bool = True
     # Global ceiling for simultaneous running batches (across all workers).
     biz_state_max_concurrent_tasks: int = 16
+    # Auto-generated run history kept per cutover wave / auto compare job (acceptance + manual runs are never purged).
+    biz_migration_auto_run_keep: int = 300
+    biz_compare_auto_run_keep: int = 50
+    # Rows of immutable baseline batches cached across cutover evaluations (0 disables).
+    biz_migration_baseline_cache_rows: int = 500000
+    # Concurrent SSH collections per network element (0 = unlimited).
+    biz_state_max_sessions_per_ne: int = 2
     biz_state_worker_collect_threads: int = 8
     biz_state_persist_workers: int = 4
     # TextFSM / normalize workers (off SSH collect threads). Default 8.

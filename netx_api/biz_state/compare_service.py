@@ -22,6 +22,8 @@ from ..models import (
     BizCompareJob,
     BizCompareRun,
     BizCompareTemplate,
+    BizMigrationProject,
+    BizMonitorTemplate,
     BizPortMapping,
     BizPortMappingRow,
     BizStateBatch,
@@ -34,6 +36,7 @@ from .compare_engine import apply_port_map, compare_rows, mapping_stats, row_key
 from .compare_rules import (
     ROW_FILTER_PRESETS,
     apply_row_filters,
+    scalar_text,
     arp_dynamic_row_filters,
     effective_compare_fields,
     effective_display_fields,
@@ -43,11 +46,18 @@ from .iface_normalize import (
     apply_iface_normalize_rows,
     default_zte_iface_normalize_rules,
     normalize_iface_rules,
+    normalize_port_map,
 )
+from .compare_quality import UNJUDGED_STATES, assess_sheet
+from .identity_pipeline import Pipeline, build_pipeline, legacy_pipeline
 from .profiles import metric_field_map
 from .compare_validation import validate_template_body
 
 _log = logging.getLogger("netx.biz_state.compare")
+
+# v1: port-map keys/values must be written post-normalization.
+# v2: port-map keys/values are normalized with the template iface rules (A1).
+CONFIG_SNAPSHOT_VERSION = 2
 
 # Per-job mutex so auto + manual run_compare do not dual-write the same job.
 _auto_compare_locks: dict[str, threading.Lock] = {}
@@ -426,11 +436,25 @@ def _metric_rows_by_ids(db: Session, ids: list[str]) -> dict[str, dict[str, Any]
     return out
 
 
+def _attach_raw_key_before(items: list[dict[str, Any]], key_fields: list[str]) -> list[dict[str, Any]]:
+    """``raw_key_before``: the before-side key as printed, only where it differs from the match key."""
+    for it in items:
+        before = it.get("before")
+        if not before or it.get("raw_key_before"):
+            continue
+        shown = it.get("key") or {}
+        raw = {f: scalar_text(before.get(f)).strip() for f in key_fields}
+        if any(raw[f] != scalar_text(shown.get(f)).strip() for f in key_fields if f in shown):
+            it["raw_key_before"] = raw
+    return items
+
+
 def _hydrate_diff_rows(
     db: Session, items: list[dict[str, Any]], *,
     run: BizCompareRun | None = None, sheet: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Fill empty before/after from metric tables when row_ids are present."""
+    key_fields = list((sheet or {}).get("key_fields") or [])
     need: list[str] = []
     for it in items:
         if not it.get("before") and it.get("before_row_id"):
@@ -438,27 +462,19 @@ def _hydrate_diff_rows(
         if not it.get("after") and it.get("after_row_id"):
             need.append(str(it["after_row_id"]))
     if not need:
-        return items
+        return _attach_raw_key_before(items, key_fields)
     by_id = _metric_rows_by_ids(db, need)
-    pmap, norm_rules = _run_transform_config(db, run) if run else ({}, [])
-    iface_fields = list((sheet or {}).get("iface_fields") or [])
+    pipeline = _run_pipeline(db, run, sheet or {})
     for it in items:
         brid = str(it.get("before_row_id") or "")
         arid = str(it.get("after_row_id") or "")
         if not it.get("before") and brid and brid in by_id:
             it["before"] = by_id[brid]
         if not it.get("after") and arid and arid in by_id:
-            it["after"] = apply_iface_normalize_rows(
-                [by_id[arid]], iface_fields=iface_fields, rules=norm_rules,
-            )[0]
+            it["after"] = pipeline.normalize(by_id[arid], "after")
         if not it.get("mapped_before") and it.get("before"):
-            normalized = apply_iface_normalize_rows(
-                [it["before"]], iface_fields=iface_fields, rules=norm_rules,
-            )[0]
-            it["mapped_before"] = apply_port_map(
-                normalized, iface_fields=iface_fields, port_map=pmap,
-            )
-    return items
+            it["mapped_before"] = pipeline.transform(it["before"], "before")
+    return _attach_raw_key_before(items, key_fields)
 
 
 def _diff_row_out(r: BizCompareDiff) -> dict[str, Any]:
@@ -653,18 +669,41 @@ def _normalize_row_filters(raw: Any) -> list[dict[str, Any]]:
     return out
 
 
+# Optional sheet-level switches that must survive normalization.
+_SHEET_OPTION_VALUES: dict[str, tuple[str, ...]] = {
+    "unmapped_port_policy": ("by_name", "ignore_port"),
+    "duplicate_pairing": ("sorted", "ordered"),
+}
+
+
+def _sheet_options(raw: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key, allowed in _SHEET_OPTION_VALUES.items():
+        val = str(raw.get(key) or "").strip().lower()
+        if val in allowed:
+            out[key] = val
+    if raw.get("builtin_vendor_canonical") is False:
+        out["builtin_vendor_canonical"] = False
+    if raw.get("scope_by_port_map") is not None:
+        out["scope_by_port_map"] = bool(raw.get("scope_by_port_map"))
+    return out
+
+
 def _normalize_field_rules(raw: Any) -> list[dict[str, Any]]:
     if not isinstance(raw, list):
         return []
     out: list[dict[str, Any]] = []
-    seen: set[str] = set()
+    seen: set[tuple[str, str]] = set()
     for item in raw:
         if not isinstance(item, dict):
             continue
         name = str(item.get("field") or "").strip()
-        if not name or name in seen:
+        side = str(item.get("side") or "").strip().lower()
+        side = side if side in ("before", "after") else ""
+        # A field may carry one rule per side (e.g. a different value_map each).
+        if not name or (name, side) in seen:
             continue
-        seen.add(name)
+        seen.add((name, side))
         rule: dict[str, Any] = {"field": name}
         compare = str(item.get("compare") or "").strip().lower()
         if compare:
@@ -680,6 +719,16 @@ def _normalize_field_rules(raw: Any) -> list[dict[str, Any]]:
                 rule["tolerance"] = float(item.get("tolerance"))
             except (TypeError, ValueError):
                 pass
+        vmap = item.get("value_map")
+        if isinstance(vmap, dict) and vmap:
+            rule["value_map"] = {str(k): str(v) for k, v in vmap.items()}
+        if side:
+            rule["side"] = side
+        if isinstance(item.get("apply_to_key"), bool):
+            rule["apply_to_key"] = item["apply_to_key"]
+        rank = item.get("rank")
+        if isinstance(rank, list) and rank:
+            rule["rank"] = [str(x) for x in rank]
         # Drop empty rules (only field name)
         if len(rule) > 1:
             out.append(rule)
@@ -709,6 +758,7 @@ def _sheet_def(
     row_filters: list[dict[str, Any]] | None = None,
     field_rules: list[dict[str, Any]] | None = None,
     ignore_port_changes: bool | None = None,
+    options: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     mid = str(metric_id or "").strip()
     sid = str(sheet_id or "").strip() or mid
@@ -749,6 +799,7 @@ def _sheet_def(
     }
     if ignore_port_changes is not None:
         sheet["ignore_port_changes"] = bool(ignore_port_changes)
+    sheet.update(options or {})
     return sheet
 
 
@@ -946,6 +997,49 @@ def _builtin_status_needs_packaged_upgrade(existing: list[dict[str, Any]]) -> bo
     return len(packaged_keys - have_keys) >= 3
 
 
+# A7: (metric_id, kind, field, old packaged value, new value). A stored sheet is
+# only touched when its value still equals the *old* packaged one, so anything
+# an operator edited survives the upgrade.
+_INTERFACE_DETAIL_OLD_COMPARE = [
+    "admin", "input_bps", "output_bps", "port_status", "in_util", "out_util",
+    "ip_mtu", "mtu", "mpls_mtu", "ipv6_mtu", "port_media", "negotiation",
+]
+_BUILTIN_STATUS_VALUE_UPGRADES: tuple[tuple[str, str, str, Any, Any], ...] = (
+    ("interface_detail", "rule", "output_bps",
+     {"compare": "numeric", "tolerance": 5}, {"compare": "percent", "tolerance": 5}),
+    ("interface_detail", "list", "compare_fields", _INTERFACE_DETAIL_OLD_COMPARE,
+     [f for f in _INTERFACE_DETAIL_OLD_COMPARE if f not in ("input_bps", "output_bps", "in_util", "out_util")]),
+    ("optical_brief", "rule", "rx_power",
+     {"compare": "percent", "tolerance": 5}, {"compare": "numeric", "tolerance": 2}),
+    ("l2vpn_mac", "list", "iface_fields", [], ["ac_port"]),
+    # ARP: filter on the canonical ``entry_type`` (every vendor parser emits it); the
+    # age-timer clause stays only as a fallback for rows parsed before entry_type existed.
+    ("arp", "list", "row_filters", [{"op": "age_timer", "field": "age", "value": ""}], arp_dynamic_row_filters()),
+)
+
+
+def _upgrade_builtin_status_values(sheet: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    """Apply ``_BUILTIN_STATUS_VALUE_UPGRADES`` to one stored sheet."""
+    mid = str(sheet.get("metric_id") or "")
+    out = deepcopy(sheet)
+    changed = False
+    for metric_id, kind, field, old, new in _BUILTIN_STATUS_VALUE_UPGRADES:
+        if mid != metric_id:
+            continue
+        if kind == "list":
+            if list(out.get(field) or []) == old:
+                out[field] = list(new)
+                changed = True
+            continue
+        for rule in out.get("field_rules") or []:
+            if isinstance(rule, dict) and rule.get("field") == field and all(
+                rule.get(k) == v for k, v in old.items()
+            ):
+                rule.update(new)
+                changed = True
+    return out, changed
+
+
 def _default_zte_config_sheets() -> list[dict[str, Any]]:
     """Config-intent metrics for cutover / intent-vs-intent compare."""
     return [
@@ -1009,6 +1103,7 @@ def _normalize_sheet(raw: Any) -> dict[str, Any] | None:
         row_filters=_normalize_row_filters(raw.get("row_filters")),
         field_rules=rules,
         ignore_port_changes=ignore_ports,
+        options=_sheet_options(raw),
     )
 
 
@@ -1252,6 +1347,8 @@ def ensure_default_zte_status_template(db: Session) -> BizCompareTemplate:
                 if not cur.get("field_rules") and src and src.get("field_rules"):
                     cur["field_rules"] = list(src["field_rules"])
                 changed = True
+            cur, value_changed = _upgrade_builtin_status_values(cur)
+            changed = changed or value_changed
             upgraded.append(_normalize_sheet(cur) or cur)
         have_mids = {str(s.get("metric_id") or "") for s in upgraded}
         for s in sheets:
@@ -1389,7 +1486,16 @@ def list_templates(db: Session) -> list[dict[str, Any]]:
     upgrade_builtin_split_sheets(db)
     rows = db.query(BizCompareTemplate).order_by(BizCompareTemplate.name.asc()).all()
     usage = dict(db.query(BizCompareJob.template_id, func.count(BizCompareJob.id)).group_by(BizCompareJob.template_id).all())
-    return [{**_template_out(t), "job_count": usage.get(t.id, 0)} for t in rows]
+    monitor_usage = dict(
+        db.query(BizMonitorTemplate.compare_template_id, func.count(BizMonitorTemplate.id))
+        .filter(BizMonitorTemplate.compare_template_id != "")
+        .group_by(BizMonitorTemplate.compare_template_id).all()
+    )
+    return [
+        {**_template_out(t), "job_count": usage.get(t.id, 0),
+         "monitor_template_count": monitor_usage.get(t.id, 0)}
+        for t in rows
+    ]
 
 
 def list_metric_schemas() -> list[dict[str, Any]]:
@@ -1522,8 +1628,19 @@ def delete_template(db: Session, template_id: str) -> None:
     t = db.get(BizCompareTemplate, template_id)
     if not t:
         raise HTTPException(status_code=404, detail="template_not_found")
-    if db.query(BizCompareJob.id).filter(BizCompareJob.template_id == template_id).first():
-        raise HTTPException(status_code=409, detail="template_in_use")
+    jobs = [n or i for i, n in db.query(BizCompareJob.id, BizCompareJob.name)
+            .filter(BizCompareJob.template_id == template_id).all()]
+    monitors = [n or i for i, n in db.query(BizMonitorTemplate.id, BizMonitorTemplate.name)
+                .filter(BizMonitorTemplate.compare_template_id == template_id).all()]
+    if jobs or monitors:
+        raise HTTPException(status_code=409, detail={
+            "code": "template_in_use",
+            "message": "template_in_use: " + "; ".join(filter(None, [
+                f"jobs={', '.join(jobs)}" if jobs else "",
+                f"monitor_templates={', '.join(monitors)}" if monitors else "",
+            ])),
+            "jobs": jobs, "monitor_templates": monitors,
+        })
     db.delete(t)
     db.commit()
 
@@ -1544,9 +1661,30 @@ def _mapping_out(db: Session, m: BizPortMapping) -> dict[str, Any]:
     }
 
 
+def _mapping_references(db: Session, mapping_id: str) -> tuple[list[str], list[str]]:
+    """(compare job names, cutover project names) that reference this mapping."""
+    jobs = [n or i for i, n in db.query(BizCompareJob.id, BizCompareJob.name)
+            .filter(BizCompareJob.mapping_id == mapping_id).all()]
+    projects = [n or i for i, n in db.query(BizMigrationProject.id, BizMigrationProject.name)
+                .filter(BizMigrationProject.mapping_id == mapping_id).all()]
+    return jobs, projects
+
+
 def list_mappings(db: Session) -> list[dict[str, Any]]:
     rows = db.query(BizPortMapping).order_by(BizPortMapping.name.asc()).all()
-    return [_mapping_out(db, m) for m in rows]
+    job_counts = dict(
+        db.query(BizCompareJob.mapping_id, func.count(BizCompareJob.id))
+        .filter(BizCompareJob.mapping_id != "").group_by(BizCompareJob.mapping_id).all()
+    )
+    project_counts = dict(
+        db.query(BizMigrationProject.mapping_id, func.count(BizMigrationProject.id))
+        .filter(BizMigrationProject.mapping_id != "").group_by(BizMigrationProject.mapping_id).all()
+    )
+    return [
+        {**_mapping_out(db, m), "job_count": job_counts.get(m.id, 0),
+         "project_count": project_counts.get(m.id, 0)}
+        for m in rows
+    ]
 
 
 def create_mapping(db: Session, body: dict[str, Any]) -> dict[str, Any]:
@@ -1604,6 +1742,16 @@ def delete_mapping(db: Session, mapping_id: str) -> None:
     m = db.get(BizPortMapping, mapping_id)
     if not m:
         raise HTTPException(status_code=404, detail="mapping_not_found")
+    jobs, projects = _mapping_references(db, mapping_id)
+    if jobs or projects:
+        raise HTTPException(status_code=409, detail={
+            "code": "mapping_in_use",
+            "message": "mapping_in_use: " + "; ".join(filter(None, [
+                f"jobs={', '.join(jobs)}" if jobs else "",
+                f"projects={', '.join(projects)}" if projects else "",
+            ])),
+            "jobs": jobs, "projects": projects,
+        })
     db.query(BizPortMappingRow).filter(BizPortMappingRow.mapping_id == mapping_id).delete()
     db.delete(m)
     db.commit()
@@ -1822,11 +1970,11 @@ def validate_mapping(
     sheets = template_metrics(tpl)
     if not sheets:
         raise HTTPException(status_code=400, detail="template_has_no_metrics")
-    pmap = _port_map_dict(db, mapping_id)
     # Validate against first sheet that has iface fields (or first sheet)
     target = next((s for s in sheets if s.get("iface_fields")), sheets[0])
     iface_fields = list(target.get("iface_fields") or [])
     norm = template_iface_normalize(tpl)
+    pmap, _ = normalize_port_map(_port_map_dict(db, mapping_id), norm)
     before = apply_iface_normalize_rows(
         _load_metric_rows(db, batch_id=before_batch_id, metric_id=target["metric_id"]),
         iface_fields=iface_fields,
@@ -1843,6 +1991,66 @@ def validate_mapping(
         iface_fields=iface_fields,
         port_map=pmap,
     )
+
+
+def _mapping_rows_to_dict(rows: list[Any]) -> tuple[dict[str, str], list[dict[str, str]]]:
+    """Editor rows → raw map; a repeated before port is reported, first one wins."""
+    out: dict[str, str] = {}
+    dups: list[dict[str, str]] = []
+    for r in rows or []:
+        raw = r if isinstance(r, dict) else dict(r)
+        before = str(raw.get("before_if") or "").strip()
+        after = str(raw.get("after_if") or "").strip()
+        if not before or not after:
+            continue
+        if before in out:
+            dups.append({"before_if": before, "kept_to": out[before], "dropped_to": after})
+            continue
+        out[before] = after
+    return out, dups
+
+
+def preflight_compare(db: Session, body: dict[str, Any]) -> dict[str, Any]:
+    """Mapping coverage + data-quality report for a template and two batches."""
+    from .compare_preflight import preflight
+
+    ensure_default_templates(db)
+    template_id = str(body.get("template_id") or "")
+    tpl = db.get(BizCompareTemplate, template_id) if template_id else ensure_default_cutover_template(db)
+    if not tpl:
+        raise HTTPException(status_code=404, detail="template_not_found")
+    before_id = str(body.get("before_batch_id") or "")
+    after_id = str(body.get("after_batch_id") or "")
+    if not db.get(BizStateBatch, before_id) or not db.get(BizStateBatch, after_id):
+        raise HTTPException(status_code=404, detail="batch_not_found")
+    sheets = _filter_enabled_sheets(template_metrics(tpl), _str_list(body.get("enabled_sheet_ids")))
+    if not sheets:
+        raise HTTPException(status_code=400, detail="no_enabled_sheets")
+    dups: list[dict[str, str]] = []
+    if body.get("mapping_rows") is not None:
+        raw_map, dups = _mapping_rows_to_dict(list(body.get("mapping_rows") or []))
+    else:
+        raw_map = _port_map_dict(db, str(body.get("mapping_id") or ""))
+    cache: dict[tuple[str, str], list[dict[str, Any]]] = {}
+
+    def load(side: str, sheet: dict[str, Any]) -> list[dict[str, Any]]:
+        batch_id = before_id if side == "before" else after_id
+        key = (batch_id, str(sheet["metric_id"]))
+        if key not in cache:
+            cache[key] = _load_metric_rows(db, batch_id=batch_id, metric_id=key[1])
+        return cache[key]
+
+    report = preflight(
+        db, sheets=sheets, iface_rules=template_iface_normalize(tpl), raw_port_map=raw_map,
+        before_batch_id=before_id, after_batch_id=after_id,
+        before_vendor=_batch_vendor_key(db, before_id), after_vendor=_batch_vendor_key(db, after_id),
+        load_rows=load,
+    )
+    if dups:
+        report["mapping"]["duplicate_before"] = dups
+        report["risk_reasons"] = sorted({*report["risk_reasons"], "duplicate_before"})
+        report["verdict"] = "risk"
+    return report
 
 
 def _job_out(j: BizCompareJob) -> dict[str, Any]:
@@ -2040,14 +2248,23 @@ def _sheet_result_envelope(
     }
 
 
+def _sheet_quality(
+    db: Session, sheet: dict[str, Any], before_batch_id: str, after_batch_id: str,
+    summary: dict[str, Any],
+) -> dict[str, Any]:
+    return assess_sheet(
+        db, sheet, before_batch_id=before_batch_id, after_batch_id=after_batch_id,
+        before_rows=int(summary.get("before_count") or 0), after_rows=int(summary.get("after_count") or 0),
+    )
+
+
 def _run_sheet(
     db: Session,
     *,
     sheet: dict[str, Any],
     before_batch_id: str,
     after_batch_id: str,
-    port_map: dict[str, str],
-    iface_normalize_rules: list[dict[str, str]] | None = None,
+    pipeline: Pipeline,
     store_unchanged: str = "auto",
     on_load_progress: Callable[..., None] | None = None,
 ) -> dict[str, Any]:
@@ -2083,12 +2300,7 @@ def _run_sheet(
     # PostgreSQL path: pushdown-safe sheets join in-DB (BGP-scale).
     from .compare_sql import SqlCompareSkip, run_sql_sheet_compare, sql_compare_skip_reason
 
-    skip_reason = sql_compare_skip_reason(
-        db,
-        sheet,
-        port_map=port_map,
-        iface_normalize_rules=iface_normalize_rules,
-    )
+    skip_reason = sql_compare_skip_reason(db, sheet, pipeline=pipeline)
     if not skip_reason:
         try:
             result = run_sql_sheet_compare(
@@ -2098,6 +2310,7 @@ def _run_sheet(
                 after_batch_id=after_batch_id,
                 store_unchanged=store_unchanged,
                 on_progress=_emit_load,
+                duplicate_pairing=pipeline.duplicate_pairing,
             )
             summary = dict(result["summary"])
             # Engine already sets raw counts / policy; keep keys stable
@@ -2107,6 +2320,7 @@ def _run_sheet(
                     before_n=int(summary.get("before_count") or 0),
                     after_n=int(summary.get("after_count") or 0),
                 )
+            summary.update(_sheet_quality(db, sheet, before_batch_id, after_batch_id, summary))
             return _sheet_result_envelope(
                 sheet,
                 key_fields=key_fields,
@@ -2161,39 +2375,38 @@ def _run_sheet(
     def _after_chunk(n: int) -> None:
         _emit_load("after", n, engine="python", note=skip_reason or "python", phase="loading")
 
+    # Only filters that read untransformed fields may run in SQL on the raw rows;
+    # the pipeline applies every filter (post-normalize for v2) in ``prepare``.
     before_raw = _load_metric_rows(
         db,
         batch_id=before_batch_id,
         metric_id=mid,
         on_chunk=_before_chunk,
-        row_filters=row_filters,
+        row_filters=pipeline.pushdown_filters("before"),
     )
     after_raw = _load_metric_rows(
         db,
         batch_id=after_batch_id,
         metric_id=mid,
         on_chunk=_after_chunk,
-        row_filters=row_filters,
+        row_filters=pipeline.pushdown_filters("after"),
     )
-    # Filters already applied in load when pushdown-safe; keep apply for safety
-    before_rows = apply_row_filters(before_raw, row_filters) if row_filters else before_raw
-    after_rows = apply_row_filters(after_raw, row_filters) if row_filters else after_raw
+    before_pairs = pipeline.prepare(before_raw, "before")
+    after_pairs = pipeline.prepare(after_raw, "after")
     policy = resolve_unchanged_policy(
-        store_unchanged, before_n=len(before_rows), after_n=len(after_rows)
+        store_unchanged, before_n=len(before_pairs), after_n=len(after_pairs)
     )
     result = compare_rows(
-        before_rows=before_rows,
-        after_rows=after_rows,
+        before_rows=[], after_rows=[],
         key_fields=key_fields,
         iface_fields=iface_fields,
         compare_fields=compare_fields,
-        port_map=port_map,
         field_rules=field_rules,
-        iface_normalize_rules=iface_normalize_rules,
-        ignore_port_changes=ignore_ports,
         include_unchanged=bool(policy["include"]),
         unchanged_limit=policy.get("limit"),
         compact_unchanged=bool(policy.get("compact")),
+        pipeline=pipeline,
+        prepared=(before_pairs, after_pairs),
     )
     summary = dict(result["summary"])
     summary["before_raw_count"] = len(before_raw)
@@ -2201,6 +2414,14 @@ def _run_sheet(
     summary["row_filters"] = len(row_filters)
     summary["unchanged_policy"] = policy
     summary.setdefault("engine", "python")
+    if pipeline.port_map and pipeline.iface_fields:
+        from .compare_preflight import sheet_mapping_coverage
+
+        coverage = sheet_mapping_coverage(pipeline, before_pairs, after_pairs)
+        coverage.pop("_after_ifaces", None)
+        coverage.pop("_used_keys", None)
+        summary["mapping_coverage"] = coverage
+    summary.update(_sheet_quality(db, sheet, before_batch_id, after_batch_id, summary))
     return _sheet_result_envelope(
         sheet,
         key_fields=key_fields,
@@ -2227,6 +2448,8 @@ def _validate_compare_job(
     tpl = db.get(BizCompareTemplate, j.template_id)
     if not tpl:
         raise HTTPException(status_code=404, detail="template_not_found")
+    if j.mapping_id and not db.get(BizPortMapping, j.mapping_id):
+        raise HTTPException(status_code=400, detail="mapping_missing")
     before_batch_id = str(j.before_batch_id or "")
     after_batch_id = str(force_after_batch_id or "").strip() or _resolve_after_batch(db, j)
     if not before_batch_id or not after_batch_id:
@@ -2272,15 +2495,31 @@ def _create_running_run(
     before_batch_id: str,
     after_batch_id: str,
     sheets_cfg: list[dict[str, Any]],
+    purpose: str = "manual",
 ) -> BizCompareRun:
     first_metric = str(sheets_cfg[0].get("metric_id") or "")
     pending_sheets = [_pending_sheet_meta(s) for s in sheets_cfg]
     mapping = db.get(BizPortMapping, job.mapping_id) if job.mapping_id else None
+    vendors = {
+        "before": _batch_vendor_key(db, before_batch_id),
+        "after": _batch_vendor_key(db, after_batch_id),
+    }
+    raw_port_map = _port_map_dict(db, str(job.mapping_id or ""))
+    iface_rules = template_iface_normalize(tpl)
+    identity = {
+        sheet_key(sh): build_pipeline(
+            sh, iface_rules=iface_rules, port_map=raw_port_map,
+            before_vendor=vendors["before"], after_vendor=vendors["after"],
+        ).describe()
+        for sh in sheets_cfg
+    }
     config_snapshot = deepcopy({
-        "version": 1,
+        "version": CONFIG_SNAPSHOT_VERSION,
         "template": _template_out(tpl),
         "sheets": sheets_cfg,
-        "port_map": _port_map_dict(db, str(job.mapping_id or "")),
+        "port_map": raw_port_map,
+        "vendors": vendors,
+        "identity": identity,
         "store_unchanged": normalize_store_unchanged(getattr(job, "store_unchanged", None)),
         "job_name": job.name or "",
         "before_task_id": job.before_task_id or "",
@@ -2297,6 +2536,7 @@ def _create_running_run(
         metric_id=first_metric,
         status="running",
         summary_json={
+            "purpose": purpose,
             "config_snapshot": config_snapshot,
             "progress": {
                 "phase": "queued",
@@ -2329,7 +2569,7 @@ def _create_running_run(
 
 def _run_config_snapshot(run: BizCompareRun) -> dict[str, Any] | None:
     snapshot = (run.summary_json or {}).get("config_snapshot")
-    if isinstance(snapshot, dict) and snapshot.get("version") == 1:
+    if isinstance(snapshot, dict) and snapshot.get("version") in (1, 2):
         return snapshot
     return None
 
@@ -2339,12 +2579,64 @@ def _run_transform_config(
 ) -> tuple[dict[str, str], list[dict[str, str]]]:
     snapshot = _run_config_snapshot(run)
     if snapshot is not None:
-        return dict(snapshot.get("port_map") or {}), normalize_iface_rules(
+        rules = normalize_iface_rules(
             (snapshot.get("template") or {}).get("iface_normalize_rules") or [],
         )
+        pmap = dict(snapshot.get("port_map") or {})
+        if int(snapshot.get("version") or 1) >= 2:
+            # v2 runs: map keys/values are written as the device prints them.
+            pmap, _ = normalize_port_map(pmap, rules)
+        return pmap, rules
     # Legacy runs did not record these settings; retain their fallback behavior.
     tpl = db.get(BizCompareTemplate, run.template_id) if run.template_id else None
     return _port_map_dict(db, str(run.mapping_id or "")), template_iface_normalize(tpl)
+
+
+def _batch_vendor_key(db: Session, batch_id: str) -> str:
+    """Vendor key (``huawei``/``zte``/…) for a batch, '' when unknown."""
+    from ..topology_lldp import resolve_vendor_key
+
+    batch = db.get(BizStateBatch, batch_id) if batch_id else None
+    if batch is None:
+        return ""
+    task = db.get(BizStateTask, batch.task_id) if batch.task_id else None
+    key = resolve_vendor_key(
+        batch.vendor or (task.vendor if task else ""), (task.device_type if task else "") or "",
+    )
+    return "" if key == "generic" else key
+
+
+def _run_pipeline(db: Session, run: BizCompareRun | None, sheet: dict[str, Any]) -> Pipeline:
+    """The identity pipeline a run used (or would use) for one sheet.
+
+    Snapshot v2 runs get the full pipeline; v1 and snapshot-less runs get the
+    legacy one so stored results replay exactly as they were produced.
+    """
+    sid = sheet_key(sheet)
+    snapshot = _run_config_snapshot(run) if run is not None else None
+    if snapshot is None:
+        pmap, rules = _run_transform_config(db, run) if run is not None else ({}, [])
+        return legacy_pipeline(
+            key_fields=sheet.get("key_fields") or [], iface_fields=sheet.get("iface_fields") or [],
+            compare_fields=sheet.get("compare_fields") or [], field_rules=sheet.get("field_rules"),
+            port_map=pmap, iface_normalize_rules=rules, row_filters=sheet.get("row_filters"),
+            ignore_port_changes=sheet.get("ignore_port_changes"),
+        )
+    authoritative = next(
+        (sh for sh in snapshot.get("sheets") or [] if isinstance(sh, dict) and sheet_key(sh) == sid), None,
+    )
+    cfg = authoritative or sheet
+    version = int(snapshot.get("version") or 1)
+    vendors = snapshot.get("vendors") or {}
+    return build_pipeline(
+        cfg,
+        iface_rules=(snapshot.get("template") or {}).get("iface_normalize_rules") or [],
+        port_map=dict(snapshot.get("port_map") or {}),
+        before_vendor=str(vendors.get("before") or ""),
+        after_vendor=str(vendors.get("after") or ""),
+        legacy=version < 2,
+        normalize_map=version >= 2,
+    )
 
 
 def _set_run_progress(
@@ -2458,7 +2750,6 @@ def _execute_compare_into_run(db: Session, run_id: str) -> dict[str, Any]:
     store_mode = normalize_store_unchanged(
         snapshot.get("store_unchanged") if snapshot is not None else getattr(j, "store_unchanged", None),
     )
-    pmap, norm_rules = _run_transform_config(db, run)
     unchanged_listed_total = 0
     unchanged_truncated_any = False
     unchanged_compact_any = False
@@ -2563,8 +2854,7 @@ def _execute_compare_into_run(db: Session, run_id: str) -> dict[str, Any]:
                 sheet=sheet,
                 before_batch_id=before_batch_id,
                 after_batch_id=after_batch_id,
-                port_map=pmap,
-                iface_normalize_rules=norm_rules,
+                pipeline=_run_pipeline(db, run, sheet),
                 store_unchanged=store_mode,
                 on_load_progress=_on_load,
             )
@@ -2755,6 +3045,7 @@ def _execute_compare_into_run(db: Session, run_id: str) -> dict[str, Any]:
         if snapshot is not None:
             summary_payload["config_snapshot"] = snapshot
         run = db.get(BizCompareRun, run_id) or run
+        summary_payload["purpose"] = (run.summary_json or {}).get("purpose") or "manual"
         if str(run.status or "") == "cancelled":
             return get_run(db, run.id)
         run.status = "success"
@@ -2882,7 +3173,9 @@ def cancel_compare_run(db: Session, run_id: str) -> dict[str, Any]:
     return get_run(db, run_id)
 
 
-def run_compare(db: Session, job_id: str, *, force_after_batch_id: str = "") -> dict[str, Any]:
+def run_compare(
+    db: Session, job_id: str, *, force_after_batch_id: str = "", purpose: str = "manual",
+) -> dict[str, Any]:
     """Synchronous compare (auto-compare / tests). Blocks the caller until done."""
     if _job_has_active_run(db, job_id):
         raise HTTPException(status_code=409, detail="compare_already_running")
@@ -2898,6 +3191,7 @@ def run_compare(db: Session, job_id: str, *, force_after_batch_id: str = "") -> 
             before_batch_id=ctx["before_batch_id"],
             after_batch_id=ctx["after_batch_id"],
             sheets_cfg=ctx["sheets_cfg"],
+            purpose=purpose,
         )
         return _execute_compare_into_run(db, run.id)
     finally:
@@ -2972,7 +3266,9 @@ def _sheet_csv_lines(sheet: dict[str, Any], diffs: Iterable[dict[str, Any]]) -> 
     )
     # Non-key columns already ordered Key→Compare→Display by effective_display_fields
     extra = [f for f in display if f not in key_set]
-    headers = ["kind", *keys]
+    # Interface keys also get the name as the device printed it (before side).
+    raw_cols = [k for k in keys if k in set(sheet.get("iface_fields") or [])]
+    headers = ["kind", *keys, *[f"{k}__raw_before" for k in raw_cols]]
     for f in extra:
         if f in compare_set:
             headers.append(f"{f}__pre")
@@ -2988,6 +3284,9 @@ def _sheet_csv_lines(sheet: dict[str, Any], diffs: Iterable[dict[str, Any]]) -> 
         row = [kind]
         for k in keys:
             row.append(key.get(k, pre.get(k, post.get(k, ""))))
+        raw_before = dict(d.get("raw_key_before") or {})
+        for k in raw_cols:
+            row.append(raw_before.get(k, ""))
         for f in extra:
             if f in compare_set:
                 if kind == "added":
@@ -3012,6 +3311,18 @@ def _sheet_csv(sheet: dict[str, Any]) -> str:
     return "\ufeff" + "\n".join(_sheet_csv_lines(sheet, sheet.get("diffs") or [])) + "\n"
 
 
+def _task_ok(sheets: list[dict[str, Any]], fail_count: int, any_pending: bool) -> bool | None:
+    """True/False once judged; None when data quality leaves the verdict open."""
+    if any_pending:
+        return False
+    states = [str((sh.get("summary") or {}).get("data_state") or "ok") for sh in sheets]
+    if any(st in ("suspect_parse", "not_collected") for st in states):
+        return None
+    if states and all(st == "no_data" for st in states):
+        return None
+    return fail_count == 0
+
+
 def _enrich_summary(summary: dict[str, Any], sheets: list[dict[str, Any]]) -> dict[str, Any]:
     added = int(summary.get("added") or 0)
     removed = int(summary.get("removed") or 0)
@@ -3020,16 +3331,28 @@ def _enrich_summary(summary: dict[str, Any], sheets: list[dict[str, Any]]) -> di
     before_count = int(summary.get("before_count") or 0)
     after_count = int(summary.get("after_count") or 0)
     total = added + removed + changed + unchanged
+
+    def _data_state(sh: dict[str, Any]) -> str:
+        return str((sh.get("summary") or {}).get("data_state") or "ok")
+
+    # Sheets whose side was never collected cannot be judged: their "missing"
+    # rows are a collection gap, not a business loss, so they stay out of the totals.
+    dropped = [sh for sh in sheets if _data_state(sh) == "not_collected"
+               and str(sh.get("status") or "done") not in ("pending", "running", "queued")]
+    drop_fail = sum(int((sh.get("summary") or {}).get("removed") or 0)
+                    + int((sh.get("summary") or {}).get("changed") or 0) for sh in dropped)
+    drop_ok = sum(int((sh.get("summary") or {}).get("unchanged") or 0) for sh in dropped)
     # Compare verdict: fail = missing + mismatch; success = match; added is special
-    fail_count = removed + changed
-    success_count = unchanged
+    fail_count = removed + changed - drop_fail
+    success_count = unchanged - drop_ok
     judged = fail_count + success_count
     matched = changed + unchanged
     diff_count = fail_count
+    # Nothing compared at all is "not judged" (None), never a 100% pass.
     pass_rate = (
-        compute_pass_rate(success=success_count, fail=fail_count, empty_as=100.0 if total == 0 else 0.0)
+        compute_pass_rate(success=success_count, fail=fail_count)
         if judged
-        else (100.0 if total == 0 else 0.0)
+        else (None if total == 0 else 0.0)
     )
     diff_rate = round((fail_count / judged) * 100, 1) if judged else 0.0
 
@@ -3045,8 +3368,12 @@ def _enrich_summary(summary: dict[str, Any], sheets: list[dict[str, Any]]) -> di
         sj = sf + su
         status = str(sh.get("status") or "done")
         pending = status in ("pending", "running", "queued")
+        data_state = str(ss.get("data_state") or "ok")
         sheet_cards.append(
             {
+                "data_state": data_state,
+                "data_state_reasons": list(ss.get("data_state_reasons") or []),
+                "collect_quality": ss.get("collect_quality") or {},
                 "sheet_id": sheet_key(sh),
                 "title": sheet_title(sh),
                 "metric_id": sh.get("metric_id") or "",
@@ -3063,12 +3390,8 @@ def _enrich_summary(summary: dict[str, Any], sheets: list[dict[str, Any]]) -> di
                 "diff_count": sf,
                 # Pending sheets must not look like "100% pass"
                 "pass_rate": None
-                if pending
-                else (
-                    compute_pass_rate(success=su, fail=sf, empty_as=100.0 if st == 0 else 0.0)
-                    if sj
-                    else (100.0 if st == 0 else 0.0)
-                ),
+                if pending or data_state in UNJUDGED_STATES
+                else (compute_pass_rate(success=su, fail=sf) if sj else (None if st == 0 else 0.0)),
             }
         )
 
@@ -3105,7 +3428,9 @@ def _enrich_summary(summary: dict[str, Any], sheets: list[dict[str, Any]]) -> di
         "diff_count": diff_count,
         "pass_rate": None if any_pending else pass_rate,
         "diff_rate": diff_rate,
-        "ok": False if any_pending else fail_count == 0,
+        "ok": _task_ok(sheets, fail_count, any_pending),
+        "unjudged_sheets": sum(1 for sh in sheets if _data_state(sh) in UNJUDGED_STATES),
+        "suspect_sheets": sum(1 for sh in sheets if _data_state(sh) == "suspect_parse"),
         "sheet_cards": sheet_cards,
         "top_changed_fields": top_fields,
         "duration_ms": int(summary.get("duration_ms") or 0),
@@ -3449,21 +3774,25 @@ def _load_metric_rows_for_search(
 
 def _load_search_key_groups(
     db: Session, *, batch_id: str, metric_id: str, keys: set[tuple[str, ...]],
-    match_keys: list[str], iface_fields: list[str], row_filters: list[dict[str, Any]],
-    norm_rules: list[dict[str, str]], port_map: dict[str, str],
+    match_keys: list[str], pipeline: Pipeline, side: str,
 ) -> tuple[list[dict[str, Any]], set[tuple[str, ...]]]:
     """Complete candidate key groups so a one-sided search cannot change verdicts.
 
-    Interface transforms run in Python. Other identity fields narrow the SQL
-    query. If the load budget is exceeded, omit entire groups rather than compare
-    partial groups and manufacture additions/deletions.
+    Identity rules (normalize / value map / port map) run in the pipeline, in
+    Python. Key fields they never touch narrow the SQL query. If the load budget
+    is exceeded, omit entire groups rather than compare partial groups and
+    manufacture additions/deletions.
     """
     from ..models import BizStateMetricRow
 
     model = BizStateLldpNeighbor if metric_id == "lldp_neighbor" else BizStateMetricRow
-    invariant = [f for f in match_keys if f not in iface_fields]
+    # Narrowing compares raw SQL text, so only fields no rule rewrites may be used,
+    # and only when key tuples line up 1:1 with ``match_keys`` (no mapped/unmapped marker).
+    invariant = [] if pipeline.ignores_ports_by_policy() else [
+        f for f in match_keys if f not in pipeline._transformed  # noqa: SLF001
+    ]
     positions = [match_keys.index(f) for f in invariant]
-    coarse = sorted({tuple(k[i] for i in positions) for k in keys})
+    coarse = sorted({tuple(k[i] for i in positions) for k in keys}) if invariant else [()]
     out: list[dict[str, Any]] = []
     complete: set[tuple[str, ...]] = set()
     # Bound memory even when a candidate identifies a very large duplicate group.
@@ -3471,7 +3800,7 @@ def _load_search_key_groups(
     for start in range(0, len(coarse), 100):
         group = coarse[start:start + 100]
         group_set = set(group)
-        target = {k for k in keys if tuple(k[i] for i in positions) in group_set}
+        target = {k for k in keys if tuple(k[i] for i in positions) in group_set} if invariant else set(keys)
         q = db.query(model).filter(model.batch_id == batch_id)
         if metric_id == "lldp_neighbor":
             q = q.order_by(model.id.asc())
@@ -3497,13 +3826,10 @@ def _load_search_key_groups(
             )
             row = {**data, "_netx": {"row_id": r.id}}
             db.expunge(r)
-            if row_filters and not all(row_matches_filter(row, f) for f in row_filters):
+            norm = pipeline.normalize(row, side)
+            if not pipeline.accepts(row, norm, side):
                 continue
-            normalized = apply_iface_normalize_rows(
-                [row], iface_fields=iface_fields, rules=norm_rules,
-            )[0]
-            mapped = apply_port_map(normalized, iface_fields=iface_fields, port_map=port_map)
-            if row_key(mapped, match_keys) in target:
+            if pipeline.key_of(norm, side, match_keys)[1] in target:
                 out.append(row)
     return out, complete
 
@@ -3566,13 +3892,15 @@ def _live_search_sheet_diffs(
     ignore_ports = sheet.get("ignore_port_changes")
     if ignore_ports is not None:
         ignore_ports = bool(ignore_ports)
-    pmap, norm_rules = _run_transform_config(db, run)
+    pipeline = _run_pipeline(db, run, sheet)
+    if pipeline.legacy and not pipeline.row_filters and row_filters:
+        pipeline.row_filters = [dict(f) for f in row_filters if isinstance(f, dict)]
 
     before_rows, trunc_b = _load_metric_rows_for_search(
         db,
         batch_id=str(run.before_batch_id or ""),
         metric_id=mid_src,
-        row_filters=row_filters,
+        row_filters=pipeline.pushdown_filters("before"),
         key_fields=key_fields,
         kw=free_kw,
         field_q=merged_q,
@@ -3581,49 +3909,46 @@ def _live_search_sheet_diffs(
         db,
         batch_id=str(run.after_batch_id or ""),
         metric_id=mid_src,
-        row_filters=row_filters,
+        row_filters=pipeline.pushdown_filters("after"),
         key_fields=key_fields,
         kw=free_kw,
         field_q=merged_q,
     )
     match_keys = list((sheet.get("summary") or {}).get("match_key_fields") or key_fields)
-    if ignore_ports is True and not pmap:
+    if ignore_ports is True and not pipeline.port_map:
         match_keys = [f for f in key_fields if f not in iface_fields] or key_fields
     keys: set[tuple[str, ...]] = set()
-    for rows, mapping in ((before_rows, pmap), (after_rows, {})):
-        for row in apply_iface_normalize_rows(rows, iface_fields=iface_fields, rules=norm_rules):
-            keys.add(row_key(apply_port_map(row, iface_fields=iface_fields, port_map=mapping), match_keys))
+    for rows, side in ((before_rows, "before"), (after_rows, "after")):
+        for raw, norm in pipeline.prepare(rows, side):
+            keys.add(pipeline.key_of(norm, side, match_keys)[1])
     before_rows, complete_b = _load_search_key_groups(
         db, batch_id=str(run.before_batch_id or ""), metric_id=mid_src, keys=keys,
-        match_keys=match_keys, iface_fields=iface_fields, row_filters=row_filters,
-        norm_rules=norm_rules, port_map=pmap,
+        match_keys=match_keys, pipeline=pipeline, side="before",
     )
     after_rows, complete_a = _load_search_key_groups(
         db, batch_id=str(run.after_batch_id or ""), metric_id=mid_src, keys=keys,
-        match_keys=match_keys, iface_fields=iface_fields, row_filters=row_filters,
-        norm_rules=norm_rules, port_map={},
+        match_keys=match_keys, pipeline=pipeline, side="after",
     )
     complete = complete_b & complete_a
-    def keep_complete(rows: list[dict[str, Any]], mapping: dict[str, str]) -> list[dict[str, Any]]:
-        normalized = apply_iface_normalize_rows(rows, iface_fields=iface_fields, rules=norm_rules)
-        return [orig for orig, norm in zip(rows, normalized) if row_key(
-            apply_port_map(norm, iface_fields=iface_fields, port_map=mapping), match_keys,
-        ) in complete]
-    before_rows = keep_complete(before_rows, pmap)
-    after_rows = keep_complete(after_rows, {})
+
+    def keep_complete(rows: list[dict[str, Any]], side: str) -> list[dict[str, Any]]:
+        return [raw for raw, norm in pipeline.prepare(rows, side)
+                if pipeline.key_of(norm, side, match_keys)[1] in complete]
+
+    before_rows = keep_complete(before_rows, "before")
+    after_rows = keep_complete(after_rows, "after")
     result = compare_rows(
         before_rows=before_rows,
         after_rows=after_rows,
         key_fields=key_fields,
         iface_fields=iface_fields,
         compare_fields=compare_fields,
-        port_map=pmap,
         field_rules=field_rules,
-        iface_normalize_rules=norm_rules,
-        ignore_port_changes=(match_keys != key_fields) if not pmap else False,
         include_unchanged=True,
         unchanged_limit=None,
         compact_unchanged=False,
+        pipeline=pipeline,
+        match_keys_override=match_keys,
     )
     kind_n = (kind or "diff").strip().lower()
     filtered = [
@@ -3636,7 +3961,7 @@ def _live_search_sheet_diffs(
     filtered = filtered[:_LIVE_SEARCH_RESULT_CAP]
     total = len(filtered)
     start = (page - 1) * page_size
-    page_items = filtered[start : start + page_size]
+    page_items = _attach_raw_key_before(filtered[start : start + page_size], key_fields)
     return {
         "total": total,
         "page": page,
@@ -3844,7 +4169,7 @@ def export_run_zip(db: Session, run_id: str) -> bytes:
                 csv_file.write(b"\xef\xbb\xbf")
                 for line in _sheet_csv_lines(sheet, _iter_sheet_diffs(db, run_id, sid)):
                     csv_file.write((line + "\n").encode("utf-8"))
-        sum_lines = ["metric_id,mode,before,after,added,removed,changed,unchanged,diff_count,pass_rate"]
+        sum_lines = ["metric_id,mode,before,after,added,removed,changed,unchanged,diff_count,pass_rate,data_state"]
         for card in list(s.get("sheet_cards") or []):
             sum_lines.append(
                 ",".join(
@@ -3860,6 +4185,7 @@ def export_run_zip(db: Session, run_id: str) -> bytes:
                         card.get("unchanged"),
                         card.get("diff_count"),
                         card.get("pass_rate"),
+                        card.get("data_state") or "ok",
                     )
                 )
             )
@@ -3927,7 +4253,7 @@ def try_auto_compare_for_task(db: Session, task_id: str, batch_id: str) -> int:
         if not j.before_batch_id:
             continue
         try:
-            run_compare(db, j.id, force_after_batch_id=batch_id)
+            run_compare(db, j.id, force_after_batch_id=batch_id, purpose="auto")
             n += 1
         except HTTPException as exc:
             if int(getattr(exc, "status_code", 0) or 0) == 409:

@@ -61,6 +61,18 @@ def _out(row: BizMonitorTemplate, compare_name: str = "", *, db: Session | None 
     return out
 
 
+def _has_legacy_port_and_group(override: dict[str, Any]) -> bool:
+    """True when a success rule's old side demands admin down AND phy down."""
+    legacy = _port_old_down_groups(legacy_and=True)[0]
+    for rule in override.get("success") or []:
+        if not isinstance(rule, dict):
+            continue
+        for group in rule.get("old_groups") or []:
+            if group == legacy:
+                return True
+    return False
+
+
 def validate_sheet_overrides(
     db: Session,
     *,
@@ -94,6 +106,9 @@ def validate_sheet_overrides(
     for ov in overrides:
         sid = str(ov.get("sheet_id") or "").strip()
         mid = str(ov.get("metric_id") or "").strip()
+        if _has_legacy_port_and_group(ov):
+            warnings.append({"sheet_id": sid, "metric_id": mid,
+                             "reason": "port_success_legacy_and_semantics"})
         if sid:
             if sid not in sheet_ids:
                 warnings.append(
@@ -228,8 +243,28 @@ def _success_stateful(
     }
 
 
-def preset_override_for_metric(metric_id: str, *, sheet_id: str = "") -> dict[str, Any]:
+_PORT_ADMIN_DOWN = {"type": "value", "field": "admin", "op": "in", "value": ["down"]}
+_PORT_PHY_DOWN = {"type": "value", "field": "phy", "op": "in", "value": ["down"]}
+
+
+def _port_old_down_groups(*, legacy_and: bool = False) -> list[list[dict[str, Any]]]:
+    """Old-side "port is out of service" groups (OR of groups, AND within one).
+
+    A fibre pulled without ``shutdown`` leaves admin up / phy down, so either
+    signal alone counts. ``legacy_and`` is the pre-A4 form requiring both.
+    """
+    if legacy_and:
+        return [[dict(_PORT_ADMIN_DOWN), dict(_PORT_PHY_DOWN)]]
+    return [[dict(_PORT_PHY_DOWN)], [dict(_PORT_ADMIN_DOWN)]]
+
+
+def preset_override_for_metric(
+    metric_id: str, *, sheet_id: str = "", legacy_port_and: bool = False,
+) -> dict[str, Any]:
     """Default dual-verdict overlay for a compare-template sheet.
+
+    ``legacy_port_and`` rebuilds the pre-A4 port preset (old side must be
+    admin down AND phy down) so stored copies can be recognised and upgraded.
 
     ``metric_id`` is the collected source table; ``sheet_id`` identifies a
     filtered split (e.g. bgp_peer.vpnv4). Presets key off the source metric.
@@ -244,6 +279,8 @@ def preset_override_for_metric(metric_id: str, *, sheet_id: str = "") -> dict[st
     look = mid.split(".", 1)[0] if "." in mid else mid
 
     def _out(body: dict[str, Any]) -> dict[str, Any]:
+        if _scope_by_map_default_off(look):
+            body["scope_by_port_map"] = False
         body["metric_id"] = mid or look
         if sid and sid != (mid or look):
             body["sheet_id"] = sid
@@ -261,12 +298,7 @@ def preset_override_for_metric(metric_id: str, *, sheet_id: str = "") -> dict[st
                 "up_values": ["up"],
                 "success": [
                     _success_stateful(
-                        old_down_groups=[
-                            [
-                                {"type": "value", "field": "admin", "op": "in", "value": ["down"]},
-                                {"type": "value", "field": "phy", "op": "in", "value": ["down"]},
-                            ]
-                        ],
+                        old_down_groups=_port_old_down_groups(legacy_and=legacy_port_and),
                         new_up_conds=up,
                     )
                 ],
@@ -369,6 +401,8 @@ DEFAULT_MONITOR_TEMPLATE_NAME = "默认割接监控"
 def ensure_default_monitor_templates(db: Session) -> None:
     """Seed once when monitor-template table is empty — one template on the full status compare."""
     if db.query(BizMonitorTemplate.id).limit(1).first():
+        upgrade_legacy_port_overrides(db)
+        fill_scope_by_port_map(db)
         return
     cmp_svc.ensure_default_templates(db)
     zte = (
@@ -403,9 +437,68 @@ def ensure_default_monitor_templates(db: Session) -> None:
     db.commit()
 
 
-def default_port_monitor_template_id(db: Session) -> str:
-    """Ensure seeds exist and return the default monitor template id."""
-    ensure_default_monitor_templates(db)
+def _scope_by_map_default_off(name: str) -> bool:
+    """BGP / pseudowire sheets keep the batch expect picker; a port map does not scope them."""
+    low = str(name or "").lower()
+    return "bgp" in low or "pw" in low or "pseudowire" in low
+
+
+def fill_scope_by_port_map(db: Session) -> int:
+    """Make the old name-based default explicit on stored overrides (one-off, idempotent)."""
+    changed = 0
+    for row in db.query(BizMonitorTemplate).all():
+        out = []
+        touched = False
+        for ov in list(row.sheet_overrides_json or []):
+            if (isinstance(ov, dict) and "scope_by_port_map" not in ov
+                    and _scope_by_map_default_off(f"{ov.get('metric_id') or ''} {ov.get('sheet_id') or ''}")):
+                ov = {**ov, "scope_by_port_map": False}
+                touched = True
+            out.append(ov)
+        if touched:
+            row.sheet_overrides_json = out
+            row.updated_at = _utcnow()
+            changed += 1
+    if changed:
+        db.commit()
+    return changed
+
+
+def upgrade_legacy_port_overrides(db: Session) -> int:
+    """Rewrite stored port overrides that are exactly the pre-A4 preset (AND semantics).
+
+    Field-by-field equality only: anything a user customised is left alone and
+    surfaces ``port_success_legacy_and_semantics`` in ``override_warnings``.
+    """
+    changed = 0
+    for row in db.query(BizMonitorTemplate).all():
+        overrides = list(row.sheet_overrides_json or [])
+        out: list[Any] = []
+        touched = False
+        for ov in overrides:
+            if isinstance(ov, dict):
+                mid = str(ov.get("metric_id") or "").strip()
+                sid = str(ov.get("sheet_id") or "").strip()
+                if (mid or sid).split(".", 1)[0] == PORT_METRIC_ID and ov == preset_override_for_metric(
+                    mid, sheet_id=sid, legacy_port_and=True,
+                ):
+                    out.append(preset_override_for_metric(mid, sheet_id=sid))
+                    touched = True
+                    continue
+            out.append(ov)
+        if touched:
+            row.sheet_overrides_json = out
+            row.updated_at = _utcnow()
+            changed += 1
+    if changed:
+        db.commit()
+    return changed
+
+
+def default_port_monitor_template_id(db: Session, *, seed: bool = True) -> str:
+    """Return the default monitor template id, seeding the built-ins first unless ``seed=False``."""
+    if seed:
+        ensure_default_monitor_templates(db)
     for name in (
         DEFAULT_MONITOR_TEMPLATE_NAME,
         "ZTE 状态割接监控",

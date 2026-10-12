@@ -12,7 +12,7 @@ const browser = await chromium.launch({ headless: true, channel: process.env.NET
 const page = await browser.newPage({ viewport: { width: 1440, height: 1080 } });
 const errors = [], passed = [], requests = [], writes = [];
 page.on("pageerror", (e) => errors.push(e.message));
-let liveRunId = "live-1", uncertain = false, failBoard = false, delayedSheet = "", sampleAgeSec = 0;
+let liveRunId = "live-1", uncertain = false, failBoard = false, delayedSheet = "", sampleAgeSec = 0, richCards = false, evalPolls = 0;
 const now = new Date().toISOString();
 const project = { id: "p", name: "核心 PE 替换", old_task_id: "op", new_task_id: "np", old_hf_task_id: "oh", new_hf_task_id: "nh", old_baseline_batch_id: "ob", new_baseline_batch_id: "nb", monitor_template_id: "mt", hf_interval_sec: 60, status: "active", created_at: now,
   collect_metric_ids_effective: ["arp"], old_task: { id: "op", ne_name: "PE-OLD", ne_ip: "10.0.0.1" }, new_task: { id: "np", ne_name: "PE-NEW", ne_ip: "10.0.0.2" } };
@@ -25,7 +25,14 @@ function run(rid, pid = "p") {
   const sampleTime = sampleAgeSec ? new Date(Date.now() - sampleAgeSec * 1000).toISOString() : now;
   return { id: rid, purpose: rid === "hist" ? "manual" : "auto", created_at: now,
     summary: { progress: { ok: pid === "p2" ? 3 : 99, total: pid === "p2" ? 3 : 101 }, anomaly: 1, anomaly_outside_expect: 1, coverage_complete: !uncertain, duplicate_keys: uncertain ? 2 : 0,
-      sheet_cards: sheets.map((s) => ({ ...s, progress_ok: 49, progress_total: 50, anomaly: 0, old_collected_at: sampleTime, new_collected_at: sampleTime, age_limit_sec: 180, sample_issues: uncertain ? ["sample_skew"] : [] })) } };
+      duplicate_warnings: richCards ? [{ sheet_id: "isis", title: "ISIS 邻居", count: 2, examples: ["a|b"] }] : [],
+      sheet_cards: [
+        ...sheets.map((s) => ({ ...s, progress_ok: 49, progress_total: 50, anomaly: 0, old_collected_at: sampleTime, new_collected_at: sampleTime, age_limit_sec: 180, sample_issues: uncertain ? ["sample_skew"] : [] })),
+        ...(richCards ? [
+          { sheet_id: "routes", metric_id: "bgp_route", title: "BGP 路由", manual_pending: true, progress_ok: 0, progress_total: 0, anomaly: 0 },
+          { sheet_id: "v6", metric_id: "bgp_peer", title: "BGP IPv6", not_collected: true, data_state: "not_collected", data_state_reasons: ["new:slice_not_collected"], progress_ok: 0, progress_total: 0, anomaly: 0 },
+        ] : []),
+      ] } };
 }
 await page.route("**/v1/**", async (route) => {
   const req = route.request(), url = new URL(req.url()), p = url.pathname;
@@ -38,6 +45,20 @@ await page.route("**/v1/**", async (route) => {
     project.collect_metric_ids_effective = project.collect_metric_ids;
     data = project;
   }
+  else if (req.method() === "POST" && p.endsWith("/batches/wave/evaluate")) { evalPolls = 0; data = { id: "async-run", status: "running", purpose: "manual", summary: { progress: { phase: "queued" } } }; }
+  else if (p.endsWith("/runs/async-run")) {
+    evalPolls += 1;
+    data = evalPolls < 3
+      ? { id: "async-run", status: "running", summary: { progress: { phase: "evaluating", sheet_index: 1, sheet_total: 2, sheet_title: "ARP · 公网" } } }
+      : { ...run("async-run"), status: "success" };
+  }
+  else if (p.endsWith("/p/preflight")) data = {
+    verdict: "risk", risk_reasons: ["suspect_unmapped"], coverage: { mapped: 2, suspect_unmapped: 1, identity_same_name: 0, rate: 66.7 },
+    mapping: { pairs: 2, unused_map_keys: ["gei-9"], map_targets_missing_on_after: [], n_to_1_targets: [] },
+    sheets: [{ sheet_id: "ifb", title: "端口状态", metric_id: "interface_brief", before_count: 3, after_count: 2, data_state: "ok",
+      counts: { mapped_exact: 2, mapped_by_parent: 0, identity_same_name: 0, suspect_unmapped: 1 }, suspect_unmapped: ["gei-7"], suspect_unmapped_total: 1 }],
+    command_coverage: { only_before: ["bgp_peer{afi=ipv4}"], only_after: [] },
+  };
   else if (p.endsWith("/p/ensure-highfreq")) data = { project, hf_status: "running", collect: { old: [], new: [] } };
   else if (req.method() === "POST" && p.endsWith("/p/batches")) { writes.push(req.postDataJSON()); data = { ...wave, id: "created-wave", ...req.postDataJSON() }; }
   else if (p.endsWith("/biz-migration/projects")) data = { items: [project, second] };
@@ -197,6 +218,23 @@ try {
   assert.equal(await table().locator("tbody tr").count(), 100);
   passed.push("refresh failure keeps snapshot with explicit error");
   failBoard = false;
+  // H2: evaluation is computed in the background; the page polls the run and shows progress.
+  const evalPost = page.waitForRequest((r) => r.method() === "POST" && r.url().endsWith("/batches/wave/evaluate"));
+  await dialog().getByRole("button", { name: "立即判定", exact: true }).first().click();
+  await evalPost;
+  await dialog().getByTestId("eval-progress").waitFor();
+  assert.match(await dialog().getByTestId("eval-progress").textContent(), /1\/2|排队/);
+  await dialog().getByTestId("eval-progress").waitFor({ state: "detached", timeout: 15000 });
+  assert.ok(requests.filter((r) => r.p.endsWith("/runs/async-run")).length >= 3, "run polled until it settled");
+  passed.push("evaluation polls a background run", "progress shown while the run computes");
+  // H3/V2/H5 states on the board.
+  richCards = true;
+  await dialog().getByRole("button", { name: "刷新看板", exact: true }).click();
+  await dialog().getByTestId("manual-pending-banner").waitFor();
+  assert.match(await dialog().getByTestId("not-collected-banner").textContent(), /BGP IPv6/);
+  assert.match(await dialog().getByTestId("duplicate-warning-banner").textContent(), /ISIS 邻居/);
+  richCards = false;
+  passed.push("manual route table is pending, not failed", "uncollected slice is not judged", "out-of-scope duplicate keys are warnings");
   await page.setViewportSize({ width: 390, height: 1000 });
   assert.ok(await dialog().locator(".bm-live-kpis").evaluate((el) => el.scrollWidth <= el.clientWidth + 1));
   assert.ok(await dialog().locator(".bm-board").evaluate((el) => el.scrollWidth <= el.clientWidth + 1));
@@ -215,6 +253,14 @@ try {
   await page.waitForTimeout(500);
   assert.deepEqual(writes.at(-1).collect_metric_ids, ['arp']);
   passed.push("route can be selected from comparison items", "route has manual mode instead of periodic interval", "dynamic metric additions saved explicitly", "removed metric no longer selected");
+  // B5: mapping pre-flight on the portrait baselines.
+  await dialog().getByRole("button", { name: "映射预检", exact: true }).click();
+  const report = dialog().getByTestId("preflight-report");
+  await report.waitFor();
+  assert.match(await report.textContent(), /疑似漏配/);
+  assert.match(await report.textContent(), /gei-7/);
+  assert.match(await report.textContent(), /bgp_peer\{afi=ipv4\}/);
+  passed.push("pre-flight lists suspected unmapped ports and collection differences");
   await dialog().getByRole("button", { name: "割接批次", exact: true }).click();
   await page.waitForFunction(() => document.querySelectorAll('.bm-expect-table tbody tr').length === 100);
   await dialog().getByRole("checkbox", { name: "ARP · 公网 业务 0", exact: true }).check();
@@ -243,6 +289,7 @@ try {
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ passed, errors }, null, 2));
 } catch (error) {
+  console.log("FAILED:", String(error.message).split("\n").slice(0, 6).join(" | "));
   await page.screenshot({ path: path.join(output, "cutover-monitor-failure.png"), fullPage: true });
   console.log(JSON.stringify(await page.locator('.bm-board').evaluate((el) => {
     const layout = [];

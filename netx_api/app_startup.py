@@ -171,6 +171,14 @@ def run_api_startup() -> None:
         except Exception:
             _log.exception("startup: biz compare recovery failed")
         try:
+            from .biz_migration.service import recover_interrupted_evaluations_on_startup
+
+            n_eval = recover_interrupted_evaluations_on_startup(db)
+            if n_eval:
+                _log.info("startup: cancelled %s interrupted cutover evaluation(s)", n_eval)
+        except Exception:
+            _log.exception("startup: cutover evaluation recovery failed")
+        try:
             from .port_traffic_migrate import backfill_port_traffic_series
 
             backfill_port_traffic_series(db)

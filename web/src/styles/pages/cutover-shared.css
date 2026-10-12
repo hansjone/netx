@@ -1,0 +1,167 @@
+/* Shared by 业务对比 and 割接监控: pre-flight report, data-state badges, value-map editor. */
+
+.cx-preflight {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid rgb(var(--nx-ok-rgb) / 0.4);
+  border-radius: 6px;
+  background: rgb(var(--nx-ok-rgb) / 0.06);
+  min-width: 0;
+}
+
+.cx-preflight.is-risk {
+  border-color: rgb(var(--nx-warn-rgb) / 0.5);
+  background: rgb(var(--nx-warn-rgb) / 0.07);
+}
+
+.cx-preflight__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 14px;
+}
+
+.cx-preflight__block h5,
+.cx-preflight__block h6 {
+  margin: 0 0 4px;
+  font-size: 12px;
+}
+
+.cx-preflight__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  max-height: 140px;
+  overflow: auto;
+  font-size: 12px;
+}
+
+.cx-preflight__scroll {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.cx-preflight code {
+  overflow-wrap: anywhere;
+}
+
+.cx-preflight__table {
+  font-size: 12px;
+}
+
+.cx-preflight__table details summary {
+  cursor: pointer;
+}
+
+.cx-state {
+  display: inline-block;
+  padding: 0 6px;
+  border-radius: 3px;
+  font-size: 11px;
+  line-height: 18px;
+  border: 1px solid rgb(var(--nx-ok-rgb) / 0.4);
+  color: var(--nx-ok);
+}
+
+.cx-state--no_data,
+.cx-state--not_collected,
+.cx-state--manual_pending {
+  border-color: var(--nx-line);
+  color: var(--nx-text-muted);
+}
+
+.cx-state--suspect_parse {
+  border-color: rgb(var(--nx-warn-rgb) / 0.55);
+  color: var(--nx-warn);
+}
+
+.cx-state__why {
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.cx-banner {
+  margin: 0;
+  padding: 6px 10px;
+  border-left: 3px solid rgb(var(--nx-warn-rgb) / 0.8);
+  background: rgb(var(--nx-warn-rgb) / 0.08);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.cx-rawkey {
+  display: block;
+  font-size: 11px;
+  color: var(--nx-text-muted);
+}
+
+.ct-valuemap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 150px;
+}
+
+.ct-valuemap__text {
+  min-height: 44px;
+}
+
+.ct-valuemap__text.is-invalid {
+  border-color: var(--nx-bad);
+}
+
+.ct-valuemap__err {
+  color: var(--nx-bad-text);
+  font-size: 11px;
+}
+
+.ct-sheet-options {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px 16px;
+}
+
+.ct-sheet-options__check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.bs-cmp-mapping__status.is-error {
+  color: var(--nx-bad-text);
+}
+
+.bs-cmp-mapping__views {
+  display: flex;
+  gap: 10px;
+}
+
+.bs-cmp-mapping__views .is-active {
+  font-weight: 600;
+  text-decoration: underline;
+}
+
+.cx-maptable {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 260px;
+  overflow: auto;
+}
+
+.cx-maptable__input {
+  width: 100%;
+  min-width: 90px;
+}
+
+.cx-maptable__row.is-duplicate,
+.cx-maptable__row.is-invalid {
+  background: rgb(var(--nx-bad-rgb) / 0.08);
+}

@@ -144,16 +144,34 @@ class HfDecoupleFlowTests(unittest.TestCase):
         self.assertNotEqual(out["old_hf_task_id"], "old_p")
         self.assertNotEqual(out["new_hf_task_id"], "new_p")
 
-    def test_same_interval_metrics_are_separate_paired_tasks(self) -> None:
+    def test_same_interval_light_metrics_share_one_paired_task(self) -> None:
         out = self._create_project(collect_metric_ids=["interface_brief", "arp"])
         old, new = out["old_hf_bindings"], out["new_hf_bindings"]
-        self.assertEqual(len(old), 2)
-        self.assertEqual({b["interval_sec"] for b in old}, {60})
-        for o, n in zip(old, new):
-            self.assertEqual(len(o["metric_ids"]), 1)
-            self.assertTrue(o["collect_group_id"])
-            self.assertEqual(o["collect_group_id"], n["collect_group_id"])
-            self.assertEqual(o["metric_ids"], n["metric_ids"])
+        self.assertEqual((len(old), len(new)), (1, 1))
+        self.assertEqual(old[0]["metric_ids"], ["interface_brief", "arp"])
+        self.assertEqual(old[0]["interval_sec"], 60)
+        self.assertTrue(old[0]["collect_group_id"])
+        self.assertEqual(old[0]["collect_group_id"], new[0]["collect_group_id"])
+        from netx_api.models import BizStateTaskItem
+
+        items = self.db.query(BizStateTaskItem).filter(BizStateTaskItem.task_id == old[0]["task_id"]).count()
+        self.assertEqual(items, 2)  # one SSH login runs both commands
+
+    def test_different_interval_or_lane_or_manual_route_stay_apart(self) -> None:
+        out = self._create_project(collect_metric_ids=["interface_brief", "arp", "interface_detail", "ip_route"],
+                                   metric_interval_sec={"arp": 300})
+        by_metrics = {tuple(b["metric_ids"]): b for b in out["old_hf_bindings"]}
+        self.assertEqual(set(by_metrics), {("interface_brief",), ("arp",), ("interface_detail",), ("ip_route",)})
+        self.assertEqual(by_metrics[("arp",)]["interval_sec"], 300)
+        self.assertTrue(by_metrics[("ip_route",)]["manual_only"])
+        self.assertEqual(len({b["collect_group_id"] for b in out["old_hf_bindings"]}), 4)
+
+    def test_pair_lookup_works_for_a_metric_inside_a_merged_task(self) -> None:
+        out = self._create_project(collect_metric_ids=["interface_brief", "arp"])
+        proj = self.db.get(BizMigrationProject, out["id"])
+        self.assertEqual(mig._hf_task_id_for_metric(proj, "old", "arp"), out["old_hf_bindings"][0]["task_id"])
+        self.assertEqual(mig._hf_task_id_for_metric(proj, "new", "interface_brief"),
+                         out["new_hf_bindings"][0]["task_id"])
 
     def test_dynamic_routes_manual_only_and_removal_cancels_queued_pairs(self) -> None:
         from netx_api.models import BizStateTaskItem, BizStateTaskItemBinding
@@ -563,3 +581,77 @@ class HfDecoupleFlowTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SliceUnionAndSameDeviceTests(HfDecoupleFlowTests):
+    """V2 (both devices collect the same slices) and H7 (same device on both sides)."""
+
+    def _portrait_items(self, task_id, *profile_ids):
+        from netx_api.models import BizStateTaskItem
+
+        for i, pid in enumerate(profile_ids):
+            self.db.add(BizStateTaskItem(id=f"{task_id}-{i}", task_id=task_id, source_profile_id=pid,
+                                         kind="catalog", enabled=True, sort_order=i))
+        self.db.commit()
+
+    def _hf_profiles(self, task_id):
+        from netx_api.models import BizStateTaskItem
+
+        return sorted(r.source_profile_id for r in
+                      self.db.query(BizStateTaskItem).filter(BizStateTaskItem.task_id == task_id))
+
+    def test_union_gives_the_device_that_lacks_a_slice_this_vendors_profile(self) -> None:
+        old = [{"source_profile_id": "zte.bgp_ipv4_summary", "bindings": []},
+               {"source_profile_id": "zte.bgp_vpnv4_summary", "bindings": []}]
+        new = [{"source_profile_id": "zte.bgp_vpnv4_summary", "bindings": []}]
+        old2, new2 = mig._union_slice_items("bgp_peer", old, new, "zte", "zte")
+        self.assertEqual({i["source_profile_id"] for i in new2}, {"zte.bgp_ipv4_summary", "zte.bgp_vpnv4_summary"})
+        self.assertEqual(old2, old)
+
+    def test_missing_vendor_profile_is_a_clear_error_not_a_silent_gap(self) -> None:
+        old = [{"source_profile_id": "zte.bgp_ipv4_summary", "bindings": []}]
+        new = [{"source_profile_id": "zte.bgp_vpnv4_summary", "bindings": []}]
+        with self.assertRaises(Exception) as ctx:
+            mig._union_slice_items("bgp_peer", old, new, "zte", "huawei")
+        self.assertEqual(ctx.exception.detail, "no_profile_for_slice:bgp_peer:afi=ipv4:huawei")
+
+    def test_wholemetric_profiles_need_no_union(self) -> None:
+        item = [{"source_profile_id": "zte.interface_brief", "bindings": []}]
+        self.assertEqual(mig._union_slice_items("interface_brief", item, [], "zte", "zte"), (item, []))
+
+    def test_project_hf_tasks_collect_the_union_of_both_portraits(self) -> None:
+        self._portrait_items("old_p", "zte.bgp_ipv4_summary", "zte.bgp_vpnv4_summary")
+        self._portrait_items("new_p", "zte.bgp_vpnv4_summary")
+        out = self._create_project(collect_metric_ids=["bgp_peer"])
+        want = ["zte.bgp_ipv4_summary", "zte.bgp_vpnv4_summary"]
+        self.assertEqual(self._hf_profiles(out["old_hf_bindings"][0]["task_id"]), want)
+        self.assertEqual(self._hf_profiles(out["new_hf_bindings"][0]["task_id"]), want)
+
+    def test_same_device_project_uses_one_task_for_both_sides(self) -> None:
+        self.new_portrait.ne_id = self.old_portrait.ne_id
+        self.db.commit()
+        out = self._create_project(collect_metric_ids=["interface_brief", "arp"])
+        old, new = out["old_hf_bindings"], out["new_hf_bindings"]
+        self.assertEqual(len(old), 1)
+        self.assertEqual(old[0]["task_id"], new[0]["task_id"])
+        self.assertEqual(old[0]["collect_group_id"], new[0]["collect_group_id"])
+        self.assertEqual(self.db.query(BizStateTask).filter(BizStateTask.purpose == mig.PURPOSE_CUTOVER_HF).count(), 1)
+
+    def test_same_device_sample_is_that_devices_latest_finished_round(self) -> None:
+        self.new_portrait.ne_id = self.old_portrait.ne_id
+        self.db.commit()
+        out = self._create_project(collect_metric_ids=["interface_brief"])
+        proj = self.db.get(BizMigrationProject, out["id"])
+        tid = out["old_hf_bindings"][0]["task_id"]
+        self.assertEqual(mig._current_pair_for_metric(self.db, proj, "interface_brief")[2]["sample_issues"],
+                         ["collect_pair_missing"])
+        batch = self._mk_batch("solo-1", tid)
+        old, new, meta = mig._current_pair_for_metric(self.db, proj, "interface_brief")
+        self.assertIs(old, new)
+        self.assertEqual(old.id, batch.id)
+        self.assertEqual(meta["old_collect_status"], "success")
+
+    def test_two_devices_are_still_rejected_when_they_are_in_fact_one(self) -> None:
+        # different NE ids but resolving to one task id must keep failing loudly
+        out = self._create_project(collect_metric_ids=["interface_brief"])
+        self.assertNotEqual(out["old_hf_bindings"][0]["task_id"], out["new_hf_bindings"][0]["task_id"])

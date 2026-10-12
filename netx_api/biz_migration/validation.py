@@ -23,6 +23,8 @@ def validate_monitor_rules(defaults: Any, overrides: Any) -> None:
         if ident in seen:
             fail(path + ".duplicate")
         seen.add(ident)
+        if ov.get("scope_by_port_map") is not None and not isinstance(ov["scope_by_port_map"], bool):
+            fail(path + ".scope_by_port_map")
         for key in ("status_fields", "up_values", "down_values"):
             if key in ov and (not isinstance(ov[key], list) or any(not str(v).strip() for v in ov[key])):
                 fail(path + "." + key)

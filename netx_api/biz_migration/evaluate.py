@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..biz_state.compare_engine import apply_port_map, compare_rows
+from ..biz_state.compare_engine import apply_port_map, compare_rows, key_tuple
 from ..biz_state.compare_rules import (
     effective_compare_fields, field_rule_map, scalar_text, values_equal,
 )
@@ -756,10 +756,10 @@ def build_diff_index_from_compare(result: dict[str, Any]) -> dict[str, dict[str,
             continue
         key = d.get("key")
         if isinstance(key, dict):
-            key_list = [str(v) for v in key.values()]
+            key_list = [scalar_text(v).strip() for v in key.values()]
             ks = _key_str(key_list)
         elif isinstance(key, (list, tuple)):
-            key_list = [str(x) for x in key]
+            key_list = [scalar_text(x).strip() for x in key]
             ks = _key_str(key_list)
         else:
             ks = str(key or "")
@@ -801,17 +801,18 @@ def expect_keys_for_metric(
     return keys
 
 
-def _map_defines_iface_expect(metric_id: str, iface_fields: list[str], port_map: dict[str, str]) -> bool:
-    """Iface sheets: a non-empty port map is the expect scope.
+def _map_defines_iface_expect(
+    iface_fields: list[str], port_map: dict[str, str], scope_by_port_map: bool | None = None,
+) -> bool:
+    """Whether a non-empty port map is this sheet's expect scope.
 
-    BGP / PW keep the batch expect picker even if a column is marked iface.
+    The sheet override decides (``scope_by_port_map``); the built-in presets set it to
+    false for BGP / pseudowire sheets, which keep the batch expect picker. Unset means
+    "an interface sheet with a map is scoped by the map".
     """
     if not port_map or not iface_fields:
         return False
-    mid = str(metric_id or "").strip().lower()
-    if "bgp" in mid or "pw" in mid or "pseudowire" in mid:
-        return False
-    return True
+    return True if scope_by_port_map is None else bool(scope_by_port_map)
 
 
 def _iface_values(key_str: str, *, key_fields: list[str], iface_fields: list[str]) -> list[str]:
@@ -1022,11 +1023,14 @@ def row_match_key(
     key_fields: list[str],
     iface_fields: list[str],
     rules: list[dict[str, str]] | None,
+    normalizer: Any = None,
 ) -> str:
     from ..biz_state.iface_normalize import apply_iface_normalize
 
     data = strip_netx(row)
-    if iface_fields and rules:
+    if normalizer is not None:
+        data = normalizer(dict(data))
+    elif iface_fields and rules:
         data = apply_iface_normalize(dict(data), iface_fields=iface_fields, rules=rules)
     return KEY_SEP.join(scalar_text(data.get(k)).strip() for k in key_fields)
 
@@ -1037,11 +1041,14 @@ def index_raw_by_match_key(
     key_fields: list[str],
     iface_fields: list[str],
     rules: list[dict[str, str]] | None,
+    normalizer: Any = None,
 ) -> dict[str, dict[str, Any]]:
     """First raw row per internal match key (normalized iface, raw elsewhere)."""
     idx: dict[str, dict[str, Any]] = {}
     for raw in raw_rows:
-        ks = row_match_key(raw, key_fields=key_fields, iface_fields=iface_fields, rules=rules)
+        ks = row_match_key(
+            raw, key_fields=key_fields, iface_fields=iface_fields, rules=rules, normalizer=normalizer,
+        )
         if ks and ks not in idx:
             idx[ks] = raw
     return idx
@@ -1062,6 +1069,7 @@ def iface_lineage(
     rules: list[dict[str, str]] | None,
     port_map: dict[str, str] | None,
     apply_map: bool,
+    namer: Any = None,
 ) -> list[dict[str, Any]]:
     """Per iface field: raw → normalized → (optional) mapped."""
     from ..biz_state.iface_normalize import normalize_iface_name, resolve_mapped_iface
@@ -1073,7 +1081,7 @@ def iface_lineage(
     out: list[dict[str, Any]] = []
     for f in iface_fields:
         raw_v = scalar_text(data.get(f)).strip()
-        norm_v = normalize_iface_name(raw_v, rules) if rules else raw_v
+        norm_v = namer(raw_v) if namer is not None else (normalize_iface_name(raw_v, rules) if rules else raw_v)
         mapped = False
         map_to = ""
         if apply_map and pmap and norm_v:
@@ -1113,6 +1121,7 @@ def evaluate_metric_dual(
     iface_normalize_rules: list[dict[str, str]] | None = None,
     previous_expect: dict[str, set[str]] | None = None,
     allow_mapping_scope: bool = True,
+    pipeline: Any = None,
 ) -> dict[str, Any]:
     """Run old vs old-baseline, new vs new-baseline (or mapped old baseline), dual merge.
 
@@ -1120,10 +1129,12 @@ def evaluate_metric_dual(
     Board / AI fields ``old_key`` / ``new_key`` and ``old`` / ``new`` stay **raw**
     device values (A/B), never the post-map BB form.
     """
-    from ..biz_state.iface_normalize import (
-        apply_iface_normalize_rows,
-        normalize_iface_rules,
-        normalize_iface_name,
+    from ..biz_state.identity_pipeline import legacy_pipeline
+
+    # Old device = "before" side, new device = "after" side of the identity pipeline.
+    pipe = pipeline or legacy_pipeline(
+        key_fields=key_fields, iface_fields=iface_fields, compare_fields=compare_fields,
+        field_rules=field_rules, port_map=port_map, iface_normalize_rules=iface_normalize_rules,
     )
 
     sid = str(sheet_id or "").strip() or str(metric_id or "").strip()
@@ -1159,48 +1170,44 @@ def evaluate_metric_dual(
         [dict(r) for r in new_baseline_rows] if new_baseline_rows is not None else None
     )
 
-    norm_rules = normalize_iface_rules(iface_normalize_rules)
     def normalized_key(key: str) -> str:
         parts = key.split(KEY_SEP) if KEY_SEP in key else ([key] if len(key_fields) == 1 else key.split("|"))
         if len(parts) != len(key_fields):
             return key
-        return KEY_SEP.join(normalize_iface_name(p, norm_rules) if f in iface_fields else p
+        return KEY_SEP.join(pipe.normalize_name(p, "before") if f in iface_fields else p
                             for p, f in zip(parts, key_fields))
+
+    def norm_before(row: dict[str, Any]) -> dict[str, Any]:
+        return pipe.normalize(row, "before")
+
+    def norm_after(row: dict[str, Any]) -> dict[str, Any]:
+        return pipe.normalize(row, "after")
 
     expect_keys = {normalized_key(key) for key in expect_keys}
     previous_keys = {normalized_key(key) for key in previous_keys}
-    old_baseline_rows = apply_iface_normalize_rows(
-        [strip_netx(r) for r in raw_old_base], iface_fields=iface_fields, rules=norm_rules
-    )
-    old_current_rows = apply_iface_normalize_rows(
-        [strip_netx(r) for r in raw_old_cur], iface_fields=iface_fields, rules=norm_rules
-    )
-    new_current_rows = apply_iface_normalize_rows(
-        [strip_netx(r) for r in raw_new_cur], iface_fields=iface_fields, rules=norm_rules
-    )
+    old_baseline_rows = [norm_before(strip_netx(r)) for r in raw_old_base]
+    old_current_rows = [norm_before(strip_netx(r)) for r in raw_old_cur]
+    new_current_rows = [norm_after(strip_netx(r)) for r in raw_new_cur]
     if raw_new_base is not None:
-        new_baseline_rows = apply_iface_normalize_rows(
-            [strip_netx(r) for r in raw_new_base],
-            iface_fields=iface_fields,
-            rules=norm_rules,
-        )
+        new_baseline_rows = [norm_after(strip_netx(r)) for r in raw_new_base]
     else:
         new_baseline_rows = None
 
     old_raw_cur_idx = index_raw_by_match_key(
-        raw_old_cur, key_fields=key_fields, iface_fields=iface_fields, rules=norm_rules
+        raw_old_cur, key_fields=key_fields, iface_fields=iface_fields, rules=None, normalizer=norm_before
     )
     old_raw_base_idx = index_raw_by_match_key(
-        raw_old_base, key_fields=key_fields, iface_fields=iface_fields, rules=norm_rules
+        raw_old_base, key_fields=key_fields, iface_fields=iface_fields, rules=None, normalizer=norm_before
     )
     new_raw_cur_idx = index_raw_by_match_key(
-        raw_new_cur, key_fields=key_fields, iface_fields=iface_fields, rules=norm_rules
+        raw_new_cur, key_fields=key_fields, iface_fields=iface_fields, rules=None, normalizer=norm_after
     )
     new_raw_base_idx = index_raw_by_match_key(
         raw_new_base or [],
         key_fields=key_fields,
         iface_fields=iface_fields,
-        rules=norm_rules,
+        rules=None,
+        normalizer=norm_after,
     )
 
     old_cmp = compare_rows(
@@ -1213,6 +1220,7 @@ def evaluate_metric_dual(
         field_rules=field_rules,
         iface_normalize_rules=None,  # already applied
         include_unchanged=True,
+        duplicate_pairing=pipe.duplicate_pairing,
     )
     old_idx = build_diff_index_from_compare(old_cmp)
 
@@ -1244,15 +1252,16 @@ def evaluate_metric_dual(
         port_map=None,
         field_rules=field_rules,
         include_unchanged=True,
+        duplicate_pairing=pipe.duplicate_pairing,
     )
     new_idx = build_diff_index_from_compare(new_cmp)
 
     rev_map = {v: k for k, v in port_map.items()}
-    map_scoped = _map_defines_iface_expect(metric_id, iface_fields, port_map)
+    map_scoped = _map_defines_iface_expect(iface_fields, port_map, ov.get("scope_by_port_map"))
     # Mapping describes identity; an explicit batch selection defines scope.
     # Port selection also covers business rows attached to those interfaces.
     for scope, keys in ((expect, expect_keys), (previous_expect or {}, previous_keys)):
-        ports = {normalize_iface_name(p, norm_rules) for p in scope.get("_ports") or set()}
+        ports = {pipe.normalize_name(p, "before") for p in scope.get("_ports") or set()}
         if ports and not keys and iface_fields:
             for ks, diff in old_idx.items():
                 row = diff.get("before") or diff.get("after") or {}
@@ -1277,6 +1286,21 @@ def evaluate_metric_dual(
             ):
                 scoped.add(canon)
         expect_keys = scoped
+
+    # Duplicate keys only block when they sit inside this wave's scope.
+    from collections import Counter
+
+    def _dup_keys(rows: list[dict[str, Any]]) -> set[str]:
+        return {KEY_SEP.join(k) for k, n in Counter(key_tuple(r, key_fields) for r in rows).items() if n > 1}
+
+    in_scope = expect_keys | previous_keys
+    new_dups = _dup_keys(new_current_rows) | _dup_keys(new_baseline_rows or [])
+    flagged = (
+        _dup_keys(old_baseline_rows) | _dup_keys(old_current_rows) | new_dups
+        | {_reverse_remap_key_str(k, key_fields=key_fields, iface_fields=iface_fields, rev_map=rev_map)
+           for k in new_dups}
+    )
+    duplicate_in_expect = sorted(flagged & in_scope)[:64]
 
     canon_keys: list[str] = []
     seen: set[str] = set()
@@ -1447,9 +1471,10 @@ def evaluate_metric_dual(
                 "iface": iface_lineage(
                     raw_old,
                     iface_fields=iface_fields,
-                    rules=norm_rules,
+                    rules=None,
                     port_map=port_map,
                     apply_map=True,
+                    namer=lambda v: pipe.normalize_name(v, "before"),
                 ),
             },
             "new": {
@@ -1457,9 +1482,10 @@ def evaluate_metric_dual(
                 "iface": iface_lineage(
                     raw_new,
                     iface_fields=iface_fields,
-                    rules=norm_rules,
+                    rules=None,
                     port_map=None,
                     apply_map=False,
+                    namer=lambda v: pipe.normalize_name(v, "after"),
                 ),
             },
             "port_map": {
@@ -1522,6 +1548,7 @@ def evaluate_metric_dual(
 
     return {
         "metric_id": metric_id,
+        "effective_scope_by_port_map": map_scoped,
         "old_summary": old_cmp.get("summary") or {},
         "new_summary": new_cmp.get("summary") or {},
         "progress_ok": progress_ok,
@@ -1536,6 +1563,7 @@ def evaluate_metric_dual(
         + int((new_cmp.get("summary") or {}).get("duplicate_keys_before") or 0),
         "duplicate_keys_after": int((old_cmp.get("summary") or {}).get("duplicate_keys_after") or 0)
         + int((new_cmp.get("summary") or {}).get("duplicate_keys_after") or 0),
+        "duplicate_in_expect": duplicate_in_expect,
         "duplicate_key_list": list(
             dict.fromkeys(
                 list((old_cmp.get("summary") or {}).get("duplicate_key_list") or [])

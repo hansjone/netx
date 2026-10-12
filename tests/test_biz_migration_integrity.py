@@ -406,3 +406,21 @@ def test_diff_filters_apply_before_pagination_and_escape_wildcards(db):
 def test_invalid_correction_rules_fail_before_evaluation(condition):
     with pytest.raises(HTTPException):
         validate_monitor_rules({}, [{"metric_id": "arp", "success": [{"old_groups": [[condition]], "new": ["added"]}]}])
+
+
+@pytest.mark.parametrize("raw", [None, True, "  v  "])
+def test_odd_key_values_still_match_expected_key(raw):
+    """A6: diff-derived key strings must use the same form as the expect set."""
+    from netx_api.biz_migration.monitor_templates import preset_override_for_metric
+    from netx_api.biz_state.compare_rules import scalar_text
+
+    old = {"ip": "a", "vrf": raw, "mac": "m", "port": "old"}
+    new = {"ip": "a", "vrf": raw, "mac": "m", "port": "new"}
+    out = evaluate(
+        key_fields=["ip", "vrf"], compare_fields=["mac"], iface_fields=[],
+        old_baseline_rows=[old], old_current_rows=[], new_baseline_rows=[], new_current_rows=[new],
+        port_map={}, window_active=False, acceptance=True,
+        sheet_override=preset_override_for_metric("arp"),
+        expect=parse_expect_set({"items": [{"metric_id": "arp", "key": ["a", scalar_text(raw).strip()]}]}),
+    )
+    assert [r["verdict"] for r in out["rows"]] == ["migrated"]

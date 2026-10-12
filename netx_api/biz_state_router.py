@@ -549,6 +549,12 @@ class FieldRuleIn(BaseModel):
     normalize: str = ""
     ignore: bool = False
     tolerance: float | None = None
+    # Cross-vendor identity rules (see identity_pipeline).
+    value_map: dict[str, str] | None = None
+    side: str = ""
+    apply_to_key: bool | None = None
+    # Order for compare=not_worse: earlier entries are better.
+    rank: list[str] | None = None
 
 
 class RowFilterIn(BaseModel):
@@ -575,6 +581,9 @@ class TemplateMetricIn(BaseModel):
     row_filters: list[dict[str, Any]] = Field(default_factory=list)
     field_rules: list[FieldRuleIn] = Field(default_factory=list)
     ignore_port_changes: bool | None = None
+    unmapped_port_policy: str = ""
+    duplicate_pairing: str = ""
+    builtin_vendor_canonical: bool | None = None
 
 
 class TemplateIn(BaseModel):
@@ -621,6 +630,16 @@ class MappingIn(BaseModel):
     name: str = ""
     note: str = ""
     rows: list[MappingRowIn] = Field(default_factory=list)
+
+
+class PreflightIn(BaseModel):
+    template_id: str = ""
+    enabled_sheet_ids: list[str] = Field(default_factory=list)
+    mapping_id: str = ""
+    # Unsaved editor rows win over ``mapping_id`` when given.
+    mapping_rows: list[MappingRowIn] | None = None
+    before_batch_id: str
+    after_batch_id: str
 
 
 class ValidateMappingIn(BaseModel):
@@ -709,6 +728,11 @@ def api_validate_mapping(body: ValidateMappingIn, db: Session = Depends(get_db))
         after_batch_id=body.after_batch_id,
         template_id=body.template_id,
     )
+
+
+@router.post("/compare/preflight")
+def api_compare_preflight(body: PreflightIn, db: Session = Depends(get_db)) -> dict[str, Any]:
+    return cmp_svc.preflight_compare(db, body.model_dump())
 
 
 @router.get("/compare/jobs")

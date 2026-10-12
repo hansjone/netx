@@ -18,6 +18,9 @@ import {
   bizMigrationEnsureHighfreq,
   bizMigrationEvaluate,
   bizMigrationFinishBatch,
+  bizMigrationGetRun,
+  bizMigrationPreflight,
+  bizMigrationResolveResolvable,
   bizMigrationGetBoard,
   bizMigrationListBaselineExpect,
   bizMigrationListBatches,
@@ -40,6 +43,8 @@ import type { CliTargetItem } from "../../types";
 import { writeClipboardText } from "../../utils/clipboard";
 import { pageCount } from "../../utils/display";
 import { formatSystemTime, localDatetimeInputToUtcIso, utcIsoToLocalDatetimeInput } from "../../utils/time";
+import { PreflightReport } from "./components/PreflightReport";
+import type { PreflightReportData } from "./components/PreflightReport";
 import { cutoverCachedGet, cutoverCachedGetSWR, invalidateCutoverCache } from "./lib/cutoverDataCache";
 import { jobChipColor, NmStatusChip, sourceChipColor } from "../../components/NmChips";
 
@@ -287,6 +292,8 @@ type RedTicket = {
   old_status?: string;
   new_status?: string;
   status: string;
+  /** Latest acceptance saw this object turn green; the operator may close it. */
+  resolvable?: boolean;
   evidence?: DiffRow["evidence"];
 };
 type SamplingPair = {
@@ -318,6 +325,10 @@ type SheetCard = {
   new_collected_at?: string;
   duplicate_keys_before?: number;
   duplicate_keys_after?: number;
+  duplicate_in_expect?: string[];
+  manual_pending?: boolean;
+  not_collected?: boolean;
+  data_state_reasons?: string[];
   age_limit_sec?: number;
   baseline_missing_sides?: string[];
 };
@@ -389,6 +400,9 @@ export function BizMigrationPage() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [mappings, setMappings] = useState<PortMapping[]>([]);
   const [busy, setBusy] = useState(false);
+  // Background evaluate / acceptance: text shown while the run is being computed.
+  const [evalProgress, setEvalProgress] = useState("");
+  const [preflight, setPreflight] = useState<PreflightReportData | null>(null);
   const [listKeyword, setListKeyword] = useState("");
   const debouncedListKw = useDebouncedValue(listKeyword, 250);
 
@@ -462,6 +476,9 @@ export function BizMigrationPage() {
         verdict_counts?: Record<string, number>;
         duplicate_keys?: number;
         uncovered_scope?: string[];
+        duplicate_warnings?: Array<{ sheet_id?: string; title?: string; count: number; examples?: string[] }>;
+        manual_pending_metrics?: string[];
+        not_collected_metrics?: string[];
       };
     } | null;
   } | null>(null);
@@ -1434,18 +1451,53 @@ export function BizMigrationPage() {
     }
   }
 
+  /**
+   * Evaluate / acceptance run in the background on the server. Poll the run until it settles;
+   * a failed or interrupted run is reported with the server's reason.
+   */
+  async function waitForRun(runId: string, label: string): Promise<Record<string, unknown>> {
+    const started = Date.now();
+    for (;;) {
+      const run = (await bizMigrationGetRun(runId)) as {
+        status?: string;
+        message?: string;
+        summary?: { progress?: { sheet_index?: number; sheet_total?: number; sheet_title?: string } };
+      };
+      if (run.status && run.status !== "running") {
+        setEvalProgress("");
+        if (run.status !== "success") throw new Error(run.message || run.status);
+        return run as Record<string, unknown>;
+      }
+      const p = run.summary?.progress;
+      setEvalProgress(
+        p?.sheet_total
+          ? t("bizMigration.evalProgress", { label, i: String(p.sheet_index ?? 0), n: String(p.sheet_total), title: p.sheet_title || "" })
+          : t("bizMigration.evalQueued", { label }),
+      );
+      if (Date.now() - started > 30 * 60 * 1000) throw new Error("evaluation_timeout");
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    }
+  }
+
   async function setBatchStatus(status: string) {
     if (!batchId) return;
     setBusy(true);
     try {
       if (status === "review" || status === "done") {
-        const res = (await bizMigrationFinishBatch(batchId, status === "done")) as {
+        let res = (await bizMigrationFinishBatch(batchId, status === "done")) as {
+          run_id?: string;
           batch?: MigBatch;
           accept_summary?: MigBatch["accept_summary"];
           open_red_count?: number;
         };
+        if (res.run_id && !res.accept_summary) {
+          await waitForRun(res.run_id, t("bizMigration.finishBatch"));
+        }
         const list = await bizMigrationListBatches(projectId);
-        setBatches((list.items || []) as MigBatch[]);
+        const items = (list.items || []) as MigBatch[];
+        setBatches(items);
+        const closed = items.find((b) => b.id === batchId) || res.batch;
+        res = { ...res, batch: closed, accept_summary: res.accept_summary || closed?.accept_summary };
         setAcceptInfo(res.accept_summary || res.batch?.accept_summary || null);
         await loadRedTickets(projectId);
         if (res.accept_summary?.passed) {
@@ -1494,14 +1546,41 @@ export function BizMigrationPage() {
       if (pinNewBatchId) body.new_batch_id = pinNewBatchId;
       const run = await bizMigrationEvaluate(batchId, body);
       const rid = String((run as { id?: string }).id || "");
+      if ((run as { status?: string }).status === "running" && rid) {
+        await waitForRun(rid, t("bizMigration.evaluate"));
+      }
       await loadRuns(batchId);
       await loadBoard(batchId, rid);
       showOk(t("bizMigration.evaluated"));
       setDetailTab("board");
     } catch (e) {
+      setEvalProgress("");
       showError(mapMigrationApiErr(e, t));
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function onPreflight() {
+    if (!projectId) return;
+    setBusy(true);
+    try {
+      setPreflight((await bizMigrationPreflight(projectId)) as unknown as PreflightReportData);
+    } catch (e) {
+      showError(mapMigrationApiErr(e, t));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onResolveResolvable() {
+    if (!projectId) return;
+    try {
+      const out = (await bizMigrationResolveResolvable(projectId)) as { closed?: number };
+      await loadRedTickets(projectId);
+      showOk(t("bizMigration.redResolvableClosed", { n: String(out.closed ?? 0) }));
+    } catch (e) {
+      showError(formatErr(e));
     }
   }
 
@@ -2323,6 +2402,7 @@ export function BizMigrationPage() {
                       {t("bizMigration.evaluate")}
                     </Button>
                   ) : null}
+                  {evalProgress ? <span className="muted" role="status" data-testid="eval-progress">{evalProgress}</span> : null}
                   <Button
                     size="sm"
                     variant="secondary"
@@ -2435,6 +2515,14 @@ export function BizMigrationPage() {
                         </Link>
                       ) : null}
                     </div>
+                  </div>
+                  <p className="muted bm-hint" data-testid="port-success-hint">{t("bizMigration.portSuccessHint")}</p>
+                  <div className="bm-preflight">
+                    <Button size="sm" variant="secondary" isDisabled={busy || !project.old_baseline_batch_id || !project.new_baseline_batch_id} onPress={() => void onPreflight()}>
+                      {t("bizMigration.preflight")}
+                    </Button>
+                    <span className="muted bm-hint">{t("bizMigration.preflightHint")}</span>
+                    {preflight ? <PreflightReport report={preflight} t={t} /> : null}
                   </div>
                   <div className="bm-hf-collect">
                     <div className="bm-mapping__label">{t("bizMigration.projectCollectMetrics")}</div>
@@ -3000,6 +3088,27 @@ export function BizMigrationPage() {
                       })}
                     </div>
                   ) : null}
+                  {sheetCards.some((c) => c.manual_pending) ? (
+                    <div className="muted bm-hint" data-testid="manual-pending-banner">
+                      {t("bizMigration.manualPendingBanner", {
+                        metrics: sheetCards.filter((c) => c.manual_pending).map((c) => sheetLabel(c)).join(", "),
+                      })}
+                    </div>
+                  ) : null}
+                  {sheetCards.some((c) => c.not_collected) ? (
+                    <div className="muted bm-hint" data-testid="not-collected-banner">
+                      {t("bizMigration.notCollectedBanner", {
+                        metrics: sheetCards.filter((c) => c.not_collected).map((c) => `${sheetLabel(c)} (${(c.data_state_reasons || []).join(", ")})`).join("; "),
+                      })}
+                    </div>
+                  ) : null}
+                  {liveSummary?.duplicate_warnings?.length ? (
+                    <div className="muted bm-hint" data-testid="duplicate-warning-banner">
+                      {t("bizMigration.duplicateWarningBanner", {
+                        metrics: liveSummary.duplicate_warnings.map((w) => `${w.title || w.sheet_id} (${w.count})`).join(", "),
+                      })}
+                    </div>
+                  ) : null}
                   {sheetCards.some((c) => c.current_missing) ? (
                     <div className="form-error bm-hint">
                       {t("bizMigration.currentMissingBanner", {
@@ -3036,6 +3145,14 @@ export function BizMigrationPage() {
 
                   {boardSubTab === "red" ? (
                     <div className="pt-list-table-wrap bm-board__table">
+                      {redTickets.some((r) => r.resolvable && r.status !== "resolved") ? (
+                        <div className="bm-hint" role="status">
+                          <span>{t("bizMigration.redResolvableHint", { n: String(redTickets.filter((r) => r.resolvable && r.status !== "resolved").length) })}</span>{" "}
+                          <Button size="sm" variant="secondary" onPress={() => void onResolveResolvable()}>
+                            {t("bizMigration.redResolveAllResolvable")}
+                          </Button>
+                        </div>
+                      ) : null}
                       <table className="data-table pt-list-table">
                         <thead>
                           <tr>
@@ -3060,7 +3177,10 @@ export function BizMigrationPage() {
                               <td>{r.old_status || "—"}</td>
                               <td>{r.new_status || "—"}</td>
                               <td style={{ color: COLOR.red, fontWeight: 600 }}>{verdictLabel(r.verdict)}</td>
-                              <td>{r.status}</td>
+                              <td>
+                                {r.status}
+                                {r.resolvable && r.status !== "resolved" ? <span className="muted"> · {t("bizMigration.redNowGreen")}</span> : null}
+                              </td>
                               <td>
                                 {r.status !== "resolved" ? (
                                   <Button
@@ -3109,7 +3229,8 @@ export function BizMigrationPage() {
                             const active = boardMetricId === sid;
                             const skipped = Boolean(c.collect_skipped);
                             const noCurrent = Boolean(c.current_missing);
-                            const mutedCard = skipped || noCurrent;
+                            const pending = Boolean(c.manual_pending || c.not_collected);
+                            const mutedCard = skipped || noCurrent || pending;
                             const hot =
                               !mutedCard && ((c.anomaly || 0) > 0 || Boolean(c.new_baseline_missing));
                             return (
@@ -3127,7 +3248,9 @@ export function BizMigrationPage() {
                                 <span className="bs-cmp-nav__dot" />
                                 <span className="bs-cmp-nav__name">
                                   {sheetLabel(c)}
-                                  {skipped
+                                  {pending
+                                    ? ` · ${t(c.manual_pending ? "bizCompare.dataState.manual_pending" : "bizCompare.dataState.not_collected")}`
+                                    : skipped
                                     ? ` · ${t("bizMigration.collectSkipped")}`
                                     : noCurrent
                                       ? ` · ${t("bizMigration.currentMissing")}`

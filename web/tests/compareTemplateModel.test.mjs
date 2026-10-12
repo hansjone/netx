@@ -57,3 +57,53 @@ test("invalid tolerances, modes, duplicate sheets and scalar set membership bloc
   assert.throws(() => validateTemplateDraft([sheet(), sheet()]), /duplicate_sheet/);
   assert.throws(() => validateTemplateDraft([{ ...sheet(), row_filters: [{ field: "id", op: "in", value: "a,b" }] }]), /value_list/);
 });
+
+import { sheetPayload, formatIfaceNormText, parseValueMapText, formatValueMapText } from "../src/features/cutover/lib/compareTemplateModel.ts";
+
+test("sheet options survive import and the save payload", () => {
+  const parsed = parseTemplateImport(template([{ ...sheet(), unmapped_port_policy: "ignore_port", duplicate_pairing: "ordered", builtin_vendor_canonical: false }]));
+  const s = parsed.metrics[0];
+  assert.equal(s.unmapped_port_policy, "ignore_port");
+  assert.equal(s.duplicate_pairing, "ordered");
+  assert.equal(s.builtin_vendor_canonical, false);
+  const body = sheetPayload(s);
+  assert.equal(body.unmapped_port_policy, "ignore_port");
+  assert.equal(body.builtin_vendor_canonical, false);
+  assert.equal("duplicate_pairing" in sheetPayload({ ...s, duplicate_pairing: "" }), false);
+});
+
+test("alias rules keep side and vendor and may repeat per scope", () => {
+  const rules = parseIfaceNormText("GE,gei\nGE,GigabitEthernet,before\nEth-Trunk,ae,after,huawei");
+  assert.deepEqual(rules, [{ from: "GE", to: "gei" }, { from: "GE", to: "GigabitEthernet", side: "before" }, { from: "Eth-Trunk", to: "ae", side: "after", vendor: "huawei" }]);
+  assert.deepEqual(parseIfaceNormText(formatIfaceNormText(rules)), rules);
+  assert.throws(() => parseIfaceNormText("GE,gei\nge,x"), /duplicate_alias/);
+  assert.throws(() => parseIfaceNormText("GE,gei,middle"), /unknown_alias_side/);
+});
+
+test("a vendor-scoped alias with no side survives the text round trip", () => {
+  const rules = parseIfaceNormText("Eth-Trunk,ae,both,huawei");
+  assert.deepEqual(rules, [{ from: "Eth-Trunk", to: "ae", vendor: "huawei" }]);
+  assert.equal(formatIfaceNormText(rules), "Eth-Trunk,ae,both,huawei");
+});
+
+test("value maps parse, format and are bounded", () => {
+  const map = parseValueMapText("estab,established\n# note\n*down,down");
+  assert.deepEqual(map, { estab: "established", "*down": "down" });
+  assert.deepEqual(parseValueMapText(formatValueMapText(map)), map);
+  assert.throws(() => parseValueMapText("lonely"), /pair_required/);
+  assert.throws(() => parseValueMapText(Array.from({ length: 501 }, (_, i) => `a${i},b`).join("\n")), /too_large/);
+});
+
+test("directional compare modes need a rank and a field can carry one rule per side", () => {
+  const base = sheet();
+  assert.throws(() => validateTemplateDraft([{ ...base, field_rules: [{ field: "state", compare: "not_worse" }] }]), /rank_list_required/);
+  validateTemplateDraft([{ ...base, field_rules: [{ field: "state", compare: "not_worse", rank: ["up", "down"] }, { field: "count", compare: "numeric_min", tolerance: 5 }] }]);
+  validateTemplateDraft([{ ...base, field_rules: [{ field: "state", side: "before", value_map: { a: "b" } }, { field: "state", side: "after", value_map: { c: "d" } }] }]);
+  assert.throws(() => validateTemplateDraft([{ ...base, field_rules: [{ field: "state", value_map: { a: "b" } }, { field: "state", value_map: { c: "d" } }] }]), /duplicate_field/);
+  assert.throws(() => validateTemplateDraft([{ ...base, field_rules: [{ field: "state", value_map: { a: 1 } }] }]), /string_pairs/);
+});
+
+test("filter side survives the editor round trip", () => {
+  const groups = toOrGroups([{ field: "type", op: "eq", value: "dynamic", side: "before" }]);
+  assert.deepEqual(fromOrGroups(groups), [{ field: "type", op: "eq", value: "dynamic", side: "before" }]);
+});

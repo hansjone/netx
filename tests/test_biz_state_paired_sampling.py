@@ -65,7 +65,9 @@ def test_pair_claim_requires_two_slots(db):
     assert len(claim.claim_queued_batches(2)) == 2
 
 
-def test_busy_device_keeps_both_queued_and_no_ssh_overlap(db):
+def test_busy_device_keeps_both_queued_and_no_ssh_overlap(db, monkeypatch):
+    # These cases are about one collection per device; the cap defaults to 2.
+    monkeypatch.setattr(claim, "max_sessions_per_ne", lambda: 1)
     db.add(BizStateBatch(id="portrait", task_id="other", ne_id="old", status="running"))
     db.commit()
     claim.enqueue_collect("old")
@@ -125,7 +127,9 @@ def test_inline_pair_uses_two_workers_without_waiting_for_one_side(db, monkeypat
     assert set(synchronized) == {"old", "new"}
 
 
-def test_faster_metrics_claim_before_manual_route_round(db):
+def test_faster_metrics_claim_before_manual_route_round(db, monkeypatch):
+    # These cases are about one collection per device; the cap defaults to 2.
+    monkeypatch.setattr(claim, "max_sessions_per_ne", lambda: 1)
     for tid in ("ro", "rn"):
         db.add(BizStateTask(id=tid, ne_id="old" if tid == "ro" else "new",
             status="paused", collect_group_id="routes", collect_manual_only=True))
@@ -137,7 +141,9 @@ def test_faster_metrics_claim_before_manual_route_round(db):
     assert {job["task_id"] for job in jobs} == {"old", "new"}
 
 
-def test_manual_route_round_cannot_starve_behind_continuous_fast_metrics(db):
+def test_manual_route_round_cannot_starve_behind_continuous_fast_metrics(db, monkeypatch):
+    # These cases are about one collection per device; the cap defaults to 2.
+    monkeypatch.setattr(claim, "max_sessions_per_ne", lambda: 1)
     for tid in ("ro", "rn"):
         db.add(BizStateTask(id=tid, ne_id="old" if tid == "ro" else "new",
             status="paused", collect_group_id="routes", collect_manual_only=True))

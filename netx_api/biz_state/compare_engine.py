@@ -93,8 +93,17 @@ def apply_port_map(
     return out
 
 
+def key_tuple(row: Mapping[str, Any], fields: Sequence[str]) -> tuple[str, ...]:
+    """The one canonical match-key form: ``scalar_text(...).strip()`` per field.
+
+    Every place that builds, stores or looks up a key string must go through
+    this (``None`` → ``""``, ``True`` → ``"true"``, surrounding blanks trimmed).
+    """
+    return tuple(scalar_text(row.get(k)).strip() for k in fields)
+
+
 def row_key(row: dict[str, Any], key_fields: list[str]) -> tuple[str, ...]:
-    return tuple(scalar_text(row.get(k)).strip() for k in key_fields)
+    return key_tuple(row, key_fields)
 
 
 def mapping_stats(
@@ -109,8 +118,8 @@ def mapping_stats(
     ``hit_before``: map key appears as a normalized before iface, or as the
     parent of a before subinterface (so main-port-only maps still validate).
 
-    Map keys are matched against **normalized** iface values (same pipeline as
-    compare). Enter mapping keys in normalized form.
+    Map keys are matched against **normalized** iface values; callers pass a
+    port map already normalized with the template iface rules.
     """
     before_ifaces: set[str] = set()
     after_ifaces: set[str] = set()
@@ -156,7 +165,7 @@ def mapping_stats(
         "miss_after": miss_after,
         "unused_before_keys": unused,
         "ok": not miss_before and not miss_after,
-        "hint": "map keys must match normalized iface names (post iface_normalize)",
+        "hint": "map keys/values are normalized with the template iface rules before matching",
     }
 
 
@@ -174,6 +183,10 @@ def compare_rows(
     include_unchanged: bool = False,
     unchanged_limit: int | None = None,
     compact_unchanged: bool = False,
+    pipeline: Any = None,
+    match_keys_override: Sequence[str] | None = None,
+    prepared: tuple[list, list] | None = None,
+    duplicate_pairing: str = "ordered",
 ) -> dict[str, Any]:
     """Return summary + diffs list.
 
@@ -200,6 +213,11 @@ def compare_rows(
       - ``True``: force drop iface from match key when a non-empty candidate exists.
       - ``False``: never drop iface from match key.
 
+    ``pipeline`` (``identity_pipeline.Pipeline``) owns normalization, filtering,
+    port mapping and key building; when omitted a legacy pipeline is derived
+    from the loose arguments (callers have already filtered the rows).
+    ``match_keys_override`` pins the match key (re-running a stored result).
+
     ``summary.duplicate`` is always 0. ``duplicate_keys_*`` count match keys
     that appear more than once on a side (diagnostic only).
 
@@ -208,32 +226,40 @@ def compare_rows(
     """
     if not key_fields:
         raise ValueError("key_fields required")
-    pmap = dict(port_map or {})
-    rules = field_rule_map(field_rules)
-    norm_rules = normalize_iface_rules(iface_normalize_rules)
-    iface_list = [str(f) for f in (iface_fields or []) if str(f).strip()]
+    if pipeline is None:
+        from .identity_pipeline import legacy_pipeline
+
+        pipeline = legacy_pipeline(
+            key_fields=key_fields, iface_fields=iface_fields, compare_fields=compare_fields,
+            field_rules=field_rules, port_map=port_map, iface_normalize_rules=iface_normalize_rules,
+            ignore_port_changes=ignore_port_changes, duplicate_pairing=duplicate_pairing,
+        )
+    pmap = dict(pipeline.port_map)
+    rules = field_rule_map(field_rules if field_rules is not None else pipeline.field_rules)
+    iface_list = list(pipeline.iface_fields)
     iface_set = set(iface_list)
 
-    before_norm = apply_iface_normalize_rows(
-        before_rows, iface_fields=iface_list, rules=norm_rules
-    ) if norm_rules and iface_list else before_rows
-    after_norm = apply_iface_normalize_rows(
-        after_rows, iface_fields=iface_list, rules=norm_rules
-    ) if norm_rules and iface_list else after_rows
+    if prepared is not None:
+        before_pairs, after_pairs = prepared
+    else:
+        before_pairs = pipeline.prepare(before_rows, "before")
+        after_pairs = pipeline.prepare(after_rows, "after")
+    before_rows = [orig for orig, _ in before_pairs]
+    after_rows = [orig for orig, _ in after_pairs]
+    before_norm = [norm for _, norm in before_pairs]
+    after_norm = [norm for _, norm in after_pairs]
 
     ignore_ports = False
-    # No map → optionally ignore port renames by dropping iface from match key.
-    if not pmap and iface_set:
-        candidate = [k for k in key_fields if k not in iface_set]
-        if not candidate:
-            match_keys = list(key_fields)
-        elif ignore_port_changes is True:
-            match_keys = candidate
-            ignore_ports = True
-        elif ignore_port_changes is False:
-            match_keys = list(key_fields)
-        else:
-            # Auto heuristic (legacy default)
+    if match_keys_override is not None:
+        match_keys = [str(k) for k in match_keys_override]
+        ignore_ports = match_keys != list(key_fields)
+    else:
+        # No map → optionally ignore port renames by dropping iface from match key.
+        policy = pipeline.ignore_port_changes
+        unique = None
+        if not pmap and iface_set and policy is None:
+            candidate = [k for k in key_fields if k not in iface_set]
+
             def unique_keys(rows: list[dict[str, Any]]) -> bool:
                 seen: set[tuple[str, ...]] = set()
                 for row in rows:
@@ -243,23 +269,20 @@ def compare_rows(
                     seen.add(key)
                 return True
 
-            if unique_keys(before_norm) and unique_keys(after_norm):
-                match_keys = candidate
-                ignore_ports = True
-            else:
-                match_keys = list(key_fields)
-    else:
-        match_keys = list(key_fields)
+            unique = bool(candidate) and unique_keys(before_norm) and unique_keys(after_norm)
+        match_keys = pipeline.effective_match_keys(unique_without_iface=unique)
+        ignore_ports = match_keys != list(key_fields)
 
     before_groups: dict[tuple[str, ...], list[tuple[dict[str, Any], dict[str, Any]]]] = (
         defaultdict(list)
     )
     after_groups: dict[tuple[str, ...], list[dict[str, Any]]] = defaultdict(list)
     for orig, norm in zip(before_rows, before_norm):
-        mapped = apply_port_map(norm, iface_fields=iface_list, port_map=pmap) if iface_list else norm
-        before_groups[row_key(mapped, match_keys)].append((orig, mapped))
-    for r in after_norm:
-        after_groups[row_key(r, match_keys)].append(r)
+        mapped, k = pipeline.key_of(norm, "before", match_keys)
+        before_groups[k].append((orig, mapped))
+    for norm in after_norm:
+        after_groups[pipeline.key_of(norm, "after", match_keys)[1]].append(norm)
+    sort_pairs = pipeline.duplicate_pairing == "sorted"
 
     diffs: list[dict[str, Any]] = []
     added = removed = changed = unchanged = 0
@@ -271,7 +294,7 @@ def compare_rows(
     sample = _StratifiedSample(limit_n) if include_unchanged and limit_n is not None else None
 
     def _key_obj(row: dict[str, Any]) -> dict[str, Any]:
-        return {f: row.get(f, "") for f in key_fields}
+        return dict(zip(key_fields, key_tuple(row, key_fields)))
 
     def _row_id(row: dict[str, Any] | None) -> str:
         if not isinstance(row, dict):
@@ -325,6 +348,10 @@ def compare_rows(
             multi_before_keys.append(k)
         if len(a_list) > 1:
             multi_after_keys.append(k)
+        if sort_pairs and (len(b_list) > 1 or len(a_list) > 1):
+            # Same-key rows pair by value, not by CLI output order (ECMP, multipath).
+            b_list = sorted(b_list, key=lambda pair: pipeline.pair_sort_key(pair[1]))
+            a_list = sorted(a_list, key=pipeline.pair_sort_key)
         n = max(len(b_list), len(a_list))
         for i in range(n):
             if i >= len(b_list):

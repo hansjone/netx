@@ -131,9 +131,25 @@
       ],
       "row_filters": [
         {
-          "op": "age_timer",
-          "field": "age",
-          "value": ""
+          "any": [
+            {
+              "field": "entry_type",
+              "op": "eq",
+              "value": "dynamic"
+            },
+            {
+              "all": [
+                {
+                  "field": "entry_type",
+                  "op": "empty"
+                },
+                {
+                  "field": "age",
+                  "op": "age_timer"
+                }
+              ]
+            }
+          ]
         }
       ],
       "field_rules": [
@@ -415,11 +431,7 @@
       ],
       "compare_fields": [
         "admin",
-        "input_bps",
-        "output_bps",
         "port_status",
-        "in_util",
-        "out_util",
         "ip_mtu",
         "mtu",
         "mpls_mtu",
@@ -454,7 +466,7 @@
         },
         {
           "field": "output_bps",
-          "compare": "numeric",
+          "compare": "percent",
           "tolerance": 5
         },
         {
@@ -593,8 +605,8 @@
       "field_rules": [
         {
           "field": "rx_power",
-          "compare": "percent",
-          "tolerance": 5
+          "compare": "numeric",
+          "tolerance": 2
         }
       ]
     },
@@ -668,7 +680,9 @@
         "vpn_sid",
         "neighbor_sid"
       ],
-      "iface_fields": [],
+      "iface_fields": [
+        "ac_port"
+      ],
       "compare_fields": [],
       "display_fields": [
         "mac",

@@ -1,8 +1,15 @@
 import { Button, Input, Modal } from "@heroui/react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
-import { parseTemplateImport, parseIfaceNormText, toOrGroups, fromOrGroups, validateTemplateDraft } from "./lib/compareTemplateModel";
-import type { MetricSheet, FieldRule, RowFilter } from "./lib/compareTemplateModel";
+import {
+  parseTemplateImport, parseIfaceNormText, formatIfaceNormText, parseValueMapText, formatValueMapText,
+  sheetPayload, sheetOptions, toOrGroups, fromOrGroups, validateTemplateDraft,
+} from "./lib/compareTemplateModel";
+import type { MetricSheet, FieldRule, RowFilter, IfaceRule, Side } from "./lib/compareTemplateModel";
+import { MappingTable } from "./components/MappingTable";
+import { PreflightReport, dataStateLabel } from "./components/PreflightReport";
+import type { PreflightReportData } from "./components/PreflightReport";
+import { parseMapText, mapTextDirty } from "./lib/mappingText";
 import { ListPager } from "../../components/ListPager";
 import { AppModalShell } from "../../components/ui/AppModalShell";
 import { FieldSelect } from "../../components/ui/FieldSelect";
@@ -29,7 +36,7 @@ import {
   bizCompareUpdateJob,
   bizCompareUpdateMapping,
   bizCompareUpdateTemplate,
-  bizCompareValidateMapping,
+  bizCompareMappingPreflight,
   bizStateListBatches,
   bizStateListTasks,
   formatErr,
@@ -72,12 +79,19 @@ type Template = {
   key_fields: string[];
   iface_fields: string[];
   compare_fields: string[];
-  iface_normalize_rules?: { from: string; to: string }[];
+  iface_normalize_rules?: IfaceRule[];
   note: string;
   job_count?: number;
+  monitor_template_count?: number;
 };
 
-type Mapping = { id: string; name: string; rows: { before_if: string; after_if: string }[] };
+type Mapping = {
+  id: string;
+  name: string;
+  rows: { before_if: string; after_if: string }[];
+  job_count?: number;
+  project_count?: number;
+};
 type StoreUnchanged = "auto" | "always" | "never" | "sample" | "keys";
 
 type Job = {
@@ -102,6 +116,8 @@ type DiffRow = {
   before: Record<string, unknown> | null;
   after: Record<string, unknown> | null;
   mapped_before?: Record<string, unknown> | null;
+  /** Before-side key exactly as the device printed it; only present when it differs from the match key. */
+  raw_key_before?: Record<string, unknown> | null;
   changes: Record<string, { before?: unknown; after?: unknown; reason?: string }>;
 };
 
@@ -525,6 +541,7 @@ function cloneSheet(s: MetricSheet): MetricSheet {
     row_filters: JSON.parse(JSON.stringify(s.row_filters || [])),
     field_rules: JSON.parse(JSON.stringify(s.field_rules || [])),
     ignore_port_changes: s.ignore_port_changes,
+    ...sheetOptions(s as unknown as Record<string, unknown>),
   };
 }
 
@@ -532,21 +549,9 @@ const TEMPLATE_EXPORT_FORMAT = "netx.biz_compare_template";
 const TEMPLATE_EXPORT_VERSION = 1;
 
 function templateExportPayload(tpl: Template) {
-  const metrics = templateSheets(tpl).map((s) => ({
-    sheet_id: s.sheet_id || s.metric_id,
-    title: s.title || s.sheet_id || s.metric_id,
-    metric_id: s.metric_id,
-    key_fields: [...(s.key_fields || [])],
-    iface_fields: [...(s.iface_fields || [])],
-    compare_fields: [...(s.compare_fields || [])],
-    display_fields:
-      s.display_fields && s.display_fields.length
-        ? [...s.display_fields]
-        : [...(s.key_fields || []), ...(s.compare_fields || [])],
-    row_filters: JSON.parse(JSON.stringify(s.row_filters || [])),
-    field_rules: JSON.parse(JSON.stringify(s.field_rules || [])),
-    ignore_port_changes: s.ignore_port_changes,
-  }));
+  const metrics = templateSheets(tpl).map((s) =>
+    JSON.parse(JSON.stringify(sheetPayload({ ...s, display_fields: s.display_fields?.length ? s.display_fields : undefined }))),
+  );
   return {
     format: TEMPLATE_EXPORT_FORMAT,
     version: TEMPLATE_EXPORT_VERSION,
@@ -558,8 +563,8 @@ function templateExportPayload(tpl: Template) {
   };
 }
 
-function ifaceNormRulesToText(rules?: { from: string; to: string }[]): string {
-  return (rules || []).map((r) => `${r.from},${r.to}`).join("\n");
+function ifaceNormRulesToText(rules?: IfaceRule[]): string {
+  return formatIfaceNormText(rules);
 }
 
 function downloadJsonFile(filename: string, data: unknown) {
@@ -572,13 +577,16 @@ function downloadJsonFile(filename: string, data: unknown) {
   URL.revokeObjectURL(url);
 }
 
+const isSided = (r: FieldRule) => r.side === "before" || r.side === "after";
+
+/** The rule that drives the comparison of a field (side-scoped value maps are separate rules). */
 function ruleForField(sheet: MetricSheet, field: string): FieldRule {
-  return (sheet.field_rules || []).find((r) => r.field === field) || { field };
+  return (sheet.field_rules || []).find((r) => r.field === field && !isSided(r)) || { field };
 }
 
 function upsertFieldRule(sheet: MetricSheet, field: string, patch: Partial<FieldRule>): FieldRule[] {
   const rules = [...(sheet.field_rules || [])];
-  const idx = rules.findIndex((r) => r.field === field);
+  const idx = rules.findIndex((r) => r.field === field && !isSided(r));
   const next: FieldRule = { ...(idx >= 0 ? rules[idx] : { field }), ...patch, field };
   const norm = (next.normalize || "").toLowerCase();
   const cmp = (next.compare || "").toLowerCase();
@@ -586,12 +594,30 @@ function upsertFieldRule(sheet: MetricSheet, field: string, patch: Partial<Field
     !next.ignore &&
     (!cmp || cmp === "eq") &&
     (!norm || norm === "none" || norm === "strip") &&
-    (next.tolerance === undefined || next.tolerance === null);
+    (next.tolerance === undefined || next.tolerance === null) &&
+    !Object.keys(next.value_map || {}).length &&
+    !(next.rank || []).length &&
+    next.apply_to_key === undefined;
   if (empty) {
-    return rules.filter((r) => r.field !== field);
+    return rules.filter((_r, i) => i !== idx);
   }
   if (idx >= 0) rules[idx] = next;
   else rules.push(next);
+  return rules;
+}
+
+/** Value map of a field for one scope: "both" lives on the main rule, before/after on their own rules. */
+function valueMapFor(sheet: MetricSheet, field: string, scope: Side): Record<string, string> {
+  const rule = (sheet.field_rules || []).find((r) => r.field === field && (scope === "before" || scope === "after" ? r.side === scope : !isSided(r)));
+  return rule?.value_map || {};
+}
+
+function setValueMapFor(sheet: MetricSheet, field: string, scope: Side, map: Record<string, string>): FieldRule[] {
+  if (scope !== "before" && scope !== "after") {
+    return upsertFieldRule(sheet, field, { value_map: Object.keys(map).length ? map : undefined });
+  }
+  const rules = (sheet.field_rules || []).filter((r) => !(r.field === field && r.side === scope));
+  if (Object.keys(map).length) rules.push({ field, side: scope, value_map: map });
   return rules;
 }
 
@@ -611,6 +637,69 @@ const FILTER_OPS = [
   "age_timer",
 ] as const;
 
+/** Value-map editor for one field: text is parsed on blur so half-typed lines never clobber the rule. */
+function ValueMapCell({
+  field, value, scope, onScope, onCommit, rank, onRank, showRank, t,
+}: {
+  field: string;
+  value: Record<string, string>;
+  scope: Side;
+  onScope: (s: Side) => void;
+  onCommit: (map: Record<string, string>) => void;
+  rank: string[];
+  onRank: (rank: string[]) => void;
+  showRank: boolean;
+  t: (k: string, vars?: Record<string, string | number>) => string;
+}) {
+  const external = formatValueMapText(value);
+  const [text, setText] = useState(external);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    setText(external);
+    setError("");
+  }, [external, scope]);
+  return (
+    <div className="ct-valuemap">
+      {showRank ? (
+        <Input
+          aria-label={`${field} ${t("bizCompare.rankLabel")}`}
+          placeholder={t("bizCompare.rankPlaceholder")}
+          value={rank.join(",")}
+          onChange={(e) => onRank(e.target.value.split(",").map((x) => x.trim()).filter(Boolean))}
+        />
+      ) : null}
+      <select
+        className="mt-select"
+        aria-label={`${field} ${t("bizCompare.valueMapScope")}`}
+        value={scope === "before" || scope === "after" ? scope : "both"}
+        onChange={(e) => onScope(e.target.value as Side)}
+      >
+        <option value="both">{t("bizCompare.scopeBoth")}</option>
+        <option value="before">{t("bizCompare.scopeBefore")}</option>
+        <option value="after">{t("bizCompare.scopeAfter")}</option>
+      </select>
+      <textarea
+        className={`bs-cmp-mapping__editor ct-valuemap__text${error ? " is-invalid" : ""}`}
+        aria-label={`${field} ${t("bizCompare.valueMap")}`}
+        placeholder={t("bizCompare.valueMapPlaceholder")}
+        rows={2}
+        spellCheck={false}
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={() => {
+          try {
+            onCommit(parseValueMapText(text));
+            setError("");
+          } catch (e) {
+            setError(String((e as Error).message));
+          }
+        }}
+      />
+      {error ? <span className="ct-valuemap__err" role="alert">{error}</span> : null}
+    </div>
+  );
+}
+
 function TplRowFiltersEditor({
   groups,
   fieldOpts,
@@ -622,6 +711,8 @@ function TplRowFiltersEditor({
   t: (k: string, vars?: Record<string, string | number>) => string;
   onChange: (next: RowFilter[][]) => void;
 }) {
+  // A side only has meaning on a top-level filter, i.e. when there is a single AND group.
+  const sideAllowed = groups.length === 1;
   const setGroups = onChange;
   return (
     <div className="ct-filters">
@@ -701,6 +792,24 @@ function TplRowFiltersEditor({
                     ))}
                     {filt.op && !(FILTER_OPS as readonly string[]).includes(filt.op) ? <option value={filt.op}>{filt.op}</option> : null}
                   </select>
+                  {sideAllowed ? (
+                    <select
+                      className="mt-select"
+                      aria-label={`${t("bizCompare.filterSide")} ${gi + 1}.${fi + 1}`}
+                      value={filt.side === "before" || filt.side === "after" ? filt.side : "both"}
+                      onChange={(e) => {
+                        const next = groups.map((g) => g.map((x) => ({ ...x })));
+                        const side = e.target.value as Side;
+                        if (side === "before" || side === "after") next[gi][fi] = { ...next[gi][fi], side };
+                        else delete next[gi][fi].side;
+                        setGroups(next);
+                      }}
+                    >
+                      <option value="both">{t("bizCompare.scopeBoth")}</option>
+                      <option value="before">{t("bizCompare.scopeBefore")}</option>
+                      <option value="after">{t("bizCompare.scopeAfter")}</option>
+                    </select>
+                  ) : null}
                   <Input
                     value={
                       Array.isArray(filt.value) ? filt.value.join(",") : String(filt.value ?? "")
@@ -789,6 +898,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
   const [tplNormText, setTplNormText] = useState("");
   const [tplSheets, setTplSheets] = useState<MetricSheet[]>([]);
   const [tplSheetIdx, setTplSheetIdx] = useState(0);
+  const [valueMapScope, setValueMapScope] = useState<Record<string, Side>>({});
   const [tplPaneTab, setTplPaneTab] = useState<"fields" | "filters">("fields");
   const [showMetricPicker, setShowMetricPicker] = useState(true);
 
@@ -811,7 +921,8 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
   const [storeUnchanged, setStoreUnchanged] = useState<StoreUnchanged>("auto");
   const [mapName, setMapName] = useState("端口映射");
   const [mapText, setMapText] = useState("");
-  const [validateOut, setValidateOut] = useState<any>(null);
+  const [validateOut, setValidateOut] = useState<PreflightReportData | null>(null);
+  const [mapView, setMapView] = useState<"text" | "table">("text");
   const [runs, setRuns] = useState<RunRecord[]>([]);
   const [runsLoading, setRunsLoading] = useState(false);
   const [runsError, setRunsError] = useState("");
@@ -1333,6 +1444,8 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
       success_count?: number;
       diff_count?: number;
       pass_rate?: number | null;
+      data_state?: string;
+      data_state_reasons?: string[];
     }>;
     // Failures first; keep pending/running at the end so completed fails stay visible
     return [...raw].sort((a, b) => {
@@ -1349,6 +1462,9 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
   const activeFail = sheetFailOf(activeSheetCard || {});
   const activeSuccess = sheetSuccessOf(activeSheetCard || {});
   const activePassRate = sheetPassRateOf(activeSheetCard || {});
+  const activeDataState = String(activeSheetCard?.data_state || "ok");
+  const activeCoverage = (runSheets.find((sh) => sheetIdentity(sh) === sheetIdentity(activeSheetCard || {}))?.summary as
+    { mapping_coverage?: { suspect_unmapped_total?: number; suspect_unmapped?: string[] } } | undefined)?.mapping_coverage;
   const activeSheetPending = ["pending", "running", "queued"].includes(
     String(activeSheetCard?.status || ""),
   );
@@ -1501,6 +1617,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     setTplSheets([]);
     setTplSheetIdx(0);
     setTplPaneTab("fields");
+    setValueMapScope({});
     setShowMetricPicker(true);
     setTplOpen(true);
   };
@@ -1515,6 +1632,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     setTplSheets(sheets.length ? sheets.map(cloneSheet) : []);
     setTplSheetIdx(0);
     setTplPaneTab("fields");
+    setValueMapScope({});
     setShowMetricPicker(!sheets.length);
     setTplOpen(true);
   };
@@ -1605,18 +1723,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
         name: tplName || tplSheets.map((s) => sheetLabel(s)).join("+"),
         note: tplNote,
         iface_normalize_rules: parseIfaceNormText(tplNormText),
-        metrics: tplSheets.map((s) => ({
-          sheet_id: sheetIdentity(s),
-          title: s.title || sheetIdentity(s),
-          metric_id: s.metric_id,
-          key_fields: s.key_fields,
-          iface_fields: s.iface_fields,
-          compare_fields: s.compare_fields,
-          display_fields: s.display_fields || [...s.key_fields, ...s.compare_fields],
-          row_filters: s.row_filters || [],
-          field_rules: s.field_rules || [],
-          ignore_port_changes: s.ignore_port_changes,
-        })),
+        metrics: tplSheets.map((s) => sheetPayload(s, sheetIdentity(s))),
       };
       if (tplEditId) await bizCompareUpdateTemplate(tplEditId, body);
       else await bizCompareCreateTemplate(body);
@@ -1676,18 +1783,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
         name: body.name,
         note: body.note,
         iface_normalize_rules: body.iface_normalize_rules || [],
-        metrics: body.metrics.map((s) => ({
-          sheet_id: sheetIdentity(s),
-          title: s.title || sheetIdentity(s),
-          metric_id: s.metric_id,
-          key_fields: s.key_fields,
-          iface_fields: s.iface_fields,
-          compare_fields: s.compare_fields,
-          display_fields: s.display_fields || [...s.key_fields, ...s.compare_fields],
-          row_filters: s.row_filters || [],
-          field_rules: s.field_rules || [],
-          ignore_port_changes: s.ignore_port_changes,
-        })),
+        metrics: body.metrics.map((s) => sheetPayload(s, sheetIdentity(s))),
       });
       showOk(t("bizCompare.templateImported"));
       invalidateCutoverCache("bizMonitor:");
@@ -1717,21 +1813,6 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     }
   };
 
-  const parseMapRows = () => {
-    const rows: { before_if: string; after_if: string }[] = [];
-    for (const line of mapText.split(/\r?\n/)) {
-      const s = line.trim();
-      if (!s || s.startsWith("#") || s.toLowerCase().startsWith("old") || s.toLowerCase().startsWith("before")) {
-        continue;
-      }
-      const parts = s.split(/[,|\t]+/).map((x) => x.trim());
-      if (parts.length >= 2 && parts[0] && parts[1]) {
-        rows.push({ before_if: parts[0], after_if: parts[1] });
-      }
-    }
-    return rows;
-  };
-
   const loadMappingText = (id: string) => {
     const m = mappings.find((x) => x.id === id);
     if (!m) return;
@@ -1740,17 +1821,52 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     setMapText(m.rows.map((r) => `${r.before_if},${r.after_if}`).join("\n"));
   };
 
+  const mapParsed = useMemo(() => parseMapText(mapText), [mapText]);
+  const savedMapping = mappings.find((x) => x.id === mappingId);
+  const mapDirty = useMemo(() => mapTextDirty(mapText, savedMapping?.rows), [mapText, savedMapping]);
+
+  /** Persist the editor text. Returns the mapping id, "" for "no mapping", or null when blocked. */
+  const persistMapping = async (): Promise<string | null> => {
+    const parsed = mapParsed;
+    if (parsed.invalidLines.length || parsed.duplicateBefore.length) {
+      showError(t("bizCompare.mapInvalid", {
+        lines: parsed.invalidLines.join(", ") || "-",
+        dup: parsed.duplicateBefore.join(", ") || "-",
+      }));
+      return null;
+    }
+    if (!parsed.rows.length) {
+      if (mappingId && mapDirty) {
+        showError(t("bizCompare.mapEmpty"));
+        return null;
+      }
+      return mappingId;
+    }
+    if (savedMapping) {
+      const own = jobId && jobs.find((j) => j.id === jobId)?.mapping_id === savedMapping.id ? 1 : 0;
+      const jobsUsing = Math.max(0, Number(savedMapping.job_count || 0) - own);
+      const projectsUsing = Number(savedMapping.project_count || 0);
+      if ((jobsUsing > 0 || projectsUsing > 0)
+        && !window.confirm(t("bizCompare.mapSharedConfirm", { jobs: jobsUsing, projects: projectsUsing }))) {
+        return null;
+      }
+    }
+    const rows = parsed.rows;
+    let id = mappingId;
+    if (mappingId) await bizCompareUpdateMapping(mappingId, { name: mapName, rows });
+    else {
+      const m = await bizCompareCreateMapping({ name: mapName, rows });
+      id = String(m.id);
+    }
+    setMappingId(id);
+    await refresh({ force: true });
+    return id;
+  };
+
   const saveMapping = async () => {
     setBusy(true);
     try {
-      const rows = parseMapRows();
-      if (mappingId) await bizCompareUpdateMapping(mappingId, { name: mapName, rows });
-      else {
-        const m = await bizCompareCreateMapping({ name: mapName, rows });
-        setMappingId(String(m.id));
-      }
-      showOk(t("bizCompare.mappingSaved"));
-      await refresh({ force: true });
+      if ((await persistMapping()) !== null) showOk(t("bizCompare.mappingSaved"));
     } catch (e) {
       showError(formatErr(e));
     } finally {
@@ -1758,25 +1874,49 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     }
   };
 
+  /** Job create/save/run must not silently drop edited mapping text: save it first. */
+  const ensureMappingSaved = async (): Promise<string | null> => {
+    if (!mapDirty) return mappingId;
+    const id = await persistMapping();
+    if (id !== null && id !== mappingId) showOk(t("bizCompare.mappingAutoSaved"));
+    return id;
+  };
+
   const doValidate = async () => {
-    if (!mappingId || !beforeBatchId || !afterBatchId) {
-      showError(t("bizCompare.validateNeed"));
+    if (!beforeBatchId || !afterBatchId) {
+      showError(t("bizCompare.mappingNeedBatches"));
+      return;
+    }
+    if (mapParsed.invalidLines.length || mapParsed.duplicateBefore.length) {
+      showError(t("bizCompare.mapInvalid", {
+        lines: mapParsed.invalidLines.join(", ") || "-",
+        dup: mapParsed.duplicateBefore.join(", ") || "-",
+      }));
       return;
     }
     setBusy(true);
     try {
-      const v = await bizCompareValidateMapping({
-        mapping_id: mappingId,
+      // The editor text is what gets checked, saved or not.
+      const v = (await bizCompareMappingPreflight({
+        template_id: templateId,
+        enabled_sheet_ids: enabledSheetIds,
+        mapping_rows: mapParsed.rows,
         before_batch_id: beforeBatchId,
         after_batch_id: afterBatchId,
-        template_id: templateId,
-      });
+      })) as unknown as PreflightReportData;
       setValidateOut(v);
     } catch (e) {
       showError(formatErr(e));
     } finally {
       setBusy(false);
     }
+  };
+
+  /** Suspected-unmapped ports go into the editor as `port,` lines; the target is left to fill in. */
+  const addSuspectedPorts = (ports: string[]) => {
+    const have = new Set(mapParsed.rows.map((r) => r.before_if));
+    const lines = ports.filter((p) => !have.has(p)).map((p) => `${p},`);
+    if (lines.length) setMapText((prev) => `${prev.replace(/\s+$/, "")}${prev.trim() ? "\n" : ""}${lines.join("\n")}`);
   };
 
   const resetJobForm = (preset?: Partial<Job>) => {
@@ -1811,10 +1951,10 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     }
   };
 
-  const jobConfigBody = () => ({
+  const jobConfigBody = (mid: string = mappingId) => ({
     name,
     template_id: templateId,
-    mapping_id: mappingId,
+    mapping_id: mid,
     before_task_id: beforeTaskId,
     after_task_id: afterTaskId || beforeTaskId,
     before_batch_id: beforeBatchId,
@@ -1903,7 +2043,9 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     }
     setBusy(true);
     try {
-      const j = await bizCompareCreateJob(jobConfigBody());
+      const mid = await ensureMappingSaved();
+      if (mid === null) return;
+      const j = await bizCompareCreateJob(jobConfigBody(mid));
       showOk(t("bizCompare.created"));
       closeCreateJob();
       await refresh({ force: true });
@@ -2003,7 +2145,9 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     }
     setBusy(true);
     try {
-      await bizCompareUpdateJob(jobId, jobConfigBody());
+      const mid = await ensureMappingSaved();
+      if (mid === null) return;
+      await bizCompareUpdateJob(jobId, jobConfigBody(mid));
       showOk(t("bizCompare.jobSaved"));
       await refresh({ force: true });
     } catch (e) {
@@ -2041,7 +2185,9 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     const request = jobRequestRef.current;
     setBusy(true);
     try {
-      await bizCompareUpdateJob(jobId, jobConfigBody());
+      const mid = await ensureMappingSaved();
+      if (mid === null) return;
+      await bizCompareUpdateJob(jobId, jobConfigBody(mid));
       // Async enqueue — returns immediately with status=running; poll below.
       const run = await bizCompareRunJob(jobId);
       if (request !== jobRequestRef.current) return;
@@ -2251,17 +2397,48 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
           <Input value={mapName} onChange={(e) => setMapName(e.target.value)} />
         </label>
       </div>
-      <label className="ui-field ui-field--full">
-        <span className="ui-field__label">{t("bizCompare.mappingPairs")}</span>
-        <textarea
-          className="bs-cmp-mapping__editor"
-          value={mapText}
-          onChange={(e) => setMapText(e.target.value)}
-          placeholder={t("bizCompare.mapHint")}
-          rows={4}
-          spellCheck={false}
-        />
-      </label>
+      <div className="bs-cmp-mapping__views">
+        {(["text", "table"] as const).map((v) => (
+          <button
+            key={v}
+            type="button"
+            className={`mt-link-btn${mapView === v ? " is-active" : ""}`}
+            aria-pressed={mapView === v}
+            onClick={() => setMapView(v)}
+          >
+            {t(v === "text" ? "bizCompare.mapViewText" : "bizCompare.mapViewTable")}
+          </button>
+        ))}
+      </div>
+      {mapView === "table" ? (
+        <MappingTable text={mapText} onChange={setMapText} t={t} />
+      ) : (
+        <label className="ui-field ui-field--full">
+          <span className="ui-field__label">{t("bizCompare.mappingPairs")}</span>
+          <textarea
+            className="bs-cmp-mapping__editor"
+            value={mapText}
+            onChange={(e) => setMapText(e.target.value)}
+            placeholder={t("bizCompare.mapHint")}
+            rows={4}
+            spellCheck={false}
+          />
+        </label>
+      )}
+      <div
+        className={`muted bs-cmp-mapping__status${mapParsed.invalidLines.length || mapParsed.duplicateBefore.length ? " is-error" : ""}`}
+        role="status"
+        data-testid="map-parse-status"
+      >
+        {t("bizCompare.mapParsed", { n: mapParsed.rows.length })}
+        {mapParsed.invalidLines.length
+          ? ` · ${t("bizCompare.mapInvalidLines", { m: mapParsed.invalidLines.length, lines: mapParsed.invalidLines.join(", ") })}`
+          : ""}
+        {mapParsed.duplicateBefore.length
+          ? ` · ${t("bizCompare.mapDuplicate", { list: mapParsed.duplicateBefore.join(", ") })}`
+          : ""}
+        {mapDirty ? ` · ${t("bizCompare.mapUnsaved")}` : ""}
+      </div>
       <div className="bs-cmp-mapping__actions">
         <Button size="sm" variant="secondary" isDisabled={busy} onPress={() => void saveMapping()}>
           {t("bizCompare.saveMapping")}
@@ -2270,11 +2447,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
           {t("bizCompare.validateMapping")}
         </Button>
       </div>
-      {validateOut ? (
-        <pre className="muted" style={{ fontSize: 12, maxHeight: 120, overflow: "auto" }}>
-          {JSON.stringify(validateOut, null, 2)}
-        </pre>
-      ) : null}
+      {validateOut ? <PreflightReport report={validateOut} t={t} onAddSuspects={addSuspectedPorts} /> : null}
     </div>
   );
 
@@ -2515,6 +2688,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                       <td>
                         <div className="pt-list-task-name">{tpl.name}</div>
                         {tpl.job_count ? <div className="muted">{t("bizCompare.templateUsage", {n: tpl.job_count})}</div> : null}
+                        {tpl.monitor_template_count ? <div className="muted">{t("bizCompare.templateMonitorUsage", {n: tpl.monitor_template_count})}</div> : null}
                       </td>
                       <td>
                         <div className="bs-cmp-metric-chips">
@@ -2546,7 +2720,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                           <Button
                             size="sm"
                             variant="danger"
-                            isDisabled={busy || Boolean(tpl.job_count) || jobs.some((j) => j.template_id === tpl.id)}
+                            isDisabled={busy || Boolean(tpl.job_count) || Boolean(tpl.monitor_template_count) || jobs.some((j) => j.template_id === tpl.id)}
                             onPress={() => void removeTemplate(tpl.id)}
                           >
                             {t("bizCompare.delete")}
@@ -2827,6 +3001,23 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                   <FieldSelect label={t("bizCompare.portPolicy")} value={activeTplSheet.ignore_port_changes == null ? "auto" : activeTplSheet.ignore_port_changes ? "ignore" : "strict"} onChange={(e) => updateActiveSheet({ignore_port_changes: e.target.value === "auto" ? null : e.target.value === "ignore"})} hint={t("bizCompare.portPolicyHint")}>
                     <option value="auto">{t("bizCompare.portPolicyAuto")}</option><option value="strict">{t("bizCompare.portPolicyStrict")}</option><option value="ignore">{t("bizCompare.portPolicyIgnore")}</option>
                   </FieldSelect>
+                  <div className="ct-sheet-options">
+                    <FieldSelect label={t("bizCompare.unmappedPortPolicy")} value={activeTplSheet.unmapped_port_policy || "by_name"} hint={t("bizCompare.unmappedPortPolicyHint")}
+                      onChange={(e) => updateActiveSheet({ unmapped_port_policy: e.target.value as "by_name" | "ignore_port" })}>
+                      <option value="by_name">{t("bizCompare.unmappedByName")}</option>
+                      <option value="ignore_port">{t("bizCompare.unmappedIgnorePort")}</option>
+                    </FieldSelect>
+                    <FieldSelect label={t("bizCompare.duplicatePairing")} value={activeTplSheet.duplicate_pairing || "sorted"} hint={t("bizCompare.duplicatePairingHint")}
+                      onChange={(e) => updateActiveSheet({ duplicate_pairing: e.target.value as "sorted" | "ordered" })}>
+                      <option value="sorted">{t("bizCompare.pairSorted")}</option>
+                      <option value="ordered">{t("bizCompare.pairOrdered")}</option>
+                    </FieldSelect>
+                    <label className="ct-sheet-options__check">
+                      <input type="checkbox" checked={activeTplSheet.builtin_vendor_canonical !== false}
+                        onChange={(e) => updateActiveSheet({ builtin_vendor_canonical: e.target.checked ? undefined : false })} />
+                      <span>{t("bizCompare.builtinVendorCanonical")}</span>
+                    </label>
+                  </div>
                   {tplPaneTab === "filters" ? (activeTplFilterGroups === null ? <div className="ct-complex-filters"><p className="muted">{t("bizCompare.complexFiltersPreserved")}</p><pre aria-label={t("bizCompare.tabFilters")}>{JSON.stringify(activeTplSheet.row_filters, null, 2)}</pre></div> : (
                     <TplRowFiltersEditor
                       groups={activeTplFilterGroups}
@@ -2849,6 +3040,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                               <th>{t("bizCompare.tolerance")}</th>
                               <th>{t("bizCompare.displayField")}</th>
                               <th>{t("bizCompare.normalizeField")}</th>
+                              <th>{t("bizCompare.valueMap")}</th>
                             </tr>
                           </thead>
                         <tbody>
@@ -2862,7 +3054,8 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                             const cmpMode = ["number", "int", "float"].includes(rawMode) ? "numeric" : ["pct", "rel"].includes(rawMode) ? "percent" : ["ignore", "skip", "off"].includes(rawMode) ? "eq" : rawMode;
                             const rawNorm = (rule.normalize || "none").trim().toLowerCase();
                             const norm = rawNorm === "strip" ? "none" : rawNorm;
-                            const needsTol = cmpMode === "numeric" || cmpMode === "percent";
+                            const needsTol = ["numeric", "percent", "numeric_min", "numeric_max"].includes(cmpMode);
+                            const vmScope = valueMapScope[f.name] || "both";
                             return (
                               <tr key={f.name}>
                                 <td>
@@ -2923,19 +3116,23 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                                     value={cmpMode === "ignore" ? "eq" : cmpMode}
                                     aria-label={`${f.name} ${t("bizCompare.compareMode")}`}
                                     disabled={!isCompare}
-                                    onChange={(e) =>
+                                    onChange={(e) => {
+                                      const mode = e.target.value;
                                       updateActiveSheet({
                                         field_rules: upsertFieldRule(activeTplSheet, f.name, {
-                                          compare: e.target.value,
-                                          tolerance:
-                                            e.target.value === "eq" ? undefined : rule.tolerance ?? 0,
+                                          compare: mode,
+                                          tolerance: ["eq", "not_worse"].includes(mode) ? undefined : rule.tolerance ?? 0,
+                                          rank: mode === "not_worse" ? (rule.rank?.length ? rule.rank : ["up", "down"]) : undefined,
                                         }),
-                                      })
-                                    }
+                                      });
+                                    }}
                                   >
                                     <option value="eq">{t("bizCompare.modeEq")}</option>
                                     <option value="numeric">{t("bizCompare.modeNumeric")}</option>
                                     <option value="percent">{t("bizCompare.modePercent")}</option>
+                                    <option value="not_worse">{t("bizCompare.modeNotWorse")}</option>
+                                    <option value="numeric_min">{t("bizCompare.modeNumericMin")}</option>
+                                    <option value="numeric_max">{t("bizCompare.modeNumericMax")}</option>
                                   </select>
                                 </td>
                                 <td>
@@ -2951,7 +3148,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                                         ? String(rule.tolerance)
                                         : ""
                                     }
-                                    placeholder={cmpMode === "percent" ? "%" : ""}
+                                    placeholder={["percent", "numeric_min", "numeric_max"].includes(cmpMode) ? "%" : ""}
                                     disabled={!isCompare || !needsTol}
                                     onChange={(e) => {
                                       const raw = e.target.value.trim();
@@ -2989,7 +3186,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                                     className="mt-select"
                                     value={norm}
                                     aria-label={`${f.name} ${t("bizCompare.normalizeField")}`}
-                                    disabled={!isCompare}
+                                    disabled={!isCompare && !isKey}
                                     onChange={(e) =>
                                       updateActiveSheet({
                                         field_rules: upsertFieldRule(activeTplSheet, f.name, {
@@ -3007,12 +3204,25 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                                     </option>
                                   </select>
                                 </td>
+                                <td>
+                                  <ValueMapCell
+                                    field={f.name}
+                                    t={t}
+                                    scope={vmScope}
+                                    onScope={(sc) => setValueMapScope((prev) => ({ ...prev, [f.name]: sc }))}
+                                    value={valueMapFor(activeTplSheet, f.name, vmScope)}
+                                    onCommit={(map) => updateActiveSheet({ field_rules: setValueMapFor(activeTplSheet, f.name, vmScope, map) })}
+                                    showRank={cmpMode === "not_worse"}
+                                    rank={rule.rank || []}
+                                    onRank={(rank) => updateActiveSheet({ field_rules: upsertFieldRule(activeTplSheet, f.name, { compare: "not_worse", rank }) })}
+                                  />
+                                </td>
                               </tr>
                             );
                           })}
                             {!activeTplFields.length ? (
                               <tr>
-                                <td colSpan={8}>
+                                <td colSpan={9}>
                                   <div className="pt-list-empty">{t("bizCompare.noMetricFields")}</div>
                                 </td>
                               </tr>
@@ -3767,7 +3977,11 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                                 {pending ? "—" : ok}
                               </span>
                               <span className="bs-cmp-nav__num bs-cmp-nav__num--rate">
-                                {pending || rate === null ? "…" : formatPassRate(rate)}
+                                {pending
+                                  ? "…"
+                                  : (c as { data_state?: string }).data_state && (c as { data_state?: string }).data_state !== "ok"
+                                    ? dataStateLabel((c as { data_state?: string }).data_state, t)
+                                    : rate === null ? "…" : formatPassRate(rate)}
                               </span>
                             </span>
                           </button>
@@ -3777,6 +3991,19 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                   </aside>
 
                   <div className="bs-cmp-main">
+                    {activeDataState !== "ok" ? (
+                      <p className="cx-banner" role="status" data-testid="data-state-banner">
+                        <strong>{dataStateLabel(activeDataState, t)}</strong>{" · "}
+                        {t(`bizCompare.stateBanner.${activeDataState}`)}
+                        {activeSheetCard?.data_state_reasons?.length ? ` (${activeSheetCard.data_state_reasons.join(", ")})` : ""}
+                      </p>
+                    ) : null}
+                    {activeCoverage?.suspect_unmapped_total ? (
+                      <p className="cx-banner" role="status" data-testid="coverage-banner">
+                        {t("bizCompare.coverageBanner", { n: activeCoverage.suspect_unmapped_total })}
+                        {` ${(activeCoverage.suspect_unmapped || []).slice(0, 5).join(", ")}`}
+                      </p>
+                    ) : null}
                     <div
                       className={`bs-cmp-strip${
                         activeSheetPending
@@ -3821,9 +4048,13 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                           </span>
                         </span>
                         <span className="bs-cmp-strip__pass-value">
-                          {activeSheetPending || activePassRate === null
+                          {activeSheetPending
                             ? "…"
-                            : formatPassRate(activePassRate)}
+                            : activeDataState !== "ok" && activePassRate === null
+                              ? dataStateLabel(activeDataState, t)
+                              : activePassRate === null
+                                ? "…"
+                                : formatPassRate(activePassRate)}
                         </span>
                       </div>
                       <div className="bs-cmp-strip__kinds" role="group">
@@ -4159,6 +4390,11 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                                     }`}
                                   >
                                     {cellText(d.key?.[k] ?? pre[k] ?? post[k]) || "—"}
+                                    {d.raw_key_before?.[k] !== undefined && cellText(d.raw_key_before[k]) !== cellText(d.key?.[k]) ? (
+                                      <span className="cx-rawkey" title={t("bizCompare.rawKeyTitle")}>
+                                        ← {cellText(d.raw_key_before[k])}
+                                      </span>
+                                    ) : null}
                                   </td>
                                 ))}
                                 {resultColumns.extras

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
+
 import logging
 from datetime import datetime, timedelta
 from typing import Any
@@ -23,6 +25,11 @@ def _utcnow() -> datetime:
 
 def max_concurrent_tasks() -> int:
     return max(1, int(getattr(settings, "biz_state_max_concurrent_tasks", 16) or 16))
+
+
+def max_sessions_per_ne() -> int:
+    """Concurrent SSH collections allowed per network element (>= 1)."""
+    return max(1, int(getattr(settings, "biz_state_max_sessions_per_ne", 2) or 2))
 
 
 def enqueue_collect(task_id: str, *, manual: bool = False) -> dict[str, Any]:
@@ -135,15 +142,16 @@ def enqueue_collect_group(group_id: str, *, manual: bool = False,
             BizStateTask.id).with_for_update().populate_existing().all()
         result: dict[str, Any] = {"ok": False, "queued": False, "task_id": requested_task_id,
                                   "collect_group_id": group_id}
-        if len(tasks) != 2 or len({t.ne_id for t in tasks}) != 2:
+        # One task = a single device used as both sides (same-device cutover); two tasks = a pair.
+        if len(tasks) not in (1, 2) or len({t.ne_id for t in tasks}) != len(tasks):
             return {**result, "reason": "collect_pair_invalid"}
-        if max_concurrent_tasks() < 2:
+        if max_concurrent_tasks() < len(tasks):
             return {**result, "reason": "collect_pair_capacity"}
         from ..cli_budget import clamp_cli_workers
 
         worker_cap = clamp_cli_workers(int(getattr(settings, "biz_state_worker_collect_threads", None)
             or getattr(settings, "biz_state_dispatch_workers", 8) or 8))
-        if worker_cap < 2:
+        if worker_cap < len(tasks):
             return {**result, "reason": "collect_pair_capacity"}
         if any(t.collect_running for t in tasks):
             return {**result, "reason": "collect_pair_busy"}
@@ -230,13 +238,12 @@ def claim_queued_batches(limit: int | None = None) -> list[dict[str, Any]]:
         if slots <= 0:
             return []
 
-        busy_nes = {
-            str(r[0] or "").strip()
-            for r in db.query(BizStateBatch.ne_id)
-            .filter(BizStateBatch.status == "running")
-            .all()
-            if str(r[0] or "").strip()
-        }
+        # Running collections per NE; an NE accepts new ones until it reaches its session cap.
+        per_ne_cap = max_sessions_per_ne()
+        ne_running: dict[str, int] = defaultdict(int)
+        for (running_ne,) in db.query(BizStateBatch.ne_id).filter(BizStateBatch.status == "running").all():
+            if str(running_ne or "").strip():
+                ne_running[str(running_ne).strip()] += 1
 
         # Manual route rounds yield to fresh monitoring, but must eventually
         # run even when a busy device always has regular metrics queued.
@@ -266,14 +273,19 @@ def claim_queued_batches(limit: int | None = None) -> list[dict[str, Any]]:
                 peers = db.query(BizStateBatch).filter(
                     BizStateBatch.collect_round_id == batch.collect_round_id,
                 ).with_for_update(skip_locked=pg).all()
-                if len(peers) != 2 or any(p.status != "queued" for p in peers):
+                expected = db.query(BizStateTask.id).filter(
+                    BizStateTask.collect_group_id == batch.collect_group_id).count() if batch.collect_group_id else 2
+                if len(peers) != max(1, expected) or any(p.status != "queued" for p in peers):
                     continue
                 group = peers
             visited.update(p.id for p in group)
             if len(group) > slots - len(claimed_rows):
                 continue
-            nes = {str(p.ne_id or "").strip() for p in group}
-            if nes & busy_nes:
+            wanted: dict[str, int] = defaultdict(int)
+            for p in group:
+                if str(p.ne_id or "").strip():
+                    wanted[str(p.ne_id).strip()] += 1
+            if any(ne_running[ne] + n > per_ne_cap for ne, n in wanted.items()):
                 continue
             now = _utcnow()
             for member in group:
@@ -285,7 +297,8 @@ def claim_queued_batches(limit: int | None = None) -> list[dict[str, Any]]:
                     if task:
                         task.last_collect_started_at = now
                 claimed_rows.append(member)
-            busy_nes.update(nes - {""})
+            for ne, n in wanted.items():
+                ne_running[ne] += n
 
         if not claimed_rows:
             db.rollback()

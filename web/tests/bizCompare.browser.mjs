@@ -40,6 +40,8 @@ const diffs = [
   { kind: "added", key: { neighbor: "10.2.1.3", vrf: "core" }, before: null, after: row("10.2.1.3", "Established"), changes: {} },
   { kind: "unchanged", key: { neighbor: "10.2.1.4", vrf: "core" }, before: row("10.2.1.4", "Established"), after: row("10.2.1.4", "Established"), changes: {} },
 ];
+const mappingPosts = [];
+const preflightPosts = [];
 let failDiffs = false;
 let active = false;
 let legacy = false;
@@ -79,6 +81,18 @@ await page.route("**/v1/**", async (route) => {
   } else if (p.endsWith("/runs/run-1")) {
     pollCounts.detail++;
     data = { ...run, config_snapshot_version: legacy ? null : 1, status: active ? "running" : "success" };
+  } else if (p.endsWith("/compare/preflight") && route.request().method() === "POST") {
+    preflightPosts.push(route.request().postDataJSON());
+    data = {
+      verdict: "risk", risk_reasons: ["suspect_unmapped"], coverage: { mapped: 2, suspect_unmapped: 1, identity_same_name: 0, rate: 66.7 },
+      mapping: { pairs: 2, unused_map_keys: [], map_targets_missing_on_after: [], n_to_1_targets: [] },
+      sheets: [{ sheet_id: "peer", title: "BGP 邻居", metric_id: "bgp_peer", before_count: 4, after_count: 4, data_state: "ok",
+        counts: { mapped_exact: 2, mapped_by_parent: 0, identity_same_name: 0, suspect_unmapped: 1 }, suspect_unmapped: ["gei-7"], suspect_unmapped_total: 1 }],
+      command_coverage: { only_before: [], only_after: [] },
+    };
+  } else if (p.endsWith("/mappings") && route.request().method() === "POST") {
+    mappingPosts.push(route.request().postDataJSON());
+    data = { id: "map-new", name: "端口映射", rows: route.request().postDataJSON().rows };
   } else if (p.endsWith("/mappings")) data = { items: [] };
   else data = { items: [] };
   await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(data) });
@@ -108,6 +122,49 @@ try {
   assert.deepEqual(body.enabled_sheet_ids, ["peer"]);
   assert.equal(body.before_batch_id, "b");
   assert.equal(body.after_batch_id, "a");
+  // A3: mapping text typed but never "saved" must not be dropped silently.
+  const mapEditor = page.locator(".bs-cmp-mapping__editor");
+  const mapStatus = page.getByTestId("map-parse-status");
+  await mapEditor.fill("GE0/1/0/1 gei0/2/0/1\nxge1\tgei2\nbroken line here");
+  await mapStatus.getByText("已解析 2 对", { exact: false }).waitFor();
+  assert.match(await mapStatus.innerText(), /无效 1 行（第 3 行）/);
+  assert.match(await mapStatus.innerText(), /未保存/);
+  let patched = false;
+  const onPatch = (req) => { if (req.method() === "PATCH" && req.url().endsWith("/compare/jobs/job-1")) patched = true; };
+  page.on("request", onPatch);
+  await page.getByRole("button", { name: "保存配置", exact: true }).click();
+  await page.waitForTimeout(400);
+  assert.equal(patched, false, "invalid mapping text blocks saving the job");
+  assert.equal(mappingPosts.length, 0);
+  await mapEditor.fill("GE0/1/0/1 gei0/2/0/1\nxge1\tgei2");
+  const mappedJob = page.waitForRequest((req) => req.method() === "PATCH" && req.url().endsWith("/compare/jobs/job-1"));
+  await page.getByRole("button", { name: "保存配置", exact: true }).click();
+  assert.equal((await mappedJob).postDataJSON().mapping_id, "map-new");
+  page.off("request", onPatch);
+  assert.deepEqual(mappingPosts[0].rows, [
+    { before_if: "GE0/1/0/1", after_if: "gei0/2/0/1" }, { before_if: "xge1", after_if: "gei2" }]);
+  // B5: the pre-flight checks the editor text (saved or not) against the two batches.
+  await page.getByRole("button", { name: "校验映射", exact: true }).click();
+  const pf = page.getByTestId("preflight-report");
+  await pf.waitFor();
+  assert.deepEqual(preflightPosts.at(-1).mapping_rows, [
+    { before_if: "GE0/1/0/1", after_if: "gei0/2/0/1" }, { before_if: "xge1", after_if: "gei2" }]);
+  assert.equal(preflightPosts.at(-1).before_batch_id, "b");
+  assert.equal(preflightPosts.at(-1).after_batch_id, "a");
+  assert.match(await pf.textContent(), /疑似漏配/);
+  await pf.getByRole("button", { name: "加入映射编辑区（目标待填）", exact: true }).click();
+  assert.match(await mapEditor.inputValue(), /gei-7,/);
+  // F1: table view edits the same text.
+  await mapEditor.fill("a1,b1\na1,b2\nc1,");
+  await page.getByRole("button", { name: "表格", exact: true }).click();
+  const tbl = page.getByTestId("mapping-table");
+  await tbl.waitFor();
+  assert.equal(await tbl.locator("tbody tr.is-duplicate").count(), 2);
+  assert.equal(await tbl.locator("tbody tr.is-todo").count(), 1);
+  await tbl.getByLabel("操作后接口 3", { exact: true }).fill("d1");
+  await page.getByRole("button", { name: "文本", exact: true }).click();
+  assert.equal(await mapEditor.inputValue(), "a1,b1\na1,b2\nc1,d1");
+  await mapEditor.fill("");
   await page.getByLabel("模式", { exact: true }).selectOption("auto");
   assert.equal(await page.getByLabel("操作后批次", { exact: true }).count(), 0);
   await page.getByText("保持操作前批次固定；操作后任务采集完成时，自动取最新批次进行对比。", { exact: true }).waitFor();
@@ -209,6 +266,25 @@ try {
   await page.getByLabel("接口对应关系", { exact: true }).waitFor();
   await page.getByRole("button", { name: "关闭", exact: true }).click();
 
+  // V1/V5: a side that parsed nothing is flagged, and the before-side name is shown as printed.
+  const card = run.summary.sheet_cards[0];
+  Object.assign(card, { data_state: "suspect_parse", data_state_reasons: ["after:parsed_0_of_40_lines"] });
+  diffs[0].raw_key_before = { neighbor: "GE0/1", vrf: "core" };
+  diffs[0].key = { neighbor: "gei0/1", vrf: "core" };
+  await page.reload();
+  await page.getByRole("row").filter({ hasText: "割接前后 · 业务验收" }).getByRole("button", { name: "详情", exact: true }).click();
+  await page.getByRole("tab", { name: "比对结果", exact: true }).click();
+  await page.locator(".bs-cmp-row").first().waitFor();
+  const banner = page.getByTestId("data-state-banner");
+  await banner.waitFor();
+  assert.match(await banner.textContent(), /疑似解析失败/);
+  assert.match(await banner.textContent(), /parsed_0_of_40_lines/);
+  assert.match(await page.locator(".bs-cmp-nav__item").first().textContent(), /疑似解析失败/);
+  assert.match(await page.locator(".cx-rawkey").first().textContent(), /GE0\/1/);
+  Object.assign(card, { data_state: "ok", data_state_reasons: [] });
+  delete diffs[0].raw_key_before;
+  await page.getByRole("button", { name: "关闭", exact: true }).click();
+
   active = true;
   await page.reload();
   await page.getByRole("row").filter({ hasText: "割接前后 · 业务验收" }).getByRole("button", { name: "详情", exact: true }).click();
@@ -218,7 +294,7 @@ try {
   assert.ok(pollCounts.runs <= 3 && pollCounts.detail <= 3, JSON.stringify(pollCounts));
   assert.ok(pollCounts.runs >= 2 && pollCounts.detail >= 2, "active run should keep polling");
   assert.deepEqual(errors, []);
-  console.log(JSON.stringify({ passed: ["job list labels", "four config sections", "source pairing", "last sheet locked", "configuration save payload", "automatic mode", "390px configuration", "keyboard tabs", "wizard source selection", "same-task batch selection", "source change clears batch", "history counts", "execution and verdict separation", "queued progress semantics", "history loading", "history error retry", "390px history", "result layout", "saved execution settings", "legacy settings warning", "error clears stale rows", "retry", "clear filters", "768px toolbar", "old job response ignored", "single poller", "no runtime errors"], pollCounts, output }));
+  console.log(JSON.stringify({ passed: ["job list labels", "four config sections", "source pairing", "last sheet locked", "configuration save payload", "automatic mode", "390px configuration", "keyboard tabs", "wizard source selection", "same-task batch selection", "source change clears batch", "history counts", "execution and verdict separation", "queued progress semantics", "history loading", "history error retry", "390px history", "result layout", "saved execution settings", "legacy settings warning", "error clears stale rows", "retry", "clear filters", "768px toolbar", "old job response ignored", "single poller", "mapping pre-flight", "mapping table view", "data state banner", "raw before key", "no runtime errors"], pollCounts, output }));
 } catch (error) {
   await page.screenshot({ path: path.join(output, "biz-compare-test-failure.png"), fullPage: true });
   console.error(JSON.stringify(await page.locator(".bs-cmp-source select").evaluateAll((els) => els.map((el) => ({ value: el.value, html: el.parentElement.outerHTML })))));

@@ -52,6 +52,9 @@ export const bizCompareUpdateMapping = (mappingId: string, body: Record<string, 
 export const bizCompareValidateMapping = (body: Record<string, unknown>) =>
   apiPost<Record<string, unknown>>("/v1/biz-state/compare/mappings/validate", body);
 
+export const bizCompareMappingPreflight = (body: Record<string, unknown>) =>
+  apiPost<Record<string, unknown>>("/v1/biz-state/compare/preflight", body);
+
 export const bizCompareListJobs = () =>
   apiGet<{ items: Record<string, unknown>[] }>("/v1/biz-state/compare/jobs");
 

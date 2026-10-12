@@ -149,6 +149,45 @@ try {
   await savedJob;
   assert.deepEqual(writes.at(-1).enabled_sheet_ids, []);
   passed.push("missing sheets block save", "incomplete sources disabled", "explicit scope repair");
+  // Cross-vendor identity rules: value maps, directional compare, per-side aliases and sheet options
+  // must reach the API exactly as edited.
+  await page.goto(`${base}/network/cutover/compare-templates`);
+  await templateRow().waitFor();
+  await openEditor();
+  await editor().locator("details.ct-editor__norm summary").click();
+  await editor().getByLabel("接口归一化", { exact: true }).fill("GE,gei\nEth-Trunk,ae,after,huawei");
+  await editor().getByRole("tab", { name: /^字段规则/ }).click();
+  const stateRow = editor().locator(".ct-field-table tbody tr").filter({ has: page.getByText("state", { exact: true }) });
+  await stateRow.locator('input[type="checkbox"]').nth(2).check();
+  await editor().getByLabel("state 方式", { exact: true }).selectOption("not_worse");
+  await editor().getByLabel("state 好→坏顺序", { exact: true }).fill("up,down");
+  await editor().getByLabel("state 值映射", { exact: true }).fill("estab,established\n*down,down");
+  await editor().getByLabel("state 值映射", { exact: true }).blur();
+  await editor().getByLabel("state 值映射范围", { exact: true }).selectOption("before");
+  await editor().getByLabel("state 值映射", { exact: true }).fill("up/up,up");
+  await editor().getByLabel("state 值映射", { exact: true }).blur();
+  await editor().getByLabel("未映射端口", { exact: true }).selectOption("ignore_port");
+  await editor().getByLabel("同键多行配对", { exact: true }).selectOption("ordered");
+  await editor().getByRole("checkbox", { name: /内置厂商接口名称统一/ }).uncheck();
+  await editor().getByRole("button", { name: "保存模板", exact: true }).click();
+  await page.waitForTimeout(500);
+  const saved = writes.at(-1);
+  assert.deepEqual(saved.iface_normalize_rules, [{ from: "GE", to: "gei" }, { from: "Eth-Trunk", to: "ae", side: "after", vendor: "huawei" }]);
+  const sheetS = saved.metrics.find((m) => m.sheet_id === "s");
+  const stateRules = sheetS.field_rules.filter((r) => r.field === "state");
+  assert.deepEqual(stateRules.find((r) => !r.side), { field: "state", compare: "not_worse", rank: ["up", "down"], value_map: { estab: "established", "*down": "down" } });
+  assert.deepEqual(stateRules.find((r) => r.side === "before"), { field: "state", side: "before", value_map: { "up/up": "up" } });
+  assert.equal(sheetS.unmapped_port_policy, "ignore_port");
+  assert.equal(sheetS.duplicate_pairing, "ordered");
+  assert.equal(sheetS.builtin_vendor_canonical, false);
+  assert.deepEqual(sheetS.row_filters, complex, "opaque filters survive the same save");
+  passed.push("value map and rank saved", "per-side value map saved", "per-side alias saved", "sheet identity options saved");
+  // ... and come back unchanged when the template is opened again.
+  await openEditor();
+  await editor().getByRole("tab", { name: /^字段规则/ }).click();
+  assert.equal(await editor().getByLabel("state 值映射", { exact: true }).inputValue(), "estab,established\n*down,down");
+  assert.equal(await editor().getByLabel("未映射端口", { exact: true }).inputValue(), "ignore_port");
+  await page.keyboard.press("Escape");
   assert.deepEqual(errors, []);
   passed.push("no runtime errors");
   console.log(JSON.stringify({ passed, output }));

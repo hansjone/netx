@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import logging
+import threading
+from collections import OrderedDict
 from collections import Counter
 from datetime import datetime, timezone
 from typing import Any
@@ -13,6 +16,7 @@ from sqlalchemy import and_, insert, or_
 from sqlalchemy.orm import Session
 
 from ..biz_state.compare_rules import apply_row_filters, scalar_text
+from ..config import settings
 from ..biz_state.compare_service import (
     _load_metric_rows,
     _port_map_dict,
@@ -44,6 +48,44 @@ from .evaluate import (
 )
 
 PURPOSE_CUTOVER_HF = "cutover_hf"
+_log = logging.getLogger("netx.biz_migration")
+
+
+class BaselineRowCache:
+    """Process-local LRU of immutable baseline rows, bounded by total row count."""
+
+    def __init__(self, max_rows: int = 500_000) -> None:
+        self.max_rows = max_rows
+        self._items: "OrderedDict[tuple[str, str], list[dict[str, Any]]]" = OrderedDict()
+        self._rows = 0
+        self._lock = threading.Lock()
+
+    def get_or_load(self, batch_id: str, metric_id: str, loader: Any) -> list[dict[str, Any]]:
+        key = (batch_id, metric_id)
+        with self._lock:
+            hit = self._items.get(key)
+            if hit is not None:
+                self._items.move_to_end(key)
+                return hit
+        rows = loader()
+        if self.max_rows > 0 and len(rows) <= self.max_rows:
+            with self._lock:
+                if key not in self._items:
+                    self._items[key] = rows
+                    self._rows += len(rows)
+                while self._rows > self.max_rows and self._items:
+                    _, evicted = self._items.popitem(last=False)
+                    self._rows -= len(evicted)
+        return rows
+
+    def invalidate(self, batch_id: str = "") -> None:
+        with self._lock:
+            for key in [k for k in self._items if not batch_id or k[0] == batch_id]:
+                self._rows -= len(self._items.pop(key))
+
+
+BASELINE_ROWS = BaselineRowCache(int(getattr(settings, "biz_migration_baseline_cache_rows", 500_000)))
+
 MANUAL_ROUTE_METRICS = frozenset({"ip_route", "ipv6_route", "bgp_route"})
 
 
@@ -301,6 +343,22 @@ def _metric_sample_ok(db: Session, batch: BizStateBatch, metric_id: str) -> bool
     return bool(statuses) and all(s in ("ok", "ok_aux") for s in statuses)
 
 
+def _uncovered_slice_sides(
+    db: Session, sheet: dict[str, Any], metric_id: str, old_batch_id: str, new_batch_id: str,
+) -> list[str]:
+    from ..biz_state.compare_quality import covers_slice, side_receipts, sheet_slice
+
+    wanted = sheet_slice(sheet)
+    if not wanted:
+        return []
+    out = []
+    for side, bid in (("old", old_batch_id), ("new", new_batch_id)):
+        receipts = side_receipts(db, bid, metric_id)
+        if receipts and not covers_slice(receipts, wanted):
+            out.append(side)
+    return out
+
+
 def _current_pair_for_metric(db: Session, proj: BizMigrationProject, mid: str,
                              pin_old: str = "", pin_new: str = "") -> tuple[BizStateBatch | None, BizStateBatch | None, dict[str, Any]]:
     old_tid, new_tid = (_hf_task_id_for_metric(proj, side, mid) for side in ("old", "new"))
@@ -308,6 +366,20 @@ def _current_pair_for_metric(db: Session, proj: BizMigrationProject, mid: str,
     new_task = db.get(BizStateTask, new_tid) if new_tid else None
     gid = old_task.collect_group_id if old_task else ""
     meta: dict[str, Any] = {"collect_group_id": gid, "manual_only": bool(old_task and old_task.collect_manual_only)}
+    if gid and old_tid and old_tid == new_tid and not (pin_old or pin_new):
+        # Same device on both sides: one task, one batch, trivially the same round.
+        latest = db.query(BizStateBatch).filter(
+            BizStateBatch.collect_group_id == gid, BizStateBatch.task_id == old_tid).order_by(
+            BizStateBatch.queued_at.desc(), BizStateBatch.started_at.desc(), BizStateBatch.id.desc()).first()
+        if latest is None:
+            return None, None, {**meta, "sample_issues": ["collect_pair_missing"]}
+        meta.update({"collect_round_id": latest.collect_round_id, "old_collect_status": latest.status,
+                     "new_collect_status": latest.status})
+        if latest.status in ("running", "queued"):
+            return None, None, {**meta, "sample_issues": ["collect_pair_pending"]}
+        if not _metric_sample_ok(db, latest, mid):
+            return None, None, {**meta, "sample_issues": ["collect_pair_failed"]}
+        return latest, latest, meta
     if gid and not (pin_old or pin_new):
         if not new_task or new_task.collect_group_id != gid:
             return None, None, {**meta, "sample_issues": ["collect_pair_invalid"]}
@@ -483,19 +555,26 @@ def _monitor_template_brief(db: Session, template_id: str) -> dict[str, Any]:
     return mon_tpl._out(row, cmp_name, db=db)  # noqa: SLF001
 
 
-def resolve_project_monitor_template(db: Session, proj: BizMigrationProject) -> BizMonitorTemplate:
-    """Return monitor template for project; seed default port template if unbound."""
-    mon_tpl.ensure_default_monitor_templates(db)
+def resolve_project_monitor_template(
+    db: Session, proj: BizMigrationProject, *, persist: bool = True,
+) -> BizMonitorTemplate:
+    """Return monitor template for project; seed default port template if unbound.
+
+    ``persist=False`` is for read-only callers (GET): it never seeds, upgrades or binds,
+    it only reports which template the project would use.
+    """
+    if persist:
+        mon_tpl.ensure_default_monitor_templates(db)
     tid = str(getattr(proj, "monitor_template_id", None) or "").strip()
     row = db.get(BizMonitorTemplate, tid) if tid else None
     if row:
         return row
-    default_id = mon_tpl.default_port_monitor_template_id(db)
+    default_id = mon_tpl.default_port_monitor_template_id(db, seed=persist)
     row = db.get(BizMonitorTemplate, default_id) if default_id else None
     if not row:
         raise HTTPException(status_code=400, detail="monitor_template_required")
     # Persist default on first use so UI shows binding
-    if not tid:
+    if not tid and persist:
         proj.monitor_template_id = row.id
         proj.updated_at = utcnow_naive()
         db.commit()
@@ -522,12 +601,12 @@ def resolve_evaluate_sheets(
     return [port_sheet_def()], overrides, defaults, []
 
 
-def resolve_collect_metric_ids(db: Session, proj: BizMigrationProject) -> list[str]:
+def resolve_collect_metric_ids(db: Session, proj: BizMigrationProject, *, persist: bool = True) -> list[str]:
     """Project-level override wins; else monitor template; else sheet metric ids."""
     override = _project_collect_override(proj)
     if override:
         return override
-    mt = resolve_project_monitor_template(db, proj)
+    mt = resolve_project_monitor_template(db, proj, persist=persist)
     collect = [str(x).strip() for x in (mt.collect_metric_ids_json or []) if str(x).strip()]
     if collect:
         return collect
@@ -545,7 +624,7 @@ def project_to_dict(db: Session, p: BizMigrationProject) -> dict[str, Any]:
     collect_override = _project_collect_override(p)
     mt_brief = _monitor_template_brief(db, getattr(p, "monitor_template_id", None) or "")
     # Same resolution as ensure/evaluate (empty → compare sheets)
-    effective_collect = resolve_collect_metric_ids(db, p)
+    effective_collect = resolve_collect_metric_ids(db, p, persist=False)
     return {
         "id": p.id,
         "name": p.name,
@@ -597,9 +676,77 @@ def batch_to_dict(b: BizMigrationBatch) -> dict[str, Any]:
     }
 
 
+def _preload_project_refs(db: Session, rows: list[BizMigrationProject]) -> list[Any]:
+    """Load everything ``project_to_dict`` looks up with a handful of IN queries.
+
+    ``Session.get`` answers from the identity map afterwards, so a list of N projects
+    costs a constant number of queries instead of ~10 per project. The identity map is
+    weak: the caller must keep the returned objects alive while it serializes.
+    """
+    keep: list[Any] = []
+    def ids(*attrs: str) -> set[str]:
+        out: set[str] = set()
+        for p in rows:
+            for a in attrs:
+                v = getattr(p, a, None)
+                if v:
+                    out.add(str(v))
+        return out
+
+    task_ids = ids("old_task_id", "new_task_id", "old_hf_task_id", "new_hf_task_id")
+    for side in ("old", "new"):
+        for p in rows:
+            task_ids.update(b["task_id"] for b in _hf_bindings(p, side) if b.get("task_id"))
+    if task_ids:
+        keep.append(db.query(BizStateTask).filter(BizStateTask.id.in_(task_ids)).all())
+    batch_ids = ids("old_baseline_batch_id", "new_baseline_batch_id")
+    if batch_ids:
+        keep.append(db.query(BizStateBatch).filter(BizStateBatch.id.in_(batch_ids)).all())
+    template_ids = ids("monitor_template_id")
+    if template_ids:
+        monitors = db.query(BizMonitorTemplate).filter(BizMonitorTemplate.id.in_(template_ids)).all()
+        keep.append(monitors)
+        compare_ids = {m.compare_template_id for m in monitors if m.compare_template_id}
+        if compare_ids:
+            keep.append(db.query(BizCompareTemplate).filter(BizCompareTemplate.id.in_(compare_ids)).all())
+    return keep
+
+
 def list_projects(db: Session) -> list[dict[str, Any]]:
     rows = db.query(BizMigrationProject).order_by(BizMigrationProject.created_at.desc()).all()
+    preloaded = _preload_project_refs(db, rows)  # noqa: F841 — keeps the identity map populated
     return [project_to_dict(db, p) for p in rows]
+
+
+def _reject_ambiguous_mapping(
+    port_map: dict[str, str], *, conflicts: list[dict[str, str]] | None = None,
+    raw: dict[str, str] | None = None,
+) -> None:
+    """Cutover monitoring needs a 1:1 map. Say which rows collide, not just "ambiguous"."""
+    by_target: dict[str, list[str]] = {}
+    for before, after in port_map.items():
+        by_target.setdefault(after, []).append(before)
+    n_to_1 = [{"target": t, "sources": sorted(src)} for t, src in sorted(by_target.items()) if len(src) > 1]
+    collided = bool(conflicts) or (raw is not None and len(port_map) != len(raw))
+    if not n_to_1 and not collided:
+        return
+    parts = [f"{', '.join(c['sources'])} -> {c['target']}" for c in n_to_1]
+    parts += [f"{c['dropped_from']} vs {c['kept_from']}" for c in (conflicts or [])]
+    raise HTTPException(status_code=400, detail={
+        "code": "mapping_target_ambiguous",
+        "message": "mapping_target_ambiguous: " + "; ".join(parts),
+        "n_to_1": n_to_1, "key_conflicts": list(conflicts or []),
+    })
+
+
+def _validate_baseline_ownership(db: Session, side: str, batch_id: str, task_id: str) -> None:
+    """A baseline batch must be a finished sample of that side's portrait task."""
+    bid = str(batch_id or "").strip()
+    if not bid:
+        return
+    sample = db.get(BizStateBatch, bid)
+    if not sample or sample.task_id != str(task_id or "").strip() or sample.status not in ("success", "partial"):
+        raise HTTPException(status_code=400, detail=f"{side}_baseline_invalid")
 
 
 def create_project(db: Session, body: dict[str, Any]) -> dict[str, Any]:
@@ -689,6 +836,8 @@ def create_project(db: Session, body: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="old_baseline_not_found")
     if new_baseline and not db.get(BizStateBatch, new_baseline):
         raise HTTPException(status_code=404, detail="new_baseline_not_found")
+    _validate_baseline_ownership(db, "old", old_baseline, old_task_id)
+    _validate_baseline_ownership(db, "new", new_baseline, new_task_id)
 
     p = BizMigrationProject(
         id=uuid4().hex,
@@ -744,10 +893,7 @@ def patch_project(db: Session, project_id: str, body: dict[str, Any]) -> dict[st
     for side in ("old", "new"):
         bid = str(body.get(f"{side}_baseline_batch_id", getattr(p, f"{side}_baseline_batch_id")) or "").strip()
         tid = str(body.get(f"{side}_task_id", getattr(p, f"{side}_task_id")) or "").strip()
-        if bid:
-            sample = db.get(BizStateBatch, bid)
-            if not sample or sample.task_id != tid or sample.status not in ("success", "partial"):
-                raise HTTPException(status_code=400, detail=f"{side}_baseline_invalid")
+        _validate_baseline_ownership(db, side, bid, tid)
     if "name" in body and body["name"] is not None:
         p.name = str(body["name"]).strip() or p.name
     if "note" in body and body["note"] is not None:
@@ -763,11 +909,13 @@ def patch_project(db: Session, project_id: str, body: dict[str, Any]) -> dict[st
         bid = str(body["old_baseline_batch_id"] or "").strip()
         if bid and not db.get(BizStateBatch, bid):
             raise HTTPException(status_code=404, detail="batch_not_found")
+        BASELINE_ROWS.invalidate(p.old_baseline_batch_id)
         p.old_baseline_batch_id = bid
     if "new_baseline_batch_id" in body and body["new_baseline_batch_id"] is not None:
         bid = str(body["new_baseline_batch_id"] or "").strip()
         if bid and not db.get(BizStateBatch, bid):
             raise HTTPException(status_code=404, detail="batch_not_found")
+        BASELINE_ROWS.invalidate(p.new_baseline_batch_id)
         p.new_baseline_batch_id = bid
     if "monitor_template_id" in body and body["monitor_template_id"] is not None:
         mid = str(body["monitor_template_id"] or "").strip()
@@ -857,6 +1005,8 @@ def delete_project(db: Session, project_id: str) -> dict[str, Any]:
         db.delete(b)
     db.delete(p)
     db.commit()
+    BASELINE_ROWS.invalidate(p.old_baseline_batch_id)
+    BASELINE_ROWS.invalidate(p.new_baseline_batch_id)
     return {"ok": True}
 
 
@@ -932,12 +1082,23 @@ def run_evaluate(
     purpose: str = "manual",
     _commit: bool = True,
     _metric_ids: set[str] | None = None,
+    _run_id: str = "",
 ) -> dict[str, Any]:
+    """Evaluate a wave.
+
+    Synchronous callers (auto monitor, tests) hold the project row lock for the whole
+    computation. With ``_run_id`` (background evaluate/finish) the caller already
+    claimed the project through a ``running`` run row, so the lock is only taken for the
+    short write at the end.
+    """
     mb = db.get(BizMigrationBatch, batch_id)
     if not mb:
         raise HTTPException(status_code=404, detail="batch_not_found")
-    # PostgreSQL serializes evaluate/finish for this project across API workers.
-    proj = db.query(BizMigrationProject).filter(BizMigrationProject.id == mb.project_id).with_for_update().populate_existing().first()
+    proj_query = db.query(BizMigrationProject).filter(BizMigrationProject.id == mb.project_id)
+    if not _run_id:
+        # PostgreSQL serializes evaluate/finish for this project across API workers.
+        proj_query = proj_query.with_for_update().populate_existing()
+    proj = proj_query.first()
     if not proj:
         raise HTTPException(status_code=404, detail="project_not_found")
     db.refresh(mb)
@@ -988,8 +1149,7 @@ def run_evaluate(
     port_map = _port_map_dict(db, proj.mapping_id)
     if proj.mapping_id and not db.get(BizPortMapping, proj.mapping_id):
         raise HTTPException(status_code=400, detail="mapping_missing")
-    if len(set(port_map.values())) != len(port_map):
-        raise HTTPException(status_code=400, detail="mapping_target_ambiguous")
+    _reject_ambiguous_mapping(port_map)
     expect = parse_expect_set(mb.expect_set_json if isinstance(mb.expect_set_json, dict) else {})
     previous_expect: dict[str, set[str]] = {}
     for prior in db.query(BizMigrationBatch).filter(
@@ -1014,12 +1174,15 @@ def run_evaluate(
     from ..biz_state.compare_validation import validate_template_body
 
     validate_template_body({"metrics": sheets, "iface_normalize_rules": iface_norm})
-    from ..biz_state.iface_normalize import normalize_iface_name
+    from ..biz_state.compare_service import _batch_vendor_key
+    from ..biz_state.identity_pipeline import build_pipeline
+    from ..biz_state.iface_normalize import normalize_port_map
 
-    normalized_map = {normalize_iface_name(k, iface_norm): normalize_iface_name(v, iface_norm)
-                      for k, v in port_map.items()}
-    if len(normalized_map) != len(port_map) or len(set(normalized_map.values())) != len(normalized_map):
-        raise HTTPException(status_code=400, detail="mapping_target_ambiguous")
+    raw_port_map = dict(port_map)
+    old_vendor = _batch_vendor_key(db, proj.old_baseline_batch_id)
+    new_vendor = _batch_vendor_key(db, proj.new_baseline_batch_id)
+    normalized_map, map_conflicts = normalize_port_map(port_map, iface_norm)
+    _reject_ambiguous_mapping(normalized_map, conflicts=map_conflicts, raw=port_map)
     port_map = normalized_map
     known_sheets = {sheet_key(s) for s in sheets}
     known_metrics = {str(s.get("metric_id") or "") for s in sheets}
@@ -1044,33 +1207,43 @@ def run_evaluate(
         scope_ids.add("_ports")
     uncovered_scope = sorted({k for scope in (expect, previous_expect) for k, values in scope.items()
                               if values and k not in scope_ids})
-    config_snapshot = {"sheets": sheets, "sheet_overrides": sheet_overrides,
+    config_snapshot = {"identity_version": 2, "vendors": {"old": old_vendor, "new": new_vendor},
+        "sheets": sheets, "sheet_overrides": sheet_overrides,
         "defaults": defaults, "iface_normalize": iface_norm, "port_map": port_map,
         "expect_set": mb.expect_set_json, "previous_expect": {k: sorted(v) for k, v in previous_expect.items()},
         "baseline_ids": [proj.old_baseline_batch_id, proj.new_baseline_batch_id],
         "collect_metric_ids": sorted(collect_ids), "window_active": window_active,
         "bindings": [_hf_bindings(proj, "old"), _hf_bindings(proj, "new")]}
-    prior_run = db.query(BizMigrationRun).filter(BizMigrationRun.batch_id == batch_id).order_by(
+    prior_run = db.query(BizMigrationRun).filter(
+        BizMigrationRun.batch_id == batch_id, BizMigrationRun.status == "success").order_by(
         BizMigrationRun.created_at.desc()).first() if _metric_ids is not None else None
     reusable = (prior_run.summary_json or {}).get("config_snapshot") == config_snapshot if prior_run else False
     prior_cards = {sheet_key(c): c for c in (prior_run.summary_json or {}).get("sheet_cards", [])} if reusable else {}
     pair_cache: dict[str, tuple[BizStateBatch | None, BizStateBatch | None, dict[str, Any]]] = {}
 
+    baseline_ids = {proj.old_baseline_batch_id, proj.new_baseline_batch_id}
+
     def metric_rows(bid: str, mid: str) -> list[dict[str, Any]]:
         key = (bid, mid)
         if key not in rows_cache:
-            rows_cache[key] = _load_metric_rows(db, batch_id=bid, metric_id=mid)
+            if bid in baseline_ids:
+                # Baselines never change: share them across the minute-by-minute evaluations.
+                rows_cache[key] = BASELINE_ROWS.get_or_load(
+                    bid, mid, lambda: _load_metric_rows(db, batch_id=bid, metric_id=mid))
+            else:
+                rows_cache[key] = _load_metric_rows(db, batch_id=bid, metric_id=mid)
         return rows_cache[key]
 
-    for sheet in sheets:
+    for sheet_index, sheet in enumerate(sheets, start=1):
         mid = str(sheet.get("metric_id") or "").strip()
         sid = sheet_key(sheet)
         key_fields = list(sheet.get("key_fields") or [])
         if not mid or not key_fields:
             continue
+        if _run_id:
+            _report_eval_progress(_run_id, sheet_index, len(sheets), sheet_title(sheet))
         iface_fields = list(sheet.get("iface_fields") or [])
         compare_fields = list(sheet.get("compare_fields") or [])
-        row_filters = list(sheet.get("row_filters") or [])
         field_rules = list(sheet.get("field_rules") or [])
         sheet_ov = override_for_sheet(sheet_overrides, sheet_id=sid, metric_id=mid)
         if sheet_ov.get("skip_dual"):
@@ -1111,6 +1284,16 @@ def run_evaluate(
             pair_cache[mid] = _current_pair_for_metric(db, proj, mid, pin_old, pin_new)
         old_cur_batch, new_cur_batch, pair_meta = pair_cache[mid]
         # Do NOT fall back to another HF task's batch — empty/wrong metric → false red
+        if (not old_cur_batch or not new_cur_batch) and mid in MANUAL_ROUTE_METRICS:
+            # Route tables are collected by hand; until someone does, they are not part of the gate.
+            sheet_cards.append({
+                "metric_id": mid, "sheet_id": sid, "title": sheet_title(sheet),
+                "progress_ok": 0, "progress_total": 0, "anomaly": 0, "anomaly_in_expect": 0,
+                "old_summary": {}, "new_summary": {}, "new_baseline_mode": "manual_pending",
+                "new_baseline_missing": False, "manual_pending": True, "collect_skipped": False,
+                "current_missing": False, **pair_meta,
+            })
+            continue
         if not old_cur_batch or not new_cur_batch:
             sheet_cards.append(
                 {
@@ -1134,6 +1317,19 @@ def run_evaluate(
             continue
         old_cur_mid = old_cur_batch.id
         new_cur_mid = new_cur_batch.id
+        # A slice (address family) one device never collected is a collection gap, not a lost business.
+        uncovered = _uncovered_slice_sides(db, sheet, mid, old_cur_mid, new_cur_mid)
+        if uncovered:
+            sheet_cards.append({
+                "metric_id": mid, "sheet_id": sid, "title": sheet_title(sheet),
+                "progress_ok": 0, "progress_total": 0, "anomaly": 0, "anomaly_in_expect": 0,
+                "old_summary": {}, "new_summary": {}, "new_baseline_mode": "not_collected",
+                "new_baseline_missing": False, "not_collected": True, "data_state": "not_collected",
+                "data_state_reasons": [f"{side}:slice_not_collected" for side in uncovered],
+                "collect_skipped": False, "current_missing": False,
+                "old_batch_id": old_cur_mid, "new_batch_id": new_cur_mid, **pair_meta,
+            })
+            continue
         timing = {**pair_meta, **_sample_timing(proj, mid, old_cur_batch, new_cur_batch,
                                 check_age=acceptance or not (pin_old and pin_new))}
         baseline_missing = [side for side in ("old", "new") if not _metric_sample_ok(
@@ -1145,22 +1341,15 @@ def run_evaluate(
                                 "baseline_missing_sides": baseline_missing, **timing})
             continue
 
-        old_base = apply_row_filters(
-            metric_rows(proj.old_baseline_batch_id, mid),
-            row_filters,
+        # Old device = "before", new device = "after"; filters see normalized rows.
+        pipe = build_pipeline(
+            sheet, iface_rules=iface_norm, port_map=raw_port_map,
+            before_vendor=old_vendor, after_vendor=new_vendor,
         )
-        old_now = apply_row_filters(
-            metric_rows(old_cur_mid, mid),
-            row_filters,
-        )
-        new_base_rows = apply_row_filters(
-            metric_rows(proj.new_baseline_batch_id, mid),
-            row_filters,
-        )
-        new_now = apply_row_filters(
-            metric_rows(new_cur_mid, mid),
-            row_filters,
-        )
+        old_base = [raw for raw, _ in pipe.prepare(metric_rows(proj.old_baseline_batch_id, mid), "before")]
+        old_now = [raw for raw, _ in pipe.prepare(metric_rows(old_cur_mid, mid), "before")]
+        new_base_rows = [raw for raw, _ in pipe.prepare(metric_rows(proj.new_baseline_batch_id, mid), "after")]
+        new_now = [raw for raw, _ in pipe.prepare(metric_rows(new_cur_mid, mid), "after")]
 
         one = evaluate_metric_dual(
             metric_id=mid,
@@ -1172,7 +1361,7 @@ def run_evaluate(
             old_current_rows=old_now,
             new_baseline_rows=new_base_rows,
             new_current_rows=new_now,
-            port_map=port_map if iface_fields else {},
+            port_map=pipe.port_map if iface_fields else {},
             expect=expect,
             window_active=window_active,
             acceptance=acceptance,
@@ -1182,6 +1371,7 @@ def run_evaluate(
             iface_normalize_rules=iface_norm,
             previous_expect=previous_expect,
             allow_mapping_scope=False,
+            pipeline=pipe,
         )
         # A target snapshot taken before the source's disappearance cannot prove
         # loss. Wait for the next target receipt; final acceptance stays blocked.
@@ -1226,6 +1416,7 @@ def run_evaluate(
                 "duplicate_key_list": list(one.get("duplicate_key_list") or []),
                 "duplicate_keys_before": int(one.get("duplicate_keys_before") or 0),
                 "duplicate_keys_after": int(one.get("duplicate_keys_after") or 0),
+                "duplicate_in_expect": list(one.get("duplicate_in_expect") or []),
                 **timing,
                 "awaiting_peer": awaiting,
                 "verdict_counts": dict(Counter(r["verdict"] for r in one["rows"] if r.get("verdict"))),
@@ -1253,10 +1444,12 @@ def run_evaluate(
             for verdict, count in card.get("verdict_counts", {}).items():
                 verdict_counts[verdict] = verdict_counts.get(verdict, 0) + count
     active_cards = [
-        c for c in sheet_cards if not c.get("collect_skipped") and not c.get("current_missing")
+        c for c in sheet_cards
+        if not c.get("collect_skipped") and not c.get("current_missing") and not c.get("manual_pending")
+        and not c.get("not_collected")
     ]
     run = BizMigrationRun(
-        id=uuid4().hex,
+        id=_run_id or uuid4().hex,
         project_id=proj.id,
         batch_id=mb.id,
         old_batch_id=old_cur,
@@ -1294,9 +1487,31 @@ def run_evaluate(
             "verdict_counts": verdict_counts,
             "anomaly_outside_expect": sum(int(c.get("anomaly") or 0) - int(c.get("anomaly_in_expect") or 0) for c in active_cards),
             "steady_outside": sum(int(c.get("steady_outside") or 0) for c in active_cards),
-            "duplicate_keys": sum(int(c.get("duplicate_keys_before") or 0) + int(c.get("duplicate_keys_after") or 0) for c in active_cards),
+            # Only duplicate keys inside the wave's scope fail an acceptance; the rest are warnings.
+            "duplicate_keys": sum(len(c.get("duplicate_in_expect") or []) for c in active_cards),
+            "duplicate_warnings": [
+                {"sheet_id": c.get("sheet_id"), "title": c.get("title"),
+                 "count": int(c.get("duplicate_keys_before") or 0) + int(c.get("duplicate_keys_after") or 0),
+                 "examples": list(c.get("duplicate_key_list") or [])[:5]}
+                for c in active_cards
+                if (c.get("duplicate_keys_before") or c.get("duplicate_keys_after"))
+                and not c.get("duplicate_in_expect")
+            ],
+            "manual_pending_metrics": [
+                str(c.get("title") or c.get("sheet_id") or c.get("metric_id") or "")
+                for c in sheet_cards if c.get("manual_pending")
+            ],
+            "not_collected_metrics": [
+                str(c.get("title") or c.get("sheet_id") or c.get("metric_id") or "")
+                for c in sheet_cards if c.get("not_collected")
+            ],
             "uncovered_scope": uncovered_scope,
-            "coverage_complete": bool(enabled_sheets) and not uncovered_scope and not any(c.get("current_missing") or c.get("awaiting_peer") or c.get("duplicate_keys_before") or c.get("duplicate_keys_after") for c in sheet_cards if not c.get("collect_skipped")),
+            "coverage_complete": bool(enabled_sheets) and not uncovered_scope and not any(
+                c.get("current_missing") or c.get("awaiting_peer")
+                or c.get("duplicate_in_expect")
+                for c in sheet_cards
+                if not c.get("collect_skipped") and not c.get("manual_pending") and not c.get("not_collected")
+            ),
             "config_snapshot": config_snapshot,
             "window_active": window_active,
             "expect_ports": sorted(expect.get("_ports") or ()),
@@ -1305,7 +1520,15 @@ def run_evaluate(
         },
         message="",
     )
-    db.add(run)
+    if _run_id:
+        # Claim the project only for the write; the computation above ran unlocked.
+        db.query(BizMigrationProject).filter(BizMigrationProject.id == proj.id).with_for_update().first()
+        existing = db.get(BizMigrationRun, _run_id)
+        if existing is None or existing.status != "running":
+            raise HTTPException(status_code=409, detail="evaluation_cancelled")
+        run = db.merge(run)
+    else:
+        db.add(run)
     db.flush()
     for card in sheet_cards:
         card.setdefault("source_run_id", run.id)
@@ -1546,13 +1769,17 @@ def list_baseline_expect_objects(db: Session, project_id: str) -> dict[str, Any]
     mt = resolve_project_monitor_template(db, p)
     sheets, sheet_overrides, _defaults, _norm = resolve_evaluate_sheets(db, mt)
     collect_ids = set(resolve_collect_metric_ids(db, p))
-    port_map = _port_map_dict(db, p.mapping_id)
+    raw_port_map = _port_map_dict(db, p.mapping_id)
     out_sheets: list[dict[str, Any]] = []
-    from ..biz_state.iface_normalize import apply_iface_normalize, resolve_mapped_iface, normalize_iface_name
+    from ..biz_state.compare_service import _batch_vendor_key
+    from ..biz_state.identity_pipeline import build_pipeline
+    from ..biz_state.iface_normalize import normalize_port_map, resolve_mapped_iface
     from .evaluate import KEY_SEP
 
     rows_cache: dict[str, list[dict[str, Any]]] = {}
-    port_map = {normalize_iface_name(k, _norm): normalize_iface_name(v, _norm) for k, v in port_map.items()}
+    old_vendor = _batch_vendor_key(db, p.old_baseline_batch_id)
+    new_vendor = _batch_vendor_key(db, p.new_baseline_batch_id)
+    port_map, _ = normalize_port_map(raw_port_map, _norm)
     for sheet in sheets:
         mid = str(sheet.get("metric_id") or "").strip()
         sid = sheet_key(sheet)
@@ -1571,14 +1798,13 @@ def list_baseline_expect_objects(db: Session, project_id: str) -> dict[str, Any]
         iface_fields = [str(k) for k in (sheet.get("iface_fields") or []) if str(k).strip()]
         if mid not in rows_cache:
             rows_cache[mid] = _load_metric_rows(db, batch_id=p.old_baseline_batch_id, metric_id=mid)
-        rows_raw = apply_row_filters(
-            rows_cache[mid],
-            list(sheet.get("row_filters") or []),
+        pipe = build_pipeline(
+            sheet, iface_rules=_norm, port_map=raw_port_map,
+            before_vendor=old_vendor, after_vendor=new_vendor,
         )
         items: list[dict[str, Any]] = []
         seen_keys: set[str] = set()
-        for r in rows_raw:
-            normalized = apply_iface_normalize(dict(r), iface_fields=iface_fields, rules=_norm)
+        for r, normalized in pipe.prepare(rows_cache[mid], "before"):
             keys = [scalar_text(normalized.get(f)).strip() for f in key_fields]
             if not any(keys):
                 continue
@@ -1588,7 +1814,7 @@ def list_baseline_expect_objects(db: Session, project_id: str) -> dict[str, Any]
             seen_keys.add(key_str)
             mapped = ""
             if iface_fields and key_fields and key_fields[0] in iface_fields:
-                mapped = resolve_mapped_iface(keys[0], port_map) if port_map else ""
+                mapped = resolve_mapped_iface(keys[0], pipe.port_map) if pipe.port_map else ""
             items.append(
                 {
                     "key": key_str,
@@ -1615,6 +1841,55 @@ def list_baseline_expect_objects(db: Session, project_id: str) -> dict[str, Any]
         "sheets": out_sheets,
         "mapped": port_map,
     }
+
+
+def preflight_project(db: Session, project_id: str) -> dict[str, Any]:
+    """Mapping coverage + baseline data quality of a cutover project, before the window.
+
+    Judged on the two portrait baselines (full collections of both devices), so a
+    missing/ambiguous mapping row shows up before monitoring starts.
+    """
+    from ..biz_state.compare_preflight import preflight
+    from ..biz_state.compare_service import _batch_vendor_key
+    from ..biz_state.iface_normalize import normalize_port_map
+
+    p = db.get(BizMigrationProject, project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="project_not_found")
+    if not p.old_baseline_batch_id or not p.new_baseline_batch_id:
+        raise HTTPException(status_code=400, detail="baseline_required")
+    mt = resolve_project_monitor_template(db, p)
+    sheets, sheet_overrides, _defaults, iface_norm = resolve_evaluate_sheets(db, mt)
+    collect_ids = set(resolve_collect_metric_ids(db, p))
+    scoped = [
+        s for s in sheets
+        if str(s.get("metric_id") or "") and (not collect_ids or str(s.get("metric_id")) in collect_ids)
+        and not override_for_sheet(sheet_overrides, sheet_id=sheet_key(s), metric_id=str(s.get("metric_id"))).get("skip_dual")
+    ]
+    raw_map = _port_map_dict(db, p.mapping_id)
+    cache: dict[tuple[str, str], list[dict[str, Any]]] = {}
+
+    def load(side: str, sheet: dict[str, Any]) -> list[dict[str, Any]]:
+        bid = p.old_baseline_batch_id if side == "before" else p.new_baseline_batch_id
+        key = (bid, str(sheet["metric_id"]))
+        if key not in cache:
+            cache[key] = _load_metric_rows(db, batch_id=bid, metric_id=key[1])
+        return cache[key]
+
+    report = preflight(
+        db, sheets=scoped, iface_rules=iface_norm, raw_port_map=raw_map,
+        before_batch_id=p.old_baseline_batch_id, after_batch_id=p.new_baseline_batch_id,
+        before_vendor=_batch_vendor_key(db, p.old_baseline_batch_id),
+        after_vendor=_batch_vendor_key(db, p.new_baseline_batch_id),
+        load_rows=load,
+    )
+    normalized, _ = normalize_port_map(raw_map, iface_norm)
+    # Monitoring needs 1:1; the report lists the rows that collide.
+    if report["mapping"]["n_to_1_targets"] or report["mapping"]["conflicts"]:
+        report["risk_reasons"] = sorted({*report["risk_reasons"], "mapping_target_ambiguous"})
+        report["verdict"] = "risk"
+    report["mapping"]["pairs_normalized"] = len(normalized)
+    return report
 
 
 def _catalog_item_for_metric(*, vendor: str, device_type: str, metric_id: str) -> dict[str, Any]:
@@ -1755,6 +2030,96 @@ def _portrait_metric_items(db: Session, portrait: BizStateTask | None, mid: str)
         out.append({"source_profile_id": item.source_profile_id, "kind": item.kind,
                     "enabled": True, "title": item.title, "command_override": item.command_override,
                     "bindings": [{"placeholder": b.placeholder, "value": b.value} for b in bindings]})
+    return out
+
+
+def _group_metrics(metric_ids: list[str], by_metric: dict[str, int], default_iv: int) -> list[tuple[int, list[str]]]:
+    """Collect groups: one task pair (one SSH login per device) per interval + lane.
+
+    Manual route tables stay on their own; heavy dumps never share a task with light
+    status tables.
+    """
+    from ..biz_state.profiles import metric_lane
+
+    groups: list[tuple[int, list[str]]] = []
+    buckets: dict[tuple[int, str], list[str]] = {}
+    for mid in metric_ids:
+        iv = max(60, by_metric.get(mid) or default_iv)
+        if mid in MANUAL_ROUTE_METRICS:
+            groups.append((iv, [mid]))
+            continue
+        key = (iv, metric_lane(mid))
+        if key not in buckets:
+            buckets[key] = []
+            groups.append((iv, buckets[key]))
+        buckets[key].append(mid)
+    return groups
+
+
+def _group_id(project_id: str, metrics: list[str]) -> str:
+    return "cutover:" + project_id + ":" + hashlib.sha256("+".join(sorted(metrics)).encode()).hexdigest()[:16]
+
+
+def _slice_key(item: dict[str, Any]) -> tuple[tuple[str, str], ...]:
+    from ..biz_state.profiles import get_profile
+
+    prof = get_profile(str(item.get("source_profile_id") or ""))
+    return tuple(sorted((prof.slice or {}).items())) if prof is not None else ()
+
+
+def _union_slice_items(
+    metric_id: str, old_items: list[dict[str, Any]], new_items: list[dict[str, Any]],
+    old_vendor: str, new_vendor: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Both devices must collect the same slices (afi / address family) of a metric.
+
+    A slice one portrait collects and the other does not would otherwise look like
+    business loss. The missing side gets this vendor's profile for the slice, or a
+    clear ``no_profile_for_slice`` error.
+    """
+    from ..biz_state.profiles import get_profile, profiles_for_vendor
+    from ..lldp_shared import resolve_vendor_key
+
+    if not old_items or not new_items:
+        return old_items, new_items
+
+    def fill(items: list[dict[str, Any]], other: list[dict[str, Any]], vendor: str) -> list[dict[str, Any]]:
+        have = {_slice_key(i) for i in items}
+        out = list(items)
+        vkey = resolve_vendor_key(vendor, "") or vendor
+        for want in [i for i in other if _slice_key(i) not in have and _slice_key(i)]:
+            wanted_slice = dict(_slice_key(want))
+            profile = next((p for p in profiles_for_vendor(vkey, kind="collect")
+                            if p.metric_id == metric_id and dict(p.slice or {}) == wanted_slice), None)
+            if profile is None:
+                label = ",".join(f"{k}={v}" for k, v in sorted(wanted_slice.items()))
+                raise HTTPException(
+                    status_code=400, detail=f"no_profile_for_slice:{metric_id}:{label}:{vkey or vendor or 'unknown'}")
+            names = {ph.name for ph in profile.placeholders}
+            source = get_profile(str(want.get("source_profile_id") or ""))
+            copied = [b for b in want.get("bindings") or [] if b.get("placeholder") in names]
+            if any(getattr(ph, "required", True) for ph in profile.placeholders) and not copied:
+                raise HTTPException(
+                    status_code=400, detail=f"metric_needs_bindings:{metric_id}:" + ",".join(sorted(names)))
+            out.append({"source_profile_id": profile.profile_id, "kind": "catalog", "enabled": True,
+                        "title": profile.title or (source.title if source else metric_id), "bindings": copied})
+            have.add(_slice_key(out[-1]))
+        return out
+
+    return fill(old_items, new_items, old_vendor), fill(new_items, old_items, new_vendor)
+
+
+def _group_items(
+    db: Session, portrait: BizStateTask | None, template_fields: dict[str, Any], metrics: list[str],
+    portrait_items: dict[str, list[dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    """Every metric of a merged task keeps its own portrait-configured commands."""
+    out: list[dict[str, Any]] = []
+    for mid in metrics:
+        items = portrait_items.get(mid) or [_catalog_item_for_metric(
+            vendor=str(template_fields.get("vendor") or ""),
+            device_type=str(template_fields.get("device_type") or ""), metric_id=mid)]
+        out.extend(items)
     return out
 
 
@@ -1940,7 +2305,7 @@ def ensure_highfreq(
     if not metric_ids:
         metric_ids = [PORT_METRIC_ID]
     by_metric = _metric_interval_map(proj)
-    groups = [(max(60, by_metric.get(mid) or iv_default), [mid]) for mid in metric_ids]
+    groups = _group_metrics(metric_ids, by_metric, iv_default)
     want_status = _hf_window_status(proj)
 
     old_portrait = db.get(BizStateTask, proj.old_task_id) if proj.old_task_id else None
@@ -1953,11 +2318,9 @@ def ensure_highfreq(
         for binding in _hf_bindings(proj, side):
             task = db.get(BizStateTask, binding["task_id"])
             if task:
-                mids = binding.get("metric_ids") or metric_ids
-                for mid in mids:
+                for mid in binding.get("metric_ids") or metric_ids:
                     if mid in metric_ids:
                         out.setdefault(mid, task)
-                        break
         return out
 
     old_existing = _existing_by_metric("old")
@@ -1983,14 +2346,26 @@ def ensure_highfreq(
     old_any_created = False
     new_any_created = False
 
+    # Same physical device on both sides (board swap, same-chassis port move): one task
+    # per group serves as "old" and "new"; the port map tells the two ports apart.
+    same_device = (old_fields.get("source"), old_fields.get("ne_id")) == (new_fields.get("source"), new_fields.get("ne_id"))
+
     for g_iv, g_metrics in groups:
-        mid = g_metrics[0]
-        gid = "cutover:" + proj.id + ":" + hashlib.sha256(mid.encode()).hexdigest()[:16]
-        old_candidate, new_candidate = old_existing.get(mid), new_existing.get(mid)
+        manual_only = any(m in MANUAL_ROUTE_METRICS for m in g_metrics)
+        gid = _group_id(proj.id, g_metrics)
+        old_candidate = next((old_existing[m] for m in g_metrics if m in old_existing), None)
+        new_candidate = next((new_existing[m] for m in g_metrics if m in new_existing), None)
         if old_candidate and old_candidate.collect_group_id not in ("", gid):
             old_candidate = None
         if new_candidate and new_candidate.collect_group_id not in ("", gid):
             new_candidate = None
+        old_by_metric = {m: _portrait_metric_items(db, old_portrait, m) for m in g_metrics}
+        new_by_metric = {m: _portrait_metric_items(db, new_portrait, m) for m in g_metrics}
+        if not same_device:
+            for m in g_metrics:
+                old_by_metric[m], new_by_metric[m] = _union_slice_items(
+                    m, old_by_metric[m], new_by_metric[m],
+                    str(old_fields.get("vendor") or ""), str(new_fields.get("vendor") or ""))
         old_task, old_created = _ensure_side_highfreq(
             db,
             existing_hf=old_candidate,
@@ -2000,36 +2375,35 @@ def ensure_highfreq(
             retention_days=ret,
             metric_ids=g_metrics,
             status="paused",
-            configured_items=_portrait_metric_items(db, old_portrait, mid),
+            configured_items=_group_items(db, old_portrait, old_fields, g_metrics, old_by_metric),
         )
-        new_task, new_created = _ensure_side_highfreq(
-            db,
-            existing_hf=new_candidate,
-            template_fields=new_fields,
-            project_name=proj.name,
-            interval_sec=g_iv,
-            retention_days=ret,
-            metric_ids=g_metrics,
-            status="paused",
-            configured_items=_portrait_metric_items(db, new_portrait, mid),
-        )
-        if old_task.ne_id == new_task.ne_id:
+        if same_device:
+            new_task, new_created = old_task, False
+        else:
+            new_task, new_created = _ensure_side_highfreq(
+                db,
+                existing_hf=new_candidate,
+                template_fields=new_fields,
+                project_name=proj.name,
+                interval_sec=g_iv,
+                retention_days=ret,
+                metric_ids=g_metrics,
+                status="paused",
+                configured_items=_group_items(db, new_portrait, new_fields, g_metrics, new_by_metric),
+            )
+        if not same_device and old_task.ne_id == new_task.ne_id:
             raise HTTPException(status_code=400, detail="collect_pair_same_device")
-        for task in (old_task, new_task):
+        for task in {old_task.id: old_task, new_task.id: new_task}.values():
             task.collect_group_id = gid
-            task.collect_manual_only = mid in MANUAL_ROUTE_METRICS
+            task.collect_manual_only = manual_only
             task.status = "paused" if task.collect_manual_only else want_status
         db.commit()
         old_any_created = old_any_created or old_created
         new_any_created = new_any_created or new_created
-        old_bindings.append(
-            {"task_id": old_task.id, "metric_ids": list(g_metrics), "interval_sec": g_iv,
-             "collect_group_id": gid, "manual_only": mid in MANUAL_ROUTE_METRICS}
-        )
-        new_bindings.append(
-            {"task_id": new_task.id, "metric_ids": list(g_metrics), "interval_sec": g_iv,
-             "collect_group_id": gid, "manual_only": mid in MANUAL_ROUTE_METRICS}
-        )
+        binding = {"metric_ids": list(g_metrics), "interval_sec": g_iv, "collect_group_id": gid,
+                   "manual_only": manual_only}
+        old_bindings.append({"task_id": old_task.id, **binding})
+        new_bindings.append({"task_id": new_task.id, **binding})
 
     proj = db.get(BizMigrationProject, project_id)
     if not proj:
@@ -2165,6 +2539,7 @@ def _red_ticket_to_dict(t: BizMigrationRedTicket) -> dict[str, Any]:
         "new_status": t.new_status,
         "detail": detail,
         "evidence": dict(detail.get("evidence") or {}),
+        "resolvable": bool(detail.get("resolvable")),
         "status": t.status,
         "carried_to_batch_id": t.carried_to_batch_id,
         "note": t.note,
@@ -2323,9 +2698,43 @@ def _persist_red_tickets_from_run(
         created_or_updated.append(t)
         seen.add(ident)
 
-    # Tickets open on this batch but no longer red → leave as open (operator resolves).
-    # Carried tickets for keys not in this run stay carried.
+    # Tickets whose key is now green stay open (an operator decides) but are flagged so the
+    # UI can offer a one-click close. Keys absent from this run are left alone.
+    pending = {ident: t for ident, t in by_id.items() if ident not in seen and t.status in ("open", "carried")}
+    if pending:
+        metrics = {ident[0] for ident in pending}
+        greens: dict[tuple[str, str, str], str] = {}
+        for g in db.query(BizMigrationDiff).filter(
+            BizMigrationDiff.run_id == run_id, BizMigrationDiff.color == "green",
+            BizMigrationDiff.metric_id.in_(metrics),
+        ):
+            gk = g.key_json if isinstance(g.key_json, dict) else {}
+            mk = str(gk.get("match_old_key") or gk.get("key_str") or gk.get("old_key") or "").strip()
+            greens[(str(g.metric_id or ""), str(gk.get("sheet_id") or g.metric_id or ""), mk)] = str(g.verdict or "")
+        for ident, t in pending.items():
+            verdict = greens.get(ident)
+            if verdict is not None:
+                t.detail_json = {**dict(t.detail_json or {}), "resolvable": {"run_id": run_id, "verdict": verdict}}
     return created_or_updated
+
+
+def resolve_resolvable_red_tickets(db: Session, project_id: str) -> dict[str, Any]:
+    """Close every ticket the latest acceptance saw turn green (explicit operator action)."""
+    if not db.get(BizMigrationProject, project_id):
+        raise HTTPException(status_code=404, detail="project_not_found")
+    closed = []
+    for t in db.query(BizMigrationRedTicket).filter(
+        BizMigrationRedTicket.project_id == project_id,
+        BizMigrationRedTicket.status.in_(("open", "carried")),
+    ):
+        mark = (t.detail_json or {}).get("resolvable") if isinstance(t.detail_json, dict) else None
+        if mark:
+            t.status = "resolved"
+            t.resolved_at = utcnow_naive()
+            t.note = (t.note or f"auto-closed: green in run {mark.get('run_id', '')}")[:500]
+            closed.append(t.id)
+    db.commit()
+    return {"closed": len(closed), "ids": closed, "open_red_count": count_open_red_tickets(db, project_id)}
 
 
 def finish_batch(
@@ -2333,6 +2742,7 @@ def finish_batch(
     batch_id: str,
     *,
     mark_done: bool = False,
+    _run_id: str = "",
 ) -> dict[str, Any]:
     """本批完成：关窗 → 终验 → 验收小结 → 红单留痕（不硬卡下一批）."""
     mb = db.get(BizMigrationBatch, batch_id)
@@ -2346,7 +2756,9 @@ def finish_batch(
 
     # acceptance=True closes the logical window. Persist batch closure only after
     # evaluation succeeds, so an API/collection failure keeps the batch operable.
-    run = run_evaluate(db, batch_id=batch_id, acceptance=True, purpose="acceptance", _commit=False)
+    run = run_evaluate(
+        db, batch_id=batch_id, acceptance=True, purpose="acceptance", _commit=False, _run_id=_run_id,
+    )
     summary = dict(run.get("summary") or {})
     progress = dict(summary.get("progress") or {})
     anomaly = int(summary.get("anomaly") or 0)
@@ -2381,6 +2793,11 @@ def finish_batch(
         "anomaly": anomaly,
         "verdict_counts": dict(summary.get("verdict_counts") or {}),
         "expect_ports": list(summary.get("expect_ports") or []),
+        "warnings": {
+            "duplicate_keys_outside_scope": list(summary.get("duplicate_warnings") or []),
+            "manual_pending_metrics": list(summary.get("manual_pending_metrics") or []),
+            "not_collected_metrics": list(summary.get("not_collected_metrics") or []),
+        },
         "run_id": run.get("id"),
         "old_batch_id": run.get("old_batch_id"),
         "new_batch_id": run.get("new_batch_id"),
@@ -2416,6 +2833,123 @@ def finish_batch(
         "open_red_count": count_open_red_tickets(db, mb.project_id),
         "can_continue": True,  # 带红继续：永不硬卡
     }
+
+
+_EVAL_THREADS_LOCK = threading.Lock()
+
+
+def _report_eval_progress(run_id: str, index: int, total: int, title: str) -> None:
+    """Progress visible to pollers: separate short transaction, never fatal."""
+    from ..db import SessionLocal
+
+    try:
+        s = SessionLocal()
+        try:
+            run = s.get(BizMigrationRun, run_id)
+            if run is not None and run.status == "running":
+                summary = dict(run.summary_json or {})
+                summary["progress"] = {"phase": "evaluating", "sheet_index": index,
+                                       "sheet_total": total, "sheet_title": title}
+                run.summary_json = summary
+                s.commit()
+        finally:
+            s.close()
+    except Exception:  # noqa: BLE001 — progress is best effort
+        _log.debug("evaluate progress write failed run=%s", run_id, exc_info=True)
+
+
+def _claim_evaluation(
+    db: Session, batch_id: str, *, acceptance: bool, purpose: str,
+) -> BizMigrationRun:
+    """Create the ``running`` run that owns the project. 409 when one is already in flight."""
+    mb = db.get(BizMigrationBatch, batch_id)
+    if not mb:
+        raise HTTPException(status_code=404, detail="batch_not_found")
+    proj = db.query(BizMigrationProject).filter(BizMigrationProject.id == mb.project_id).with_for_update().first()
+    if not proj:
+        raise HTTPException(status_code=404, detail="project_not_found")
+    db.refresh(mb)
+    if acceptance and mb.status not in ("active", "review"):
+        raise HTTPException(status_code=409, detail="monitor_window_closed")
+    if not proj.old_baseline_batch_id:
+        raise HTTPException(status_code=400, detail="old_baseline_required")
+    if not proj.new_baseline_batch_id:
+        raise HTTPException(status_code=400, detail="new_baseline_required")
+    busy = db.query(BizMigrationRun.id).filter(
+        BizMigrationRun.project_id == proj.id, BizMigrationRun.status == "running").first()
+    if busy:
+        raise HTTPException(status_code=409, detail="evaluation_in_progress")
+    run = BizMigrationRun(
+        id=uuid4().hex, project_id=proj.id, batch_id=batch_id, purpose=purpose, status="running",
+        summary_json={"progress": {"phase": "queued", "sheet_index": 0, "sheet_total": 0}},
+        message="queued",
+    )
+    db.add(run)
+    db.commit()
+    db.refresh(run)
+    return run
+
+
+def _spawn_evaluation(run_id: str, work: Any, label: str) -> None:
+    from ..db import SessionLocal
+
+    def _bg() -> None:
+        s = SessionLocal()
+        try:
+            work(s)
+        except Exception as exc:  # noqa: BLE001 — recorded on the run for the poller
+            s.rollback()
+            detail = getattr(exc, "detail", None)
+            _log.warning("background %s failed run=%s: %s", label, run_id, detail or exc)
+            run = s.get(BizMigrationRun, run_id)
+            if run is not None and run.status == "running":
+                run.status = "failed"
+                run.message = str(detail if detail is not None else exc)[:1000]
+                s.commit()
+        finally:
+            s.close()
+
+    threading.Thread(target=_bg, name=f"biz-mig-{label}-{run_id[:8]}", daemon=True).start()
+
+
+def enqueue_evaluate(
+    db: Session, batch_id: str, *, old_batch_id: str = "", new_batch_id: str = "",
+) -> dict[str, Any]:
+    """Start a manual evaluation in the background; poll ``GET /runs/{id}`` for the result."""
+    run = _claim_evaluation(db, batch_id, acceptance=False, purpose="manual")
+    _spawn_evaluation(
+        run.id,
+        lambda s: run_evaluate(s, batch_id=batch_id, old_batch_id=old_batch_id, new_batch_id=new_batch_id,
+                               purpose="manual", _run_id=run.id),
+        "evaluate",
+    )
+    return run_to_dict(db, run)
+
+
+def enqueue_finish(db: Session, batch_id: str, *, mark_done: bool = False) -> dict[str, Any]:
+    """Final acceptance in the background. The wave closes only if the evaluation succeeds."""
+    mb = db.get(BizMigrationBatch, batch_id)
+    if not mb:
+        raise HTTPException(status_code=404, detail="batch_not_found")
+    if mb.status not in ("active", "review"):
+        raise HTTPException(status_code=400, detail=f"batch_not_finishable:{mb.status}")
+    run = _claim_evaluation(db, batch_id, acceptance=True, purpose="acceptance")
+    _spawn_evaluation(
+        run.id, lambda s: finish_batch(s, batch_id, mark_done=mark_done, _run_id=run.id), "finish",
+    )
+    return {"run_id": run.id, "status": "running", "run": run_to_dict(db, run),
+            "batch": batch_to_dict(db.get(BizMigrationBatch, batch_id))}
+
+
+def recover_interrupted_evaluations_on_startup(db: Session) -> int:
+    """A restart kills background evaluations; release the projects they were holding."""
+    rows = db.query(BizMigrationRun).filter(BizMigrationRun.status == "running").all()
+    for r in rows:
+        r.status = "cancelled"
+        r.message = "interrupted_by_restart"
+    if rows:
+        db.commit()
+    return len(rows)
 
 
 def _validate_batch_status(db: Session, project_id: str, batch_id: str, status: str) -> None:
@@ -2544,9 +3078,10 @@ def board(db: Session, batch_id: str, run_id: str = "") -> dict[str, Any]:
         if not run or run.batch_id != batch_id:
             raise HTTPException(status_code=404, detail="run_not_found")
     else:
+        # Latest *finished* run; a run still being computed has nothing to show yet.
         run = (
             db.query(BizMigrationRun)
-            .filter(BizMigrationRun.batch_id == batch_id)
+            .filter(BizMigrationRun.batch_id == batch_id, BizMigrationRun.status == "success")
             .order_by(BizMigrationRun.created_at.desc())
             .first()
         )

@@ -14,6 +14,7 @@ from uuid import uuid4
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from .compare_engine import key_tuple
 from .compare_rules import effective_compare_fields, field_rule_map, NUMBER_PATTERN, scalar_text
 
 _log = logging.getLogger("netx.biz_state.compare_sql")
@@ -154,16 +155,23 @@ def sql_compare_skip_reason(
     *,
     port_map: Mapping[str, str] | None = None,
     iface_normalize_rules: Sequence[Mapping[str, str]] | None = None,
+    pipeline: Any = None,
 ) -> str:
     """Empty string when SQL is allowed; otherwise a short reason for progress/logs.
 
     Simple ``row_filters`` (eq/in/contains/…) used for BGP sheet splits are fine —
     they do **not** force Python by themselves.
+
+    A port map only blocks SQL when the sheet actually reads an interface field
+    in its key or compare columns; a BGP route table with no interface fields is
+    unaffected by it. ``pipeline`` (v2 identity rules) adds its own blockers.
     """
     if not _dialect_is_postgres(db):
         return "not_postgres"
-    if port_map:
-        return "port_map"
+    if pipeline is not None:
+        port_map = pipeline.port_map
+        if iface_normalize_rules is None and (pipeline.before.has_iface_rules or pipeline.after.has_iface_rules):
+            iface_normalize_rules = [{"from": "*", "to": "*"}]
     key_fields = [str(k).strip() for k in (sheet.get("key_fields") or []) if str(k).strip()]
     if not key_fields:
         return "no_key_fields"
@@ -171,12 +179,24 @@ def sql_compare_skip_reason(
         return "unsafe_key_field"
     iface_fields = [str(f).strip() for f in (sheet.get("iface_fields") or []) if str(f).strip()]
     iface_set = set(iface_fields)
+    if port_map and iface_set:
+        early_cmp = effective_compare_fields(
+            list(sheet.get("compare_fields") or []), list(sheet.get("field_rules") or []),
+        )
+        if iface_set & (set(key_fields) | {str(f).strip() for f in early_cmp}):
+            return "port_map"
     ignore_ports = sheet.get("ignore_port_changes")
     if ignore_ports is True:
         return "ignore_port_changes"
     if ignore_ports is None and iface_set and any(k in iface_set for k in key_fields):
         return "auto_ignore_ports"
     field_rules = list(sheet.get("field_rules") or [])
+    if any(
+        isinstance(r, dict) and str(r.get("compare") or "").strip().lower() in
+        ("not_worse", "numeric_min", "numeric_max")
+        for r in field_rules
+    ):
+        return "directional_compare"
     if not _field_rules_sql_compatible(field_rules):
         return "field_rules"
     compare_fields = effective_compare_fields(
@@ -186,8 +206,14 @@ def sql_compare_skip_reason(
     if any(not _FIELD_RE.match(str(f).strip()) for f in compare_fields if str(f).strip()):
         return "unsafe_compare_field"
     used = set(key_fields) | {str(f).strip() for f in compare_fields if str(f).strip()}
+    if port_map and (used & iface_set):
+        return "port_map"
     if iface_normalize_rules and (used & iface_set):
         return "iface_normalize"
+    if pipeline is not None:
+        blocked = pipeline.sql_blockers(used)
+        if blocked:
+            return blocked
     if not _filters_sql_compatible(list(sheet.get("row_filters") or [])):
         return "row_filters"
     if not str(sheet.get("metric_id") or "").strip():
@@ -371,7 +397,7 @@ def _changed_predicate(
 
 def _key_obj_from_data(data: dict[str, Any] | None, key_fields: list[str]) -> dict[str, Any]:
     row = data if isinstance(data, dict) else {}
-    return {f: row.get(f, "") for f in key_fields}
+    return dict(zip(key_fields, key_tuple(row, key_fields)))
 
 
 def _changes_from_rows(
@@ -399,6 +425,22 @@ def _changes_from_rows(
     return out
 
 
+def dup_pairing_order_sql(compare_fields: Sequence[str], rules: Mapping[str, Mapping[str, Any]]) -> str:
+    """``ORDER BY`` prefix that pairs same-key rows by value (mirrors ``Pipeline.pair_sort_key``).
+
+    Byte-order collation matches Python's code-point string order, so both
+    engines choose the same pairs. Returns '' (or a trailing-comma list).
+    """
+    parts = []
+    for f in compare_fields:
+        name = str(f).strip()
+        if not name:
+            continue
+        mode = str((rules.get(name) or {}).get("normalize") or "strip").strip().lower() or "strip"
+        parts.append(f'({_norm_expr("data_json", name, mode)}) COLLATE "C" ASC')
+    return ", ".join(parts) + ", " if parts else ""
+
+
 def run_sql_sheet_compare(
     db: Session,
     *,
@@ -407,6 +449,7 @@ def run_sql_sheet_compare(
     after_batch_id: str,
     store_unchanged: str = "auto",
     on_progress: Callable[..., None] | None = None,
+    duplicate_pairing: str = "ordered",
 ) -> dict[str, Any]:
     """Compare one sheet via PostgreSQL TEMP tables + FULL OUTER JOIN.
 
@@ -443,6 +486,7 @@ def run_sql_sheet_compare(
 
     filter_sql, filter_params = compile_row_filters_sql(row_filters)
     rk = _rk_sql(key_fields)
+    dup_order = dup_pairing_order_sql(compare_fields, rules) if duplicate_pairing == "sorted" else ""
     tag = uuid4().hex[:8]
     tb = f"_netx_cmp_b_{tag}"
     ta = f"_netx_cmp_a_{tag}"
@@ -500,7 +544,7 @@ def run_sql_sheet_compare(
                   data_json AS data,
                   row_number() OVER (
                     PARTITION BY ({rk})
-                    ORDER BY seq ASC, id ASC
+                    ORDER BY {dup_order}seq ASC, id ASC
                   ) AS dup_rn
                 FROM biz_state_metric_row
                 WHERE batch_id = :bid
