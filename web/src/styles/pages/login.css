@@ -480,6 +480,16 @@ html.login-page--paused .login-page__flare {
     animation: none !important;
   }
 
+  /*
+   * theme.css squashes every animation to 0.01ms x1 under reduced motion, which
+   * made the earth jump once and snap back. The slow ambient spin is intended to stay;
+   * a class selector beats that universal rule even though both are !important.
+   */
+  .login-planet__textures {
+    animation-duration: 80s !important;
+    animation-iteration-count: infinite !important;
+  }
+
   .login-page__flare {
     opacity: 0.85;
   }
