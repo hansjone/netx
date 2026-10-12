@@ -13,7 +13,7 @@ scripts/archive/
 packages/netx-topology-mcp/tests/_*
 _tmp_*
 .idea/
-ume/
+/ume/
 data/ne_collections/
 data/webcrt/
 data/auth/
