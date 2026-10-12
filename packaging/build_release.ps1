@@ -210,6 +210,8 @@ if ($CreateVenv) {
     if (-not (Test-NetxVenvRunnable -VenvPython $venvPy)) {
         throw "venv_not_runnable_after_build: check python/runtime copy"
     }
+    & $venvPy -c "from pathlib import Path; import glob; print(Path.cwd()); print(glob.__file__)"
+    if ($LASTEXITCODE -ne 0) { throw "python_stdlib_smoke_failed: pathlib/glob import mismatch" }
 
     & $venvPy -m pip install --upgrade pip
     & $venvPy -m pip install -r (Join-Path $stage "requirements.txt")
@@ -219,6 +221,8 @@ if ($CreateVenv) {
     if (-not (Test-NetxVenvRunnable -VenvPython $venvPy)) {
         throw "venv_not_runnable_after_pip"
     }
+    & $venvPy -c "from pathlib import Path; import glob; print(Path.cwd()); print(glob.__file__)"
+    if ($LASTEXITCODE -ne 0) { throw "python_stdlib_smoke_failed_after_pip: pathlib/glob import mismatch" }
 
     Write-Host "==> Slimming .venv (drop tests / __pycache__ / *.pyc)"
     $site = Join-Path $stage ".venv\Lib\site-packages"

@@ -5,7 +5,7 @@
 
 #define MyAppName "NetX"
 #ifndef MyAppVersion
-  #define MyAppVersion "0.4.14"
+  #define MyAppVersion "0.4.15"
 #endif
 #define MyAppPublisher "NetX"
 #define MyAppURL "https://github.com/hansjone/netx"
@@ -154,6 +154,11 @@ Name: "{commonappdata}\NetX\pgdata"; Permissions: users-modify
 Name: "{commonappdata}\NetX\backups"; Permissions: users-modify
 
 [InstallDelete]
+; Python minor releases can change stdlib layout (for example pathlib.py -> pathlib\\).
+; Remove the previous runtime and venv before copying the new ones so an upgrade
+; cannot leave orphaned modules that shadow files from the shipped Python version.
+Type: filesandordirs; Name: "{app}\python\runtime"
+Type: filesandordirs; Name: "{app}\.venv"
 ; Remove legacy desktop shortcuts from older Setup builds (keep a single NetX icon).
 Type: files; Name: "{commondesktop}\NetX Start.lnk"
 Type: files; Name: "{commondesktop}\NetX First-time setup.lnk"
