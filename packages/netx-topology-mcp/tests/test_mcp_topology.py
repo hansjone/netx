@@ -18,8 +18,10 @@ from netx_topology_mcp.server import _fetch_scopes
 
 def test_tool_list_has_draw_and_query_tools() -> None:
     names = {str(t.get("name") or "") for t in HTTP_MCP_TOOLS}
-    assert len(names) == 14
+    assert len(names) == 16
     assert "sinkTopologyDualUnits" in names
+    assert "suggestSinkHubs" in names
+    assert "classifyTopologyFabricNodes" in names
     assert "copyTopologyViewNodes" in names
     assert "createTopologyFolder" in names
     assert "createTopologyView" not in names
@@ -547,8 +549,10 @@ def test_stdio_initialize_and_tools_list() -> None:
         proc.stdin.flush()
         list_resp = json.loads(proc.stdout.readline())
         tools = list_resp["result"]["tools"]
-        assert len(tools) == 14
+        assert len(tools) == 16
         names = {t["name"] for t in tools}
+        assert "suggestSinkHubs" in names
+        assert "classifyTopologyFabricNodes" in names
         assert "createTopologyView" not in names
         assert "listTopologyViews" not in names
         assert "queryTopologyFabricNodes" in names

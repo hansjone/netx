@@ -284,9 +284,10 @@ def press_hot_edges(
                 tuple[int, tuple[float, float], tuple[float, float]] | None
             ) = None
 
-            def _try_cand(cand: tuple[float, float]) -> None:
+            def _try_cand(cand: tuple[float, float], disp_cap: float | None = None) -> None:
                 nonlocal best
-                if math.hypot(cand[0] - leaf_xy[0], cand[1] - leaf_xy[1]) > max_disp:
+                cap = max_disp if disp_cap is None else disp_cap
+                if math.hypot(cand[0] - leaf_xy[0], cand[1] - leaf_xy[1]) > cap:
                     return
                 trial_pos = {**pos, leaf: cand}
                 if _overlaps_any(leaf, trial_pos, names):
@@ -304,7 +305,11 @@ def press_hot_edges(
                     best = (c1, cand)
 
             # Reel-in along the spoke first (shorten without hunting angles).
+            # Pulling straight toward the hub cannot fling the leaf across the
+            # bbox, so allow it to travel all the way to the r_use target;
+            # max_disp alone stops short (e.g. r0=8000 → cap 4400 < 5800 needed).
             if r0 > r_use + 50.0:
+                reel_cap = max(max_disp, r0 - r_use)
                 ux = (leaf_xy[0] - hub_xy[0]) / r0
                 uy = (leaf_xy[1] - hub_xy[1]) / r0
                 for rt in (
@@ -318,7 +323,7 @@ def press_hot_edges(
                     rt = min(rt, r0 - 1.0)
                     if rt < 120.0:
                         continue
-                    _try_cand((hub_xy[0] + ux * rt, hub_xy[1] + uy * rt))
+                    _try_cand((hub_xy[0] + ux * rt, hub_xy[1] + uy * rt), reel_cap)
 
             # Both ends walk toward the midpoint (metro bridges often need this).
             # Skip on giant E: each trial is a full O(E²) count and stalls MCP.

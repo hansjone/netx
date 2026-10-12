@@ -105,26 +105,54 @@ def test_slim_layout_payload_drops_guide() -> None:
     assert len(slim["crossing"]["top_nodes"]) <= 5
 
 
-def test_compose_background_returns_job_id() -> None:
-    src = [f"s{i:02d}" for i in range(12)]
+def test_compose_views_is_not_public() -> None:
+    # compose_* was retired from the public surface (dual-unit drain is the main path).
+    out = _layout_topology_view(
+        {
+            "view_id": "full",
+            "action": "compose_views",
+            "mode": "apply",
+            "params": {"source_view_ids": [f"s{i:02d}" for i in range(12)]},
+        }
+    )
+    assert out.get("ok") is False
+    assert out.get("error") == "unknown_action:compose_views"
+
+
+def test_orbit_background_returns_job_id() -> None:
+    graph = {
+        "ok": True,
+        "nodes": [
+            {"fabric_node_id": f"n{i}", "x": float(i * 100), "y": 0.0, "label": f"N{i}"}
+            for i in range(6)
+        ],
+        "edges": [
+            {"id": f"e{i}", "a_node_id": f"n{i}", "b_node_id": f"n{i + 1}"} for i in range(5)
+        ],
+    }
 
     def fake_start(**kwargs):
-        assert kwargs["action"] == "compose_views"
+        assert kwargs["action"] == "orbit_sweep"
         assert kwargs["view_id"] == "full"
-        assert isinstance(kwargs.get("tool_args"), dict)
-        assert kwargs["tool_args"].get("action") == "compose_views"
+        tool_args = kwargs.get("tool_args")
+        assert isinstance(tool_args, dict)
+        # The worker re-runs the same call synchronously.
+        assert tool_args["params"].get("_force_sync") is True
+        assert "background" not in tool_args["params"]
         return "abc123job"
 
-    with patch("netx_topology_mcp.http_tools.start_job", side_effect=fake_start):
+    with patch("netx_topology_mcp.http_tools.http_json", return_value={"ok": True, "data": graph}), patch(
+        "netx_topology_mcp.http_tools.start_job", side_effect=fake_start
+    ):
         out = _layout_topology_view(
             {
                 "view_id": "full",
-                "action": "compose_views",
+                "action": "orbit_sweep",
                 "mode": "apply",
-                "params": {"source_view_ids": src},
+                "params": {"background": True},
             }
         )
-    assert out.get("ok") is True
+    assert out.get("ok") is True, out
     assert out.get("status") == "running"
     assert out.get("job_id") == "abc123job"
     assert out.get("applied") is False

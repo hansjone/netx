@@ -80,7 +80,7 @@ def test_classify_petal_and_straight() -> None:
     assert classify_dual_unit(short) == "straight"
 
 
-def test_beautify_parallel_lanes() -> None:
+def test_beautify_petal_ellipse_bands() -> None:
     nodes, edges = _two_eye_graph()
     st = build_state_from_nodes_edges(nodes, edges)
     unit = DualUnit(
@@ -89,15 +89,18 @@ def test_beautify_parallel_lanes() -> None:
         paths=[["p1", "a1", "a2", "p2"], ["p1", "b1", "b2", "p2"]],
     )
     pos = beautify_dual_unit_positions(st, unit, LayoutParams())
-    # Parallel H/V lanes: same y in a corridor; first/last share portal x.
-    assert abs(pos["a1"][1] - pos["a2"][1]) < 1e-6
-    assert abs(pos["b1"][1] - pos["b2"][1]) < 1e-6
-    assert abs(pos["a1"][1]) > 1.0 and abs(pos["b1"][1]) > 1.0
+    # Portals sit on the x-axis, a left of b (the eye's chord).
+    assert abs(pos["p1"][1]) < 1e-6 and abs(pos["p2"][1]) < 1e-6
+    assert pos["p1"][0] < pos["p2"][0]
+    # Each corridor is one band on its own side of the chord.
     assert pos["a1"][1] * pos["b1"][1] < 0
-    assert abs(pos["a1"][0] - pos["p1"][0]) < 1e-6
-    assert abs(pos["a2"][0] - pos["p2"][0]) < 1e-6
-    assert abs(pos["b1"][0] - pos["p1"][0]) < 1e-6
-    assert abs(pos["b2"][0] - pos["p2"][0]) < 1e-6
+    for x, y in (("a1", "a2"), ("b1", "b2")):
+        assert pos[x][1] * pos[y][1] > 0
+        assert abs(pos[x][1]) > 1.0
+        # Runs a→b, strictly inside the portals (hollow eye, no node on the chord ends).
+        assert pos["p1"][0] < pos[x][0] < pos[y][0] < pos["p2"][0]
+    links = [(e["a_node_id"], e["b_node_id"]) for e in edges if e["a_node_id"] in pos and e["b_node_id"] in pos]
+    assert count_edge_crossings(pos, links) == 0
 
 
 def test_dual_mass_refine_reports_drift() -> None:
