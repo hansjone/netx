@@ -106,7 +106,7 @@
 
 .app-brand__logo:hover { background: rgb(255 255 255 / 0.06); }
 .app-brand__logo:focus-visible { outline: none; box-shadow: var(--nx-ring); }
-.app-brand__mark { display: block; flex-shrink: 0; filter: drop-shadow(0 2px 6px rgb(var(--nx-accent-rgb) / 0.35)); }
+.app-brand__mark { display: block; flex-shrink: 0; }
 
 .app-brand__wordmark {
   font-size: 15px;
@@ -230,8 +230,7 @@
 
 .app-brand__tasks.is-busy .app-brand__tasks-dot {
   background: var(--nx-accent);
-  box-shadow: 0 0 0 3px rgb(var(--nx-accent-rgb) / 0.2);
-  animation: app-brand-pulse 1.8s ease-in-out infinite;
+  animation: none;
 }
 
 .app-brand__tasks.is-busy .app-brand__tasks-count {
