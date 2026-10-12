@@ -5,7 +5,7 @@
 
 #define MyAppName "NetX"
 #ifndef MyAppVersion
-  #define MyAppVersion "0.4.13"
+  #define MyAppVersion "0.4.14"
 #endif
 #define MyAppPublisher "NetX"
 #define MyAppURL "https://github.com/hansjone/netx"
@@ -140,6 +140,9 @@ Source: "{#StageDir}\postgres\pgsql\bin\liblz4.dll"; Flags: dontcopy
 Source: "{#StageDir}\postgres\pgsql\bin\libzstd.dll"; Flags: dontcopy
 Source: "{#StageDir}\postgres\pgsql\bin\libxml2.dll"; Flags: dontcopy
 Source: "{#StageDir}\postgres\pgsql\bin\libxslt.dll"; Flags: dontcopy
+; These helpers are extracted for PrepareToInstall, before the new program tree is copied.
+Source: "{#StageDir}\packaging\_common.ps1"; Flags: dontcopy
+Source: "{#StageDir}\packaging\service_lifecycle.ps1"; Flags: dontcopy
 
 [Dirs]
 ; users-modify so tray / non-admin reconfigure can update .env and runtime files.
@@ -277,9 +280,27 @@ begin
 end;
 
 function DetectExistingConfiguredInstall(): Boolean;
+var
+  Lines: TArrayOfString;
+  i: Integer;
+  Line: String;
 begin
-  { Configured install = ProgramData\.env already has NETX_DB_MODE. }
+  { NETX_DATABASE_URL-only installs predate NETX_DB_MODE and use an external DB. }
   Result := EnvHasDbMode();
+  if Result then
+    Exit;
+  if not LoadStringsFromFile(ExpandConstant('{commonappdata}\NetX\.env'), Lines) then
+    Exit;
+  for i := 0 to GetArrayLength(Lines) - 1 do
+  begin
+    Line := Trim(Lines[i]);
+    if (Pos('NETX_DATABASE_URL=', Line) = 1) and
+       (Length(Line) > Length('NETX_DATABASE_URL=')) then
+    begin
+      Result := True;
+      Exit;
+    end;
+  end;
 end;
 
 procedure SyncSkipDbFromInstallMode();
@@ -343,18 +364,41 @@ end;
 procedure StopNetxBeforeFileReplace();
 var
   ResultCode: Integer;
-  StopScript: String;
+  LifecycleScript: String;
   Params: String;
 begin
-  StopScript := ExpandConstant('{app}\packaging\stop_netx_app.ps1');
-  if not FileExists(StopScript) then
+  ExtractTemporaryFile('_common.ps1');
+  ExtractTemporaryFile('service_lifecycle.ps1');
+  LifecycleScript := ExpandConstant('{tmp}\service_lifecycle.ps1');
+  Params :=
+    '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + LifecycleScript + '"' +
+    ' -Action StopForUpdate' +
+    ' -ProgramRoot "' + ExpandConstant('{app}') + '"' +
+    ' -DataRoot "' + ExpandConstant('{commonappdata}\NetX') + '"';
+  if not Exec('powershell.exe', Params, ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    RaiseException('Could not stop NetX before replacing program files.');
+  if ResultCode <> 0 then
+    RaiseException('Could not stop NetX services/tasks before replacing program files. See ProgramData\\NetX\\data\\runtime\\service_lifecycle.log.');
+end;
+
+procedure ResumeNetxServiceAfterInstall();
+var
+  ResultCode: Integer;
+  LifecycleScript: String;
+  Params: String;
+begin
+  LifecycleScript := ExpandConstant('{app}\packaging\service_lifecycle.ps1');
+  if not FileExists(LifecycleScript) then
     Exit;
   Params :=
-    '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + StopScript + '"' +
+    '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + LifecycleScript + '"' +
+    ' -Action ResumeAfterUpdate' +
     ' -ProgramRoot "' + ExpandConstant('{app}') + '"' +
-    ' -DataRoot "' + ExpandConstant('{commonappdata}\NetX') + '"' +
-    ' -KillTray';
-  Exec('powershell.exe', Params, ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    ' -DataRoot "' + ExpandConstant('{commonappdata}\NetX') + '"';
+  if not Exec('powershell.exe', Params, ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    RaiseException('NetX was updated, but its previously running service could not be restarted.');
+  if ResultCode <> 0 then
+    RaiseException('NetX was updated, but its previously running service could not be restarted. See ProgramData\\NetX\\data\\runtime\\service_lifecycle.log.');
 end;
 
 function NetxShouldStartTray(): Boolean;
@@ -988,6 +1032,9 @@ end;
 function InitializeUninstall(): Boolean;
 var
   DeleteSrc: String;
+  LifecycleScript: String;
+  Params: String;
+  ResultCode: Integer;
 begin
   Result := True;
   GDeleteNetxData := False;
@@ -1007,6 +1054,23 @@ begin
   begin
     GDeleteNetxData :=
       MsgBox(ExpandConstant('{cm:UninstallDeleteData}'), mbConfirmation, MB_YESNO) = IDYES;
+  end;
+
+  LifecycleScript := ExpandConstant('{app}\packaging\service_lifecycle.ps1');
+  if FileExists(LifecycleScript) then
+  begin
+    Params :=
+      '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + LifecycleScript + '"' +
+      ' -Action RemoveForUninstall' +
+      ' -ProgramRoot "' + ExpandConstant('{app}') + '"' +
+      ' -DataRoot "' + ExpandConstant('{commonappdata}\NetX') + '"';
+    if (not Exec('powershell.exe', Params, ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode)) or
+       (ResultCode <> 0) then
+    begin
+      MsgBox('Could not stop/remove the NetX Windows service or startup task. Uninstall has been cancelled to protect the installation. See ProgramData\\NetX\\data\\runtime\\service_lifecycle.log.', mbError, MB_OK);
+      Result := False;
+      Exit;
+    end;
   end;
 end;
 
@@ -1069,5 +1133,6 @@ begin
     UninstallKey :=
       'Software\Microsoft\Windows\CurrentVersion\Uninstall\{A7E3C2D1-9F40-4B8E-9C1A-NETXWIN64001}_is1';
     RegDeleteValue(HKLM, UninstallKey, 'QuietUninstallString');
+    ResumeNetxServiceAfterInstall();
   end;
 end;

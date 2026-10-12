@@ -1,4 +1,4 @@
-# NetX Windows packaging
+﻿# NetX Windows packaging
 
 **Linux is unchanged:** keep using your own PostgreSQL and `NETX_DATABASE_URL` with `scripts/start_netx.sh`. Nothing under this folder is required on Linux.
 
@@ -20,20 +20,20 @@ Zip packages are **not** published. Releases ship **Setup.exe only**.
 
 **Installer:** English + 简体中文 (language dialog). Icons use `packaging/assets/netx.ico`.
 
-**Offline:** Setup ships portable PostgreSQL, **`python/runtime` + `.venv`** (portable; not tied to the build PC’s user profile), and WinSW. **First install** shows the Database page (built-in or external PostgreSQL; external credentials validated with `psql SELECT 1`). **Re-running Setup when `%ProgramData%\NetX\.env` already has `NETX_DB_MODE`** skips the DB wizard and updates program files in place — **no GitHub/EDB download on the target PC**. Service install uses bundled WinSW (pass `-AllowDownload` only on a build/dev machine if the binary is missing). Auto-update still needs network later, and is unchecked by default.
+**Offline:** Setup ships portable PostgreSQL, **`python/runtime` + `.venv`** (portable; not tied to the build PC’s user profile), and WinSW. **First install** shows the Database page (built-in or external PostgreSQL; external credentials validated with `psql SELECT 1`). **Re-running Setup when `%ProgramData%\NetX\.env` has `NETX_DB_MODE` or a non-empty legacy `NETX_DATABASE_URL`** skips the DB wizard by default. Update stops and resumes an installed Windows service or startup task while replacing files. Service install uses bundled WinSW. Auto-update still needs network later, and is unchecked by default.
 
-**OS:** Windows 10/11 or Windows Server **2016+** recommended. Packaging scripts are UTF-8 **with BOM** so Chinese UI works on Windows PowerShell 5.x. Bundled Python in current releases is **3.13+**, which does **not** support Windows Server 2012 R2 — use Server 2016+ or a newer desktop OS.
+**OS:** Windows 10/11 or Windows Server **2016+** recommended. Packaging scripts are UTF-8 **with BOM** so Chinese UI works on Windows PowerShell 5.x. The Windows release workflow pins bundled Python to **3.12**, so local release builds should use the same version for consistent artifacts.
 
 ## Build (developer machine)
 
-Prerequisites: Python 3.11+, Node 20+, PowerShell, network (to download PG binaries once).
+Prerequisites: Python **3.12.x**, Node 20+, PowerShell, network (to download PostgreSQL binaries once).
 
 ```powershell
 cd netx
-# Optional: download portable Postgres into packaging\postgres\pgsql
+# Required once per clean build machine: download portable PostgreSQL into packaging\postgres\pgsql
 powershell -ExecutionPolicy Bypass -File .\packaging\download_postgres.ps1
 
-# Build web + stage (-CreateVenv ships a ready .venv; large). No zip by default.
+# Build web + offline stage containing Python, .venv, PostgreSQL and WinSW. No zip by default.
 powershell -ExecutionPolicy Bypass -File .\packaging\build_release.ps1 -CreateVenv
 ```
 
@@ -118,15 +118,14 @@ Stops services, replaces program folders (`netx_api`, `web`, `packaging`, `postg
 .\packaging\check_update.ps1 -Apply
 ```
 
-Both sides should publish the same **Setup.exe**. `check_update.ps1` prefers `NetX-Setup-*.exe` (legacy `win64.zip` still works if present). **Code mirror alone is not enough** — Forgejo pull-mirror syncs git/tags only; Release assets must be uploaded separately (or clients can only fall back to GitHub).
+Both release hosts must publish the same **Setup.exe and `.sha256` sidecar**. `check_update.ps1` prefers `NetX-Setup-*.exe` (legacy `win64.zip` is still accepted); it verifies the Setup against a manifest hash or the adjacent checksum asset. Old releases without a sidecar remain supported with a warning. **Code mirror alone is not enough** — Forgejo pull-mirror syncs git/tags only; release assets are uploaded separately.
 
 ### Maintainer release checklist (Windows)
 
-Do this on the **dev PC on the home LAN** after bumping version:
+Release from a clean, version-matched checkout in this order:
 
-1. **Build** — `.\packaging\build_release.ps1 -CreateVenv` + Inno Setup → `NetX-Setup-*.exe`
-2. **GitHub** — `.\packaging\publish_release.ps1 -Version x.y.z` (uploads Setup.exe only)
-3. **Forgejo** — upload the same Setup.exe (default: public domain `https://git.avelo.top`):
+1. **Build and publish GitHub** — ` .\packaging\publish_release.ps1 -Version x.y.z` builds, verifies and uploads Setup.exe plus SHA-256.
+2. **Forgejo** — publish the same Setup.exe and checksum sidecar (default: public domain `https://git.avelo.top`):
 
 ```powershell
 # One-time: User env var (never commit the token)
@@ -148,7 +147,7 @@ Do this on the **dev PC on the home LAN** after bumping version:
 | Update probe (default) | GitHub + `https://git.avelo.top/.../releases/latest` |
 
 Verify:
-
+- Confirm each release has `NetX-Setup-x.y.z.exe` and `NetX-Setup-x.y.z.exe.sha256`.
 - https://git.avelo.top/hansjone/netx/releases
 - Probe: `.\packaging\check_update.ps1` → both `github` and `forgejo` reachable with the new version
 

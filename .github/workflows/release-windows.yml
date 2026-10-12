@@ -38,11 +38,18 @@ jobs:
         shell: pwsh
         run: |
           $ver = (Get-Content pyproject.toml | Select-String '^\s*version\s*=').Line -replace '.*"(.+)"','$1'
+          if ($env:GITHUB_REF_NAME -ne "v$ver") { throw "Release tag $env:GITHUB_REF_NAME does not match pyproject version $ver" }
           ISCC.exe "/DMyAppVersion=$ver" packaging/installer/netx.iss
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with exit code $LASTEXITCODE" }
+          $setup = "packaging/release/NetX-Setup-$ver.exe"
+          if (-not (Test-Path $setup) -or (Get-Item $setup).Length -lt 1MB) { throw "Missing or invalid installer: $setup" }
+          $hash = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLowerInvariant()
+          Set-Content "$setup.sha256" -Value $hash -Encoding ascii -NoNewline
 
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             packaging/release/NetX-Setup-*.exe
+            packaging/release/NetX-Setup-*.exe.sha256
           generate_release_notes: true

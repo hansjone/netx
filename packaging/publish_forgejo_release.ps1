@@ -28,6 +28,7 @@ if (-not $Version) {
 $tag = "v$Version"
 $relDir = if ($ReleaseDir) { $ReleaseDir } else { Join-Path $PSScriptRoot "release" }
 $setup = Join-Path $relDir "NetX-Setup-$Version.exe"
+$checksum = "$setup.sha256"
 
 if (-not $Token) {
     $Token = $env:NETX_FORGEJO_TOKEN
@@ -39,7 +40,8 @@ if (-not $Token) {
 if (-not (Test-Path $setup)) {
     throw "missing_setup: $setup (run build_release.ps1 + ISCC first)"
 }
-
+$hash = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash.ToLowerInvariant()
+Set-Content -LiteralPath $checksum -Value $hash -Encoding ascii -NoNewline
 $apiBase = "$ForgejoBase/api/v1/repos/$Owner/$Repo"
 $headers = @{
     "Authorization" = "token $Token"
@@ -122,6 +124,7 @@ function Upload-ForgejoAsset {
 }
 
 Upload-ForgejoAsset -Path $setup
+Upload-ForgejoAsset -Path $checksum
 
 $releaseUrl = "$ForgejoBase/$Owner/$Repo/releases/tag/$tag"
 Write-Host ""

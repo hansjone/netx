@@ -107,7 +107,7 @@ foreach ($name in @(
         "download_postgres.ps1", "setup_first_run.ps1", "start_netx_app.ps1",
         "stop_netx_app.ps1", "update_netx.ps1", "check_update.ps1",
         "launch_shortcut.ps1", "netx_tray.ps1", "install_autostart.ps1", "install_service.ps1",
-        "service_run.ps1", "install_update_task.ps1", "uninstall_prepare.ps1", "uninstall_delete_data.ps1", "sign_release.ps1",
+        "service_run.ps1", "service_lifecycle.ps1", "install_update_task.ps1", "uninstall_prepare.ps1", "uninstall_delete_data.ps1", "sign_release.ps1",
         "build_release.ps1", "publish_release.ps1", "publish_forgejo_release.ps1", "README.md", "manifest.example.json"
     )) {
     $src = Join-Path $PSScriptRoot $name
@@ -173,7 +173,9 @@ foreach ($cmdName in @("NetX-FirstRun.cmd", "NetX-Start.cmd", "NetX-Tray.cmd", "
 if ($CreateVenv) {
     Write-Host "==> Creating portable python/runtime + .venv (must not reference build-machine paths)"
     $pyPath = Get-NetxSystemPython
-    if (-not $pyPath) { throw "python_not_found_for_venv: need Python 3.11+ (not WindowsApps stub)" }
+    if (-not $pyPath) { throw "python_not_found_for_venv: need Python 3.12.x (not WindowsApps stub)" }
+    $pyVersion = (& $pyPath -c "import sys; print('%d.%d' % sys.version_info[:2])" 2>$null | Out-String).Trim()
+    if ($pyVersion -ne '3.12') { throw "python_version_mismatch: Windows releases require Python 3.12.x for reproducible runtimes; found $pyVersion at $pyPath" }
     Write-Host "    Build Python: $pyPath"
 
     $prefix = (& $pyPath -c "import sys; print(sys.base_prefix)" 2>$null | Out-String).Trim()
@@ -250,4 +252,4 @@ Write-Host ""
 Write-Host "Ship:"
 Write-Host "  Exe:  compile packaging\installer\netx.iss with Inno Setup (needs stage above)"
 Write-Host "  (Zip packages are not published; use -CreateZip only for local testing.)"
-Write-Host "Python: install 3.11+ on target, or rebuild with -CreateVenv and ship .venv"
+Write-Host "Python: bundled python/runtime + .venv; target PCs do not need Python installed"

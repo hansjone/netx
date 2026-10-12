@@ -376,13 +376,43 @@ try {
         }
         Invoke-WebRequest -Uri $result.download_url -OutFile $pkgPath -Headers $dlHeaders -UseBasicParsing
     }
-    if ($result.sha256 -and $result.sha256 -notmatch 'REPLACE' -and $result.sha256.Trim()) {
-        $hash = (Get-FileHash -Path $pkgPath -Algorithm SHA256).Hash.ToLowerInvariant()
-        $expect = $result.sha256.ToLowerInvariant()
-        if ($hash -ne $expect) {
-            throw "sha256_mismatch: got $hash expected $expect"
+    $expectedHash = [string]$result.sha256
+    if (-not $expectedHash -or $expectedHash -match 'REPLACE') {
+        $checksumUri = [uri]$result.download_url
+        $checksumBuilder = New-Object -TypeName System.UriBuilder -ArgumentList $checksumUri
+        $checksumBuilder.Path = $checksumBuilder.Path + '.sha256'
+        $checksumBuilder.Query = ''
+        $checksumUrl = $checksumBuilder.Uri.AbsoluteUri
+        $checksumHeaders = @{ 'User-Agent' = 'NetX-UpdateCheck' }
+        $isChecksumGithub = ($checksumUri.Host -match '(^|\.)github\.com$' -or $checksumUri.Host -match '(^|\.)githubusercontent\.com$')
+        if ($UpdateToken -and -not $isChecksumGithub) { $checksumHeaders['Authorization'] = "token $UpdateToken" }
+        $checksumFile = "$pkgPath.sha256"
+        try {
+            Invoke-WebRequest -Uri $checksumUrl -OutFile $checksumFile -Headers $checksumHeaders -UseBasicParsing
+            $expectedHash = (Get-Content -LiteralPath $checksumFile -Raw).Trim() -split '\s+' | Select-Object -First 1
+        } catch {
+            $statusCode = 0
+            if ($_.Exception.Response -and $_.Exception.Response.StatusCode) {
+                $statusCode = [int]$_.Exception.Response.StatusCode
+            }
+            if ($statusCode -eq 404) {
+                Write-Host "[WARN] Release has no SHA-256 sidecar; accepting legacy asset without checksum verification." -ForegroundColor Yellow
+            } else {
+                throw
+            }
+        } finally {
+            Remove-Item -LiteralPath $checksumFile -Force -ErrorAction SilentlyContinue
         }
-        Write-Host "==> SHA256 OK"
+    }
+    if ($expectedHash) {
+        $expectedHash = $expectedHash.Trim().ToLowerInvariant()
+        if ($expectedHash -notmatch '^[0-9a-f]{64}$') { throw 'invalid_sha256_metadata' }
+        $actualHash = (Get-FileHash -LiteralPath $pkgPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($actualHash -ne $expectedHash) {
+            Remove-Item -LiteralPath $pkgPath -Force -ErrorAction SilentlyContinue
+            throw "sha256_mismatch: got $actualHash expected $expectedHash"
+        }
+        Write-Host '==> SHA256 OK'
     }
 
     # Program Files installs need admin; elevate once (avoid loop via NETX_UPDATE_ELEVATED).
@@ -422,10 +452,29 @@ try {
             & powershell -NoProfile -ExecutionPolicy Bypass -File $repairPs1 `
                 -ProgramRoot $prog -DataRoot $data
         }
-        Write-Host "==> Restarting NetX after Setup"
-        & (Join-Path $PSScriptRoot "start_netx_app.ps1") `
-            -ProgramRoot $prog -DataRoot $data -SkipBrowser
-        if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        $managedRunnerActive = $false
+        $netxService = Get-Service -Name "NetX" -ErrorAction SilentlyContinue
+        if ($netxService -and $netxService.Status -eq "Running") { $managedRunnerActive = $true }
+        if (-not $managedRunnerActive) {
+            try {
+                $netxTask = Get-ScheduledTask -TaskName "NetXService" -TaskPath "\NetX\" -ErrorAction Stop
+                $managedRunnerActive = ([string]$netxTask.State -eq "Running")
+            } catch {}
+        }
+        if ($managedRunnerActive) {
+            Write-Host "==> Waiting for the previously running NetX service/task"
+            $netxPort = 8890
+            $netxEnv = Read-DotEnv -Path (Join-Path $data '.env')
+            if ($netxEnv['NETX_PORT']) { try { $netxPort = [int]$netxEnv['NETX_PORT'] } catch {} }
+            if (-not (Wait-NetxApiHealthy -HostName "127.0.0.1" -Port $netxPort -TimeoutSec 180)) {
+                throw "updated_service_unhealthy: NetX service/task was resumed but /health did not become ready"
+            }
+        } else {
+            Write-Host "==> Restarting NetX after Setup"
+            & (Join-Path $PSScriptRoot "start_netx_app.ps1") `
+                -ProgramRoot $prog -DataRoot $data -SkipBrowser
+            if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        }
     } else {
         Write-Host "==> Applying legacy zip update via update_netx.ps1"
         & powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "update_netx.ps1") `
