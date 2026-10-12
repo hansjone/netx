@@ -5,6 +5,8 @@ import type {
   ManagedNeListResponse,
   ManagedNeMeta,
 } from "../../types";
+import type { TableColumnFilters } from "../../types/tableFilters";
+import { appendColumnFilters } from "./tableFilters";
 import { ApiRequestError, apiDelete, apiGet, apiPatch, apiPost, authHeaders, fetchCreds, handleUnauthorized, parseApiResponse } from "./http";
 
 export const fetchManagedNeMeta = () =>
@@ -46,11 +48,13 @@ export const fetchManagedNe = (params: {
   connectStatus: string;
   page: number;
   pageSize: number;
+  columnFilters?: TableColumnFilters;
 }) => {
   const p = new URLSearchParams();
   if (params.keyword) p.set("keyword", params.keyword);
   if (params.vendor) p.set("vendor", params.vendor);
   if (params.connectStatus) p.set("connect_status", params.connectStatus);
+  appendColumnFilters(p, params.columnFilters);
   p.set("page", String(Math.max(1, params.page)));
   p.set("page_size", String(Math.max(1, Math.min(500, params.pageSize))));
   return apiGet<ManagedNeListResponse>(`/v1/managed-ne?${p.toString()}`);

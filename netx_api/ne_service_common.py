@@ -60,6 +60,63 @@ def _normalize_ip(ip: str) -> str:
     return str(ip or "").strip()
 
 
+_HOSTNAME_RE = re.compile(r"^(?=.{1,253}$)[A-Za-z0-9_](?:[A-Za-z0-9_-]{0,62})(?:\.[A-Za-z0-9_](?:[A-Za-z0-9_-]{0,62}))*\.?$")
+
+
+def _is_valid_mgmt_address(ip: str) -> bool:
+    """Accept an IPv4/IPv6 literal or a DNS hostname (no spaces, ports or schemes)."""
+    import ipaddress
+
+    text = str(ip or "").strip()
+    if not text:
+        return False
+    try:
+        ipaddress.ip_address(text)
+        return True
+    except ValueError:
+        pass
+    # Dotted-quad lookalikes (e.g. 10.0.0.300) are typos, not hostnames.
+    if re.fullmatch(r"[0-9.]+", text):
+        return False
+    return bool(_HOSTNAME_RE.match(text))
+
+
+def _require_mgmt_address(ip: str) -> str:
+    text = _normalize_ip(ip)
+    if not text:
+        raise HTTPException(status_code=400, detail="ip_address_required")
+    if not _is_valid_mgmt_address(text):
+        raise HTTPException(status_code=400, detail="invalid_ip_address")
+    return text
+
+
+CONNECT_FIELDS = (
+    "ip_address", "port", "protocol", "username", "password_enc", "device_type",
+    "hop_enabled", "hop_vendor", "hop_host", "hop_port", "hop_protocol", "hop_username",
+    "hop_password_enc", "hop_command_template", "hop_vrf", "hop_target_auth_mode",
+    "hop_enter_system_view",
+)
+
+
+def connect_snapshot(row: ManagedNE) -> tuple[Any, ...]:
+    return tuple(getattr(row, f, None) for f in CONNECT_FIELDS)
+
+
+def reset_connect_status_if_changed(row: ManagedNE, before: tuple[Any, ...]) -> None:
+    """A previous pass/fail no longer describes the device once login settings change."""
+    if connect_snapshot(row) != before and str(row.connect_status or "") != "unknown":
+        row.connect_status = "unknown"
+        row.connect_message = ""
+
+
+def hop_password_optional(hop_vendor: str, hop_target_auth_mode: str) -> bool:
+    """Only a bastion that manages target auth may run without a stored hop password."""
+    return (
+        _normalize_hop_vendor(hop_vendor) == "bastion"
+        and _normalize_hop_target_auth_mode(hop_target_auth_mode) == "bastion_managed"
+    )
+
+
 def _normalize_protocol(protocol: str) -> str:
     p = str(protocol or "ssh").strip().lower()
     return p if p in ("ssh", "telnet") else "ssh"
@@ -213,9 +270,8 @@ def _apply_hop_update(row: ManagedNE, data: dict[str, Any]) -> None:
             raise HTTPException(status_code=400, detail="hop_host_required")
         if not str(row.hop_username or "").strip():
             raise HTTPException(status_code=400, detail="hop_username_required")
-        if (
-            not str(row.hop_password_enc or "").strip()
-            and _normalize_hop_target_auth_mode(row.hop_target_auth_mode) != "bastion_managed"
+        if not str(row.hop_password_enc or "").strip() and not hop_password_optional(
+            str(row.hop_vendor or ""), str(row.hop_target_auth_mode or "")
         ):
             raise HTTPException(status_code=400, detail="hop_password_required")
 

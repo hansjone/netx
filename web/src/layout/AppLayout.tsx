@@ -32,6 +32,7 @@ export function AppLayout({ children }: Props) {
     refetchOnWindowFocus: false,
   });
   const activeTasks = opsTasksQuery.data?.active ?? 0;
+  const activeTaskCount = opsTasksQuery.isLoading ? "…" : opsTasksQuery.isError ? "—" : activeTasks;
 
   useAppWindowRegistration(pathname);
 
@@ -66,15 +67,17 @@ export function AppLayout({ children }: Props) {
         <div className="app-brand__actions">
           {user ? (
             <div className="app-brand__actions-group">
-              <Chip
+              <Button
                 size="sm"
-                color={activeTasks > 0 ? "success" : "default"}
-                variant="soft"
-                className="conn-pill conn-pill--on-brand conn-pill--tasks cursor-pointer"
-                onClick={() => openOrFocusModule({ moduleId: "audit", path: "/audit/tasks" })}
+                variant="ghost"
+                className="conn-pill conn-pill--on-brand conn-pill--tasks"
+                aria-label={t("layout.activeTasks", { count: activeTaskCount })}
+                onPress={() => openOrFocusModule({ moduleId: "audit", path: "/audit/tasks" })}
               >
-                <Chip.Label>{t("layout.activeTasks", { count: activeTasks })}</Chip.Label>
-              </Chip>
+                <svg viewBox="0 0 20 20" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="M3 5h14M3 10h10M3 15h7" /></svg>
+                <span className="app-brand__tasks-text">{t("layout.activeTasks", { count: activeTaskCount })}</span>
+                <span className="app-brand__tasks-count" aria-hidden="true">{activeTaskCount}</span>
+              </Button>
               <Chip size="sm" variant="soft" className="conn-pill conn-pill--on-brand conn-pill--user" title={user.role}>
                 <Chip.Label>{user.username}</Chip.Label>
               </Chip>

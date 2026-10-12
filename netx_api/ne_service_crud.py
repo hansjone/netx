@@ -5,10 +5,10 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi import HTTPException
-from sqlalchemy import or_
+from sqlalchemy import false, func, literal, or_
 from sqlalchemy.orm import Session
 
-from .device_types import SUPPORTED_DEVICE_TYPES, SUPPORTED_VENDORS, WEBCRT_DEVICE_TYPES, is_placeholder_ne_source
+from .device_types import SUPPORTED_VENDORS, WEBCRT_DEVICE_TYPES, is_placeholder_ne_source
 from .models import ManagedNE
 from .ne_crypto import encrypt_secret
 from .ne_hop_templates import default_bastion_username_template, default_hop_command_template
@@ -24,8 +24,11 @@ from .ne_service_common import (
     _apply_hop_update,
     _normalize_hop_target_auth_mode,
     _normalize_hop_vendor,
-    _normalize_ip,
     _normalize_protocol,
+    _require_mgmt_address,
+    connect_snapshot,
+    hop_password_optional,
+    reset_connect_status_if_changed,
     _normalize_saved_hop_endpoint,
     _normalize_vendor,
     _now,
@@ -33,15 +36,42 @@ from .ne_service_common import (
     _validate_hop_on_create,
     row_to_out,
 )
+from .table_filters import TableFilterParams, filter_query
 from .ne_exec_guard import (
     EXEC_POLICY_READONLY,
     allows_open_exec_policy,
     require_exec_policy_writable,
 )
 
-# Inventory create stays strict; updates must also accept WebCRT/LLDP placeholder types
-# (generic/linux) so operators can open the form and promote them to zte_zxros etc.
+# Create and update share the form's device-type list, which includes linux/generic
+# (Linux hosts and WebCRT/LLDP placeholders promoted to inventory).
 _ALLOWED_UPDATE_DEVICE_TYPES = frozenset(WEBCRT_DEVICE_TYPES)
+
+def managed_ne_filter_expressions() -> dict[str, Any]:
+    """Column filter fields for the NE management table (tags handled separately)."""
+    return {
+        "name": func.coalesce(func.nullif(ManagedNE.name, ""), ManagedNE.ip_address),
+        "vendor": ManagedNE.vendor,
+        "deviceType": ManagedNE.device_type,
+        "source": func.coalesce(func.nullif(ManagedNE.source, ""), "manual"),
+        "ip": ManagedNE.ip_address,
+        "username": ManagedNE.username,
+        "connectStatus": ManagedNE.connect_status,
+    }
+
+
+def _filter_by_tags(stmt: Any, value: dict[str, Any]) -> Any:
+    """Tags are space-separated; a row matches when any selected tag is present ("" = untagged)."""
+    tags_col = func.coalesce(ManagedNE.tags, "")
+    padded = literal(" ") + tags_col + literal(" ")
+    conds = []
+    for tag in value["values"]:
+        tag = str(tag).strip()
+        escaped = tag.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        conds.append(func.trim(tags_col) == "" if not tag else padded.like(f"% {escaped} %", escape="\\"))
+    matched = or_(*conds) if conds else false()
+    return stmt.filter(matched if value["mode"] == "include" else ~matched)
+
 
 def list_managed_ne(
     db: Session,
@@ -51,6 +81,7 @@ def list_managed_ne(
     connect_status: str | None = None,
     page: int = 1,
     page_size: int = 50,
+    table_filters: TableFilterParams | None = None,
 ) -> dict[str, Any]:
     stmt = db.query(ManagedNE)
     kw = str(keyword or "").strip()
@@ -72,6 +103,22 @@ def list_managed_ne(
         stmt = stmt.filter(ManagedNE.vendor == v)
     if cs:
         stmt = stmt.filter(ManagedNE.connect_status == cs)
+    params = table_filters or TableFilterParams()
+    tags_filter = params.filters.get("tags")
+    if tags_filter and params.field != "tags":
+        stmt = _filter_by_tags(stmt, tags_filter)
+    if params.field == "tags":
+        stmt, _ = filter_query(stmt, managed_ne_filter_expressions(), TableFilterParams(
+            {k: v for k, v in params.filters.items() if k != "tags"}))
+        options: set[str] = set()
+        for (tags_val,) in stmt.with_entities(ManagedNE.tags).all():
+            parts = str(tags_val or "").split()
+            options.update(parts if parts else [""])
+        return {"field": "tags", "options": sorted(options)}
+    stmt, options = filter_query(stmt, managed_ne_filter_expressions(), TableFilterParams(
+        {k: v for k, v in params.filters.items() if k != "tags"}, params.field))
+    if options is not None:
+        return options
     total = int(stmt.count())
     rows = (
         stmt.order_by(ManagedNE.updated_at.desc())
@@ -97,10 +144,8 @@ def get_managed_ne(db: Session, ne_id: str) -> ManagedNeOut:
 def create_managed_ne(db: Session, body: ManagedNeCreate) -> ManagedNeOut:
     _require_crypto()
     _validate_hop_on_create(body)
-    ip = _normalize_ip(body.ip_address)
-    if not ip:
-        raise HTTPException(status_code=400, detail="ip_address_required")
-    if body.device_type not in SUPPORTED_DEVICE_TYPES:
+    ip = _require_mgmt_address(body.ip_address)
+    if body.device_type not in _ALLOWED_UPDATE_DEVICE_TYPES:
         raise HTTPException(status_code=400, detail="unsupported_device_type")
     existing = db.query(ManagedNE).filter(ManagedNE.ip_address == ip).first()
     if existing:
@@ -140,10 +185,9 @@ def update_managed_ne(db: Session, ne_id: str, body: ManagedNeUpdate) -> Managed
     if not row:
         raise HTTPException(status_code=404, detail="managed_ne_not_found")
     data = body.model_dump(exclude_unset=True)
+    before = connect_snapshot(row)
     if "ip_address" in data:
-        ip = _normalize_ip(data["ip_address"])
-        if not ip:
-            raise HTTPException(status_code=400, detail="ip_address_required")
+        ip = _require_mgmt_address(data["ip_address"])
         other = db.query(ManagedNE).filter(ManagedNE.ip_address == ip, ManagedNE.id != ne_id).first()
         if other:
             raise HTTPException(status_code=400, detail="ip_address_exists")
@@ -157,7 +201,7 @@ def update_managed_ne(db: Session, ne_id: str, body: ManagedNeUpdate) -> Managed
         v = str(data["vendor"] or "").strip()
         row.vendor = v if v in SUPPORTED_VENDORS else "Other"
     if "name" in data:
-        row.name = str(data["name"] or "").strip()
+        row.name = str(data["name"] or "").strip() or str(row.ip_address or "")
     if "port" in data and data["port"] is not None:
         row.port = int(data["port"])
     if "protocol" in data and data["protocol"] is not None:
@@ -198,6 +242,7 @@ def update_managed_ne(db: Session, ne_id: str, body: ManagedNeUpdate) -> Managed
     if "ip_address" in data and str(row.ip_address or "").strip():
         if is_placeholder_ne_source(row.source):
             row.source = ""
+    reset_connect_status_if_changed(row, before)
     row.updated_at = _now()
     # Keep linked fabric node identity in sync (name / IP / vendor).
     if any(k in data for k in ("ip_address", "name", "vendor", "device_type")):
@@ -225,8 +270,6 @@ def batch_apply_hop_proxy(db: Session, ids: list[str], hop: HopProxyConfig) -> d
     if not hop_user:
         raise HTTPException(status_code=400, detail="hop_username_required")
     hop_auth_mode = _normalize_hop_target_auth_mode(hop.hop_target_auth_mode)
-    if not hop_pass and hop_auth_mode != "bastion_managed":
-        raise HTTPException(status_code=400, detail="hop_password_required")
 
     template = str(hop.hop_command_template or "").strip()
     if hop_vendor == "bastion" and not template:
@@ -243,9 +286,15 @@ def batch_apply_hop_proxy(db: Session, ids: list[str], hop: HopProxyConfig) -> d
     missing = [x for x in ne_ids if x not in found_ids]
     if missing:
         raise HTTPException(status_code=404, detail=f"managed_ne_not_found: {','.join(missing[:5])}")
+    # Blank password keeps each NE's stored hop password; NEs without one cannot hop.
+    if not hop_pass and not hop_password_optional(hop_vendor, hop_auth_mode):
+        lacking = [str(r.name or r.ip_address) for r in rows if not str(r.hop_password_enc or "").strip()]
+        if lacking:
+            raise HTTPException(status_code=400, detail=f"hop_password_required: {','.join(lacking[:5])}")
 
     now = _now()
     for row in rows:
+        before = connect_snapshot(row)
         row.hop_enabled = True
         row.hop_vendor = hop_vendor
         row.hop_host = hop_host
@@ -258,6 +307,7 @@ def batch_apply_hop_proxy(db: Session, ids: list[str], hop: HopProxyConfig) -> d
         row.hop_vrf = str(hop.hop_vrf or "").strip()
         row.hop_target_auth_mode = hop_auth_mode
         row.hop_enter_system_view = bool(getattr(hop, "hop_enter_system_view", False))
+        reset_connect_status_if_changed(row, before)
         row.updated_at = now
     db.commit()
     return {"ok": True, "updated": len(rows)}
@@ -283,10 +333,12 @@ def batch_apply_account(db: Session, ids: list[str], account: BatchAccountConfig
         raise HTTPException(status_code=404, detail=f"managed_ne_not_found: {','.join(missing[:5])}")
     now = _now()
     for row in rows:
+        before = connect_snapshot(row)
         if user:
             row.username = user
         if pwd:
             row.password_enc = pwd_enc
+        reset_connect_status_if_changed(row, before)
         row.updated_at = now
     db.commit()
     return {"ok": True, "updated": len(rows)}

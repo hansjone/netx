@@ -8,6 +8,7 @@ build/
 dist/
 scripts/.run/
 # Local one-off probes / staging dumps (not for commit)
+artifacts/
 scripts/_*
 scripts/archive/
 packages/netx-topology-mcp/tests/_*

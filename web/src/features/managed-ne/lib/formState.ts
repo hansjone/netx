@@ -30,6 +30,26 @@ export type ManagedNeFormState = {
   exec_policy: "readonly" | "linux_shell" | "unrestricted";
 };
 
+const IPV4_RE = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
+const HOSTNAME_RE = /^(?=.{1,253}$)[A-Za-z0-9_][A-Za-z0-9_-]{0,62}(\.[A-Za-z0-9_][A-Za-z0-9_-]{0,62})*\.?$/;
+
+/** IPv4 / IPv6 literal or DNS hostname; mirrors the API's `invalid_ip_address` check. */
+export function isValidMgmtAddress(value: string): boolean {
+  const text = value.trim();
+  if (!text) return false;
+  if (IPV4_RE.test(text)) return true;
+  if (/^[0-9.]+$/.test(text)) return false;
+  if (text.includes(":")) {
+    try {
+      new URL(`http://[${text}]/`);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  return HOSTNAME_RE.test(text);
+}
+
 export function deviceTypeForVendor(vendor: string): string {
   if (vendor === "ZTE") return "zte_zxros";
   if (vendor === "Huawei") return "huawei";

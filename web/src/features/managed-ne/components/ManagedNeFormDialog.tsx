@@ -8,10 +8,13 @@ import { FieldSelect } from "../../../components/ui/FieldSelect";
 import { queryKeys } from "../../../constants/queryKeys";
 import { useI18n } from "../../../i18n";
 import { patchHopVendorChange } from "../lib/hopProxy";
+import { managedNeErrorText } from "../lib/errors";
 import type { ManagedNeItem } from "../../../types";
 import {
   applyHopTemplate,
   buildManagedNeSaveBody,
+  deviceTypeForVendor,
+  isValidMgmtAddress,
   emptyManagedNeForm,
   formFromManagedNe,
   allowsOpenExecPolicy,
@@ -37,6 +40,9 @@ export function ManagedNeFormDialog({
 }: ManagedNeFormDialogProps) {
   const { t } = useI18n();
   const [form, setForm] = useState<ManagedNeFormState>(emptyManagedNeForm);
+  // Port is edited as text so the field can be cleared while typing.
+  const [portDraft, setPortDraft] = useState("22");
+  const [submitted, setSubmitted] = useState(false);
 
   const metaQuery = useQuery({
     queryKey: queryKeys.managedNeMeta,
@@ -45,16 +51,6 @@ export function ManagedNeFormDialog({
     enabled: open,
   });
 
-  const editingId = editing?.id ?? "";
-  useEffect(() => {
-    if (!open) return;
-    if (editing) {
-      setForm(formFromManagedNe(editing));
-      return;
-    }
-    setForm({ ...emptyManagedNeForm(), ...(initialValues || {}) });
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- seed once per open/create
-  }, [open, editingId]);
 
   const vendors = metaQuery.data?.vendors ?? [];
   const execPolicyEnabled = Boolean(metaQuery.data?.exec_policy_enabled);
@@ -64,6 +60,15 @@ export function ManagedNeFormDialog({
     if (cur && !base.includes(cur)) return [cur, ...base];
     return base;
   }, [metaQuery.data?.device_types, form.device_type]);
+
+  const ipText = form.ip_address.trim();
+  const portNum = /^\d+$/.test(portDraft.trim()) ? Number(portDraft.trim()) : NaN;
+  const fieldErrors = {
+    ip: !ipText ? t("managedNe.form.ipRequired") : !isValidMgmtAddress(ipText) ? t("managedNe.form.ipInvalid") : "",
+    username: !form.username.trim() ? t("managedNe.form.usernameRequired") : "",
+    port: portNum >= 1 && portNum <= 65535 ? "" : t("managedNe.form.portInvalid"),
+  };
+  const hasFieldErrors = Object.values(fieldErrors).some(Boolean);
 
   const saveMutation = useMutation({
     mutationFn: async () => {
@@ -83,6 +88,17 @@ export function ManagedNeFormDialog({
       onSaved(item);
     },
   });
+
+  const editingId = editing?.id ?? "";
+  useEffect(() => {
+    if (!open) return;
+    const seed = editing ? formFromManagedNe(editing) : { ...emptyManagedNeForm(), ...(initialValues || {}) };
+    setForm(seed);
+    setPortDraft(String(seed.port));
+    setSubmitted(false);
+    saveMutation.reset();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- seed once per open/create
+  }, [open, editingId]);
 
   return (
     <AppModalShell open={open} onClose={onClose} dismissible={!saveMutation.isPending} size="lg">
@@ -113,12 +129,13 @@ export function ManagedNeFormDialog({
               setForm((prev) => {
                 const next = { ...prev, vendor };
                 const dt = String(prev.device_type || "").trim().toLowerCase();
-                if (!dt || dt === "generic" || dt === "other" || dt === "linux") {
-                  if (vendor === "ZTE") next.device_type = "zte_zxros";
-                  else if (vendor === "Huawei") next.device_type = "huawei";
-                  else if (vendor === "Cisco") next.device_type = "cisco_ios";
-                  else if (vendor === "Juniper") next.device_type = "juniper_junos";
-                  else if (vendor === "Nokia") next.device_type = "nokia_sros";
+                const suggested = deviceTypeForVendor(vendor);
+                // Follow the vendor while the type is a placeholder or still the old vendor's default.
+                const followVendor = !dt || dt === deviceTypeForVendor(prev.vendor)
+                  || ((dt === "generic" || dt === "other" || dt === "linux") && suggested !== "generic");
+                if (followVendor) {
+                  next.device_type = suggested;
+                  if (!allowsOpenExecPolicy(suggested)) next.exec_policy = "readonly";
                 }
                 return next;
               });
@@ -175,25 +192,39 @@ export function ManagedNeFormDialog({
           <TextField
             fullWidth
             isRequired
+            isInvalid={submitted && Boolean(fieldErrors.ip)}
             value={form.ip_address}
             onChange={(ip_address) => setForm({ ...form, ip_address })}
           >
             <Label>{t("managedNe.col.ip")}</Label>
-            <Input />
+            <Input placeholder="192.0.2.10 / pe-01.example.net" />
+            {submitted && fieldErrors.ip ? <span className="form-field-hint error-text">{fieldErrors.ip}</span> : null}
           </TextField>
           <TextField
             fullWidth
-            type="number"
-            value={String(form.port)}
-            onChange={(port) => setForm({ ...form, port: Number(port) || 22 })}
+            isRequired
+            inputMode="numeric"
+            isInvalid={submitted && Boolean(fieldErrors.port)}
+            value={portDraft}
+            onChange={(value) => {
+              setPortDraft(value);
+              if (/^\d+$/.test(value.trim())) setForm((prev) => ({ ...prev, port: Number(value.trim()) }));
+            }}
           >
             <Label>{t("managedNe.col.port")}</Label>
             <Input />
+            {submitted && fieldErrors.port ? <span className="form-field-hint error-text">{fieldErrors.port}</span> : null}
           </TextField>
           <FieldSelect
             label={t("managedNe.col.protocol")}
             value={form.protocol}
-            onChange={(e) => setForm({ ...form, protocol: e.target.value })}
+            onChange={(e) => {
+              const protocol = e.target.value;
+              // Keep the well-known port in step with the protocol unless it was customised.
+              const swapPort = protocol === "telnet" && portNum === 22 ? 23 : protocol === "ssh" && portNum === 23 ? 22 : 0;
+              setForm((prev) => ({ ...prev, protocol, ...(swapPort ? { port: swapPort } : {}) }));
+              if (swapPort) setPortDraft(String(swapPort));
+            }}
           >
             <option value="ssh">ssh</option>
             <option value="telnet">telnet</option>
@@ -201,11 +232,13 @@ export function ManagedNeFormDialog({
           <TextField
             fullWidth
             isRequired
+            isInvalid={submitted && Boolean(fieldErrors.username)}
             value={form.username}
             onChange={(username) => setForm({ ...form, username })}
           >
             <Label>{t("managedNe.col.user")}</Label>
             <Input />
+            {submitted && fieldErrors.username ? <span className="form-field-hint error-text">{fieldErrors.username}</span> : null}
           </TextField>
           <TextField
             fullWidth
@@ -279,7 +312,7 @@ export function ManagedNeFormDialog({
         {saveMutation.isError ? (
           <Alert status="danger">
             <Alert.Content>
-              <Alert.Description>{String(saveMutation.error)}</Alert.Description>
+              <Alert.Description>{managedNeErrorText(saveMutation.error, t)}</Alert.Description>
             </Alert.Content>
           </Alert>
         ) : null}
@@ -291,7 +324,11 @@ export function ManagedNeFormDialog({
         <Button
           variant="primary"
           isDisabled={saveMutation.isPending}
-          onPress={() => saveMutation.mutate()}
+          onPress={() => {
+            setSubmitted(true);
+            if (hasFieldErrors) return;
+            saveMutation.mutate();
+          }}
         >
           {saveMutation.isPending ? t("managedNe.form.saving") : t("managedNe.form.save")}
         </Button>

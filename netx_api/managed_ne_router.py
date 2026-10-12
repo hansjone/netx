@@ -42,6 +42,7 @@ from .ne_service import (
     update_managed_ne,
 )
 from .models import ManagedNE
+from .table_filters import TableFilterParams, table_filter_params
 
 router = APIRouter(prefix="/v1/managed-ne", tags=["managed-ne"])
 
@@ -63,6 +64,7 @@ def api_list_managed_ne(
     connect_status: str | None = Query(default=None),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=500),
+    table_filters: TableFilterParams = Depends(table_filter_params),
     db: Session = Depends(get_db),
 ):
     return list_managed_ne(
@@ -72,6 +74,7 @@ def api_list_managed_ne(
         connect_status=connect_status,
         page=page,
         page_size=page_size,
+        table_filters=table_filters,
     )
 
 

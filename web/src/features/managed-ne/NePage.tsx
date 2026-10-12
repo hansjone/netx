@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Button, Checkbox, Input, Label, Modal, TextField } from "@heroui/react";
+import { Button, Input, Label, Modal, TextField } from "@heroui/react";
 import {
   batchApplyAccountManagedNe,
   batchApplyHopManagedNe,
@@ -20,20 +20,23 @@ import {
   type ManagedNeStats,
 } from "../../services/api";
 import { HelpHint } from "../../components/HelpHint";
+import { ListPager } from "../../components/ListPager";
 import { HopProxyFields, emptyHopProxyFields, type HopProxyFieldsState } from "./components/HopProxyFields";
 import { AppModalShell } from "../../components/ui/AppModalShell";
 import { FieldSelect } from "../../components/ui/FieldSelect";
 import { queryKeys } from "../../constants/queryKeys";
+import { useTableColumnFilters } from "../../hooks/useTableColumnFilters";
 import { useI18n } from "../../i18n";
 import { useToast } from "../../hooks/useToast";
 import { useAuth } from "../auth/AuthContext";
-import type { ManagedNeItem } from "../../types";
+import type { ManagedNeImportResult, ManagedNeItem } from "../../types";
 import { pageCount } from "../../utils/display";
 import { formatSystemTime } from "../../utils/time";
 import { openOrFocusModule } from "../../utils/moduleWindows";
 import { ManagedNeFormDialog } from "./components/ManagedNeFormDialog";
 import { ManagedNeConnectDetailDialog } from "./components/ManagedNeConnectDetailDialog";
 import { connectStatusClass } from "./lib/connectStatus";
+import { managedNeErrorText } from "./lib/errors";
 import {
   deviceTypeForVendor,
   emptyManagedNeForm,
@@ -44,15 +47,35 @@ import {
 /** Hide UME→managed sync/delete controls until needed again. APIs remain available. */
 const SHOW_UME_MANAGED_SYNC = false;
 
+const MANAGED_NE_ENDPOINT = "/v1/managed-ne";
+const CONNECT_STATUSES = ["pass", "fail", "testing", "unknown"] as const;
+
 type AccountState = {
   username: string;
   password: string;
 };
 
+type BulkTagAction = "proxy" | "test" | "account";
+
 const emptyAccount = (): AccountState => ({
   username: "",
   password: "",
 });
+
+function hopPayload(hop: HopProxyFieldsState) {
+  return {
+    hop_vendor: hop.hop_vendor,
+    hop_host: hop.hop_host.trim(),
+    hop_port: hop.hop_port,
+    hop_protocol: hop.hop_protocol,
+    hop_username: hop.hop_username.trim(),
+    hop_password: hop.hop_password,
+    hop_command_template: hop.hop_command_template.trim(),
+    hop_vrf: hop.hop_vrf.trim(),
+    hop_target_auth_mode: hop.hop_target_auth_mode,
+    hop_enter_system_view: hop.hop_enter_system_view,
+  };
+}
 
 export function NePage() {
   const { t } = useI18n();
@@ -63,10 +86,9 @@ export function NePage() {
   const importRef = useRef<HTMLInputElement>(null);
   const [searchParams, setSearchParams] = useSearchParams();
   const deepLinkHandled = useRef("");
+  const errText = (err: unknown) => managedNeErrorText(err, t);
+  const fail = (err: unknown) => showError(errText(err));
 
-  const [keyword, setKeyword] = useState("");
-  const [vendorFilter, setVendorFilter] = useState("");
-  const [statusFilter, setStatusFilter] = useState("");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
   const [selected, setSelected] = useState<string[]>([]);
@@ -78,12 +100,21 @@ export function NePage() {
   const [batchHop, setBatchHop] = useState<HopProxyFieldsState>(emptyHopProxyFields);
   const [batchAccount, setBatchAccount] = useState<AccountState>(emptyAccount);
   const [connectDetailRow, setConnectDetailRow] = useState<ManagedNeItem | null>(null);
+  const [importResult, setImportResult] = useState<ManagedNeImportResult | null>(null);
 
   // --- bulk-by-tag dialog ---
   const [bulkTagModalOpen, setBulkTagModalOpen] = useState(false);
-  const [bulkTagAction, setBulkTagAction] = useState<"proxy" | "test" | "account">("proxy");
+  const [bulkTagAction, setBulkTagAction] = useState<BulkTagAction>("proxy");
   const [bulkTagSelected, setBulkTagSelected] = useState<string>("");   // "" = all, "__no_tag__" = no-tag NEs
   const [bulkAccount, setBulkAccount] = useState<AccountState>(emptyAccount);
+  const [bulkHop, setBulkHop] = useState<HopProxyFieldsState>(() => emptyHopProxyFields());
+  const [resolvingIds, setResolvingIds] = useState(false);
+
+  // A filter change hides rows, so drop the selection rather than act on rows the user cannot see.
+  const columns = useTableColumnFilters(MANAGED_NE_ENDPOINT, () => {
+    setPage(1);
+    setSelected([]);
+  });
 
   const metaQuery = useQuery({
     queryKey: queryKeys.managedNeMeta,
@@ -98,14 +129,15 @@ export function NePage() {
   });
 
   const listQuery = useQuery({
-    queryKey: queryKeys.managedNe(keyword, vendorFilter, statusFilter, page, pageSize),
+    queryKey: queryKeys.managedNe(columns.key, page, pageSize),
     queryFn: () =>
       fetchManagedNe({
-        keyword,
-        vendor: vendorFilter,
-        connectStatus: statusFilter,
+        keyword: "",
+        vendor: "",
+        connectStatus: "",
         page,
         pageSize,
+        columnFilters: columns.filters,
       }),
     refetchInterval: (q) => {
       const items = q.state.data?.items || [];
@@ -129,17 +161,26 @@ export function NePage() {
 
   const total = listQuery.data?.total ?? 0;
   const pages = pageCount(total, pageSize);
-  const perPage = (n: number) => t("common.perPage", { n });
+  // Deleting the last rows of the last page must not strand the user on an empty page.
+  if (listQuery.data && page > pages) setPage(pages);
 
-  const invalidateList = () => queryClient.invalidateQueries({ queryKey: queryKeys.managedNeAll });
+  /** List, stats, column filter options and the Network devices view all derive from managed_ne. */
+  const invalidateList = () =>
+    Promise.all([
+      queryClient.invalidateQueries({ queryKey: queryKeys.managedNeAll }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.managedNeStats }),
+      queryClient.invalidateQueries({ queryKey: ["tableFilterOptions", MANAGED_NE_ENDPOINT] }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.cliTargetsAll }),
+    ]);
 
   const deleteMutation = useMutation({
     mutationFn: deleteManagedNe,
-    onSuccess: async () => {
+    onSuccess: async (_res, id) => {
+      setSelected((prev) => prev.filter((x) => x !== id));
       showOk(t("managedNe.form.deleted"));
       await invalidateList();
     },
-    onError: (err) => showError(String(err)),
+    onError: fail,
   });
 
   const connectMutation = useMutation({
@@ -148,7 +189,7 @@ export function NePage() {
       showOk(t("managedNe.connect.submitted", { n: res.submitted }));
       await invalidateList();
     },
-    onError: (err) => showError(String(err)),
+    onError: fail,
   });
 
   const batchDeleteMutation = useMutation({
@@ -158,30 +199,18 @@ export function NePage() {
       showOk(t("managedNe.batchDeleteDone", { n: res.deleted }));
       await invalidateList();
     },
-    onError: (err) => showError(String(err)),
+    onError: fail,
   });
 
   const batchHopMutation = useMutation({
-    mutationFn: () =>
-      batchApplyHopManagedNe(selected, {
-        hop_vendor: batchHop.hop_vendor,
-        hop_host: batchHop.hop_host.trim(),
-        hop_port: batchHop.hop_port,
-        hop_protocol: batchHop.hop_protocol,
-        hop_username: batchHop.hop_username.trim(),
-        hop_password: batchHop.hop_password,
-        hop_command_template: batchHop.hop_command_template.trim(),
-        hop_vrf: batchHop.hop_vrf.trim(),
-        hop_target_auth_mode: batchHop.hop_target_auth_mode,
-        hop_enter_system_view: batchHop.hop_enter_system_view,
-      }),
+    mutationFn: () => batchApplyHopManagedNe(selected, hopPayload(batchHop)),
     onSuccess: async (res) => {
       setBatchHopOpen(false);
       setBatchHop(emptyHopProxyFields());
       showOk(t("managedNe.hop.batchDone", { n: res.updated }));
       await invalidateList();
     },
-    onError: (err) => showError(String(err)),
+    onError: fail,
   });
 
   const batchAccountMutation = useMutation({
@@ -196,7 +225,7 @@ export function NePage() {
       showOk(t("managedNe.account.batchDone", { n: res.updated }));
       await invalidateList();
     },
-    onError: (err) => showError(String(err)),
+    onError: fail,
   });
 
   const umeSyncMutation = useMutation({
@@ -210,24 +239,18 @@ export function NePage() {
           total: res.total_inventory,
         }),
       );
-      await Promise.all([
-        invalidateList(),
-        queryClient.invalidateQueries({ queryKey: queryKeys.managedNeStats }),
-      ]);
+      await invalidateList();
     },
-    onError: (err) => showError(String(err)),
+    onError: fail,
   });
 
   const umeDeleteMutation = useMutation({
     mutationFn: deleteUmeManagedNe,
     onSuccess: async (res) => {
       showOk(t("managedNe.umeSync.deletedDone", { n: res.deleted }));
-      await Promise.all([
-        invalidateList(),
-        queryClient.invalidateQueries({ queryKey: queryKeys.managedNeStats }),
-      ]);
+      await invalidateList();
     },
-    onError: (err) => showError(String(err)),
+    onError: fail,
   });
 
   const importMutation = useMutation({
@@ -240,65 +263,45 @@ export function NePage() {
           failed: res.failed.length,
         }),
       );
+      if (res.failed.length) setImportResult(res);
       await invalidateList();
     },
-    onError: (err) => showError(String(err)),
+    onError: fail,
   });
 
-  // Bulk-by-tag: fetch ids then run proxy/test
-  const [bulkHop, setBulkHop] = useState<HopProxyFieldsState>(() => emptyHopProxyFields());
   const bulkByTagMutation = useMutation({
-    mutationFn: async (params: { action: "proxy" | "test" | "account"; tag: string }) => {
-      const apiTag = params.tag === "" ? null : params.tag;
-      const { ids } = await fetchIdsByTag(apiTag);
-      if (ids.length === 0) throw new Error(t("managedNe.stats.loadingIds"));
-      if (!window.confirm(t("managedNe.stats.confirm", { n: ids.length }))) return null;
-      if (params.action === "test") {
+    mutationFn: async (params: { action: BulkTagAction; ids: string[] }) => {
+      const { action, ids } = params;
+      if (action === "test") {
         const res = await connectTestManagedNe(ids);
-        return { type: "test" as const, n: res.submitted };
+        return { type: action, n: res.submitted };
       }
-      if (params.action === "account") {
+      if (action === "account") {
         const res = await batchApplyAccountManagedNe(ids, {
           username: bulkAccount.username.trim(),
           password: bulkAccount.password,
         });
-        return { type: "account" as const, n: res.updated };
+        return { type: action, n: res.updated };
       }
-      const res = await batchApplyHopManagedNe(ids, {
-        hop_vendor: bulkHop.hop_vendor,
-        hop_host: bulkHop.hop_host.trim(),
-        hop_port: bulkHop.hop_port,
-        hop_protocol: bulkHop.hop_protocol,
-        hop_username: bulkHop.hop_username.trim(),
-        hop_password: bulkHop.hop_password,
-        hop_command_template: bulkHop.hop_command_template.trim(),
-        hop_vrf: bulkHop.hop_vrf.trim(),
-        hop_target_auth_mode: bulkHop.hop_target_auth_mode,
-        hop_enter_system_view: bulkHop.hop_enter_system_view,
-      });
-      return { type: "proxy" as const, n: res.updated };
+      const res = await batchApplyHopManagedNe(ids, hopPayload(bulkHop));
+      return { type: action, n: res.updated };
     },
     onSuccess: async (res) => {
-      if (!res) return;
       setBulkTagModalOpen(false);
       if (res.type === "test") showOk(t("managedNe.stats.testDone", { n: res.n }));
       else if (res.type === "account") showOk(t("managedNe.account.batchDone", { n: res.n }));
       else showOk(t("managedNe.stats.proxyDone", { n: res.n }));
-      await Promise.all([
-        invalidateList(),
-        queryClient.invalidateQueries({ queryKey: queryKeys.managedNeStats }),
-      ]);
+      await invalidateList();
     },
-    onError: (err) => showError(String(err)),
+    onError: fail,
   });
 
-  const vendors = metaQuery.data?.vendors ?? [];
   const credsOk = metaQuery.data?.credentials_configured ?? false;
-
-  const allSelected = useMemo(() => {
-    const items = listQuery.data?.items ?? [];
-    return items.length > 0 && items.every((x) => selected.includes(x.id));
-  }, [listQuery.data?.items, selected]);
+  const listItems = useMemo(() => listQuery.data?.items ?? [], [listQuery.data?.items]);
+  const pageIds = listItems.map((x) => x.id);
+  const selectedOnPage = pageIds.filter((id) => selected.includes(id)).length;
+  const allSelected = pageIds.length > 0 && selectedOnPage === pageIds.length;
+  const someSelected = selectedOnPage > 0 && !allSelected;
 
   const openCreate = () => {
     setEditing(null);
@@ -344,7 +347,7 @@ export function NePage() {
           const row = await fetchManagedNeById(neId);
           openEdit(row);
         } catch (err) {
-          showError(String(err));
+          showError(managedNeErrorText(err, t));
         } finally {
           clearDeepLink();
         }
@@ -366,20 +369,18 @@ export function NePage() {
     });
     setModalOpen(true);
     clearDeepLink();
-  }, [searchParams, setSearchParams, showError]);
+  }, [searchParams, setSearchParams, showError, t]);
 
   const toggleSelect = (id: string) => {
     setSelected((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   };
 
   const toggleSelectAll = () => {
-    const items = listQuery.data?.items ?? [];
     if (allSelected) {
-      const pageIds = new Set(items.map((x) => x.id));
-      setSelected((prev) => prev.filter((id) => !pageIds.has(id)));
+      const ids = new Set(pageIds);
+      setSelected((prev) => prev.filter((id) => !ids.has(id)));
     } else {
-      const ids = items.map((x) => x.id);
-      setSelected((prev) => [...new Set([...prev, ...ids])]);
+      setSelected((prev) => [...new Set([...prev, ...pageIds])]);
     }
   };
 
@@ -411,12 +412,69 @@ export function NePage() {
     return items;
   }, [stats, perTag, t]);
 
-  const listItems = listQuery.data?.items || [];
-  const hasFilters = Boolean(keyword || vendorFilter || statusFilter);
+  // Tag cards double as a quick filter on the tags column ("" = untagged).
+  const tagsFilter = columns.filters.tags ?? null;
+  const activeTagCard =
+    tagsFilter === null
+      ? "__all__"
+      : tagsFilter.mode === "include" && tagsFilter.values.length === 1
+        ? tagsFilter.values[0] || "__no_tag__"
+        : "";
+  const applyTagCard = (key: string) => {
+    if (key === "__all__") columns.setFilter("tags", null);
+    else columns.setFilter("tags", { mode: "include", values: [key === "__no_tag__" ? "" : key] });
+  };
+
+  const bulkScopeCount =
+    bulkTagSelected === ""
+      ? stats?.total
+      : perTag[bulkTagSelected]?.total ?? (bulkTagSelected === "__no_tag__" ? stats?.no_tag_count : 0);
+
+  const sourceLabel = (source: string) => {
+    const key = managedSourceKey(source);
+    return key ? t(`managedNe.source.${key}`) : String(source || "").trim() || t("managedNe.source.manual");
+  };
+  const statusLabel = (status: string) =>
+    (CONNECT_STATUSES as readonly string[]).includes(status) ? t(`managedNe.stats.${status}`) : status;
+
+  const runBulkByTag = async () => {
+    if (bulkTagAction === "proxy") {
+      if (!bulkHop.hop_host.trim()) {
+        showError(t("managedNe.hop.hostRequired"));
+        return;
+      }
+      if (!bulkHop.hop_username.trim()) {
+        showError(t("managedNe.hop.userRequired"));
+        return;
+      }
+    }
+    if (bulkTagAction === "account" && !bulkAccount.username.trim() && !bulkAccount.password) {
+      showError(t("managedNe.account.usernameOrPasswordRequired"));
+      return;
+    }
+    setResolvingIds(true);
+    let ids: string[];
+    try {
+      ids = (await fetchIdsByTag(bulkTagSelected === "" ? null : bulkTagSelected)).ids;
+    } catch (err) {
+      fail(err);
+      return;
+    } finally {
+      setResolvingIds(false);
+    }
+    if (ids.length === 0) {
+      showError(t("managedNe.stats.noMatchingNe"));
+      return;
+    }
+    if (!window.confirm(t("managedNe.stats.confirm", { n: ids.length }))) return;
+    bulkByTagMutation.mutate({ action: bulkTagAction, ids });
+  };
+
+  const bulkBusy = resolvingIds || bulkByTagMutation.isPending;
 
   return (
     <div className="page-stack ne-page">
-      {!credsOk ? (
+      {!credsOk && metaQuery.isSuccess ? (
         <section className="panel panel--warn">
           <p>{t("managedNe.credsNotConfigured")}</p>
         </section>
@@ -430,7 +488,7 @@ export function NePage() {
               <Button
                 size="sm"
                 variant="secondary"
-                isDisabled={bulkByTagMutation.isPending}
+                isDisabled={bulkBusy || !canWriteNe}
                 onPress={() => {
                   setBulkTagAction("proxy");
                   setBulkHop(emptyHopProxyFields());
@@ -442,7 +500,7 @@ export function NePage() {
               <Button
                 size="sm"
                 variant="secondary"
-                isDisabled={bulkByTagMutation.isPending}
+                isDisabled={bulkBusy || !canWriteNe}
                 onPress={() => {
                   setBulkTagAction("account");
                   setBulkAccount(emptyAccount());
@@ -454,7 +512,7 @@ export function NePage() {
               <Button
                 size="sm"
                 variant="secondary"
-                isDisabled={bulkByTagMutation.isPending}
+                isDisabled={bulkBusy || !canWriteNe}
                 onPress={() => {
                   setBulkTagAction("test");
                   setBulkTagModalOpen(true);
@@ -466,21 +524,32 @@ export function NePage() {
           </div>
         </div>
         {stats ? (
-          <div className="ne-stats-card__tag-cards">
-            {tagCardItems.map((x) => (
-              <div key={x.key} className="ne-tag-card">
-                <div className="ne-tag-card__title">{x.title}</div>
-                <div className="ne-tag-card__total">{t("managedNe.stats.total", { n: x.total })}</div>
-                <div className="ne-tag-card__pills">
-                  {(["pass", "fail", "testing", "unknown"] as const).map((s) => (
-                    <span key={s} className={`pt-list-status ${connectStatusClass(s)}`}>
-                      {t(`managedNe.stats.${s}`)} {x.by_status[s] ?? 0}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
+          <>
+            <p className="muted text-sm">{t("managedNe.stats.cardFilterHint")}</p>
+            <div className="ne-stats-card__tag-cards">
+              {tagCardItems.map((x) => (
+                <button
+                  type="button"
+                  key={x.key}
+                  className={`ne-tag-card${activeTagCard === x.key ? " is-active" : ""}`}
+                  aria-pressed={activeTagCard === x.key}
+                  onClick={() => applyTagCard(x.key)}
+                >
+                  <span className="ne-tag-card__title">{x.title}</span>
+                  <span className="ne-tag-card__total">{t("managedNe.stats.total", { n: x.total })}</span>
+                  <span className="ne-tag-card__pills">
+                    {CONNECT_STATUSES.map((s) => (
+                      <span key={s} className={`pt-list-status ${connectStatusClass(s)}`}>
+                        {t(`managedNe.stats.${s}`)} {x.by_status[s] ?? 0}
+                      </span>
+                    ))}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </>
+        ) : statsQuery.isError ? (
+          <p className="error-text">{errText(statsQuery.error)}</p>
         ) : (
           <p className="ne-stats-card__loading">{t("managedNe.stats.loadingIds")}</p>
         )}
@@ -525,7 +594,7 @@ export function NePage() {
                 size="sm"
                 variant="secondary"
                 onPress={() => {
-                  void downloadManagedNeImportTemplate("xlsx").catch((err) => showError(String(err)));
+                  void downloadManagedNeImportTemplate("xlsx").catch(fail);
                 }}
               >
                 {t("managedNe.downloadTemplate")}
@@ -552,7 +621,7 @@ export function NePage() {
               <Button
                 size="sm"
                 variant="secondary"
-                isDisabled={selected.length === 0 || connectMutation.isPending}
+                isDisabled={selected.length === 0 || connectMutation.isPending || !canWriteNe}
                 onPress={() => connectMutation.mutate(selected)}
               >
                 {connectMutation.isPending ? t("managedNe.connect.running") : t("managedNe.connect.run")}
@@ -562,10 +631,6 @@ export function NePage() {
                 variant="secondary"
                 isDisabled={selected.length === 0 || batchHopMutation.isPending || !canWriteNe}
                 onPress={() => {
-                  if (selected.length === 0) {
-                    showError(t("managedNe.hop.selectRequired"));
-                    return;
-                  }
                   setBatchHop(emptyHopProxyFields());
                   setBatchHopOpen(true);
                 }}
@@ -577,10 +642,6 @@ export function NePage() {
                 variant="secondary"
                 isDisabled={selected.length === 0 || batchAccountMutation.isPending || !canWriteNe}
                 onPress={() => {
-                  if (selected.length === 0) {
-                    showError(t("managedNe.account.selectRequired"));
-                    return;
-                  }
                   setBatchAccount(emptyAccount());
                   setBatchAccountOpen(true);
                 }}
@@ -592,17 +653,16 @@ export function NePage() {
                 variant="danger"
                 isDisabled={selected.length === 0 || batchDeleteMutation.isPending || !canWriteNe}
                 onPress={() => {
-                  if (selected.length === 0) {
-                    showError(t("managedNe.batchDeleteSelectRequired"));
-                    return;
-                  }
                   if (!window.confirm(t("managedNe.batchDeleteConfirm", { n: selected.length }))) return;
                   batchDeleteMutation.mutate(selected);
                 }}
               >
                 {batchDeleteMutation.isPending ? t("managedNe.batchDeleting") : t("managedNe.batchDelete")}
               </Button>
-              <Button size="sm" variant="tertiary" onPress={() => invalidateList()}>
+              <Button size="sm" variant="tertiary" isDisabled={!columns.active} onPress={columns.reset}>
+                {t("common.clearFilters")}
+              </Button>
+              <Button size="sm" variant="tertiary" onPress={() => void invalidateList()}>
                 {t("common.refresh")}
               </Button>
             </div>
@@ -611,237 +671,168 @@ export function NePage() {
         </div>
 
         <div className="pt-list">
-          <div className="filter-inline">
-            <Input
-              value={keyword}
-              placeholder={t("managedNe.keywordPh")}
-              onChange={(e) => {
-                setKeyword(e.target.value);
-                setPage(1);
-              }}
-            />
-            <FieldSelect
-              value={vendorFilter}
-              onChange={(e) => {
-                setVendorFilter(e.target.value);
-                setPage(1);
-              }}
-            >
-              <option value="">{t("managedNe.allVendors")}</option>
-              {vendors.map((v) => (
-                <option key={v} value={v}>
-                  {v}
-                </option>
-              ))}
-            </FieldSelect>
-            <FieldSelect
-              value={statusFilter}
-              onChange={(e) => {
-                setStatusFilter(e.target.value);
-                setPage(1);
-              }}
-            >
-              <option value="">{t("managedNe.allConnectStatus")}</option>
-              <option value="unknown">unknown</option>
-              <option value="testing">testing</option>
-              <option value="pass">pass</option>
-              <option value="fail">fail</option>
-            </FieldSelect>
-            <Button
-              size="sm"
-              variant="tertiary"
-              isDisabled={!hasFilters}
-              onPress={() => {
-                setKeyword("");
-                setVendorFilter("");
-                setStatusFilter("");
-                setPage(1);
-              }}
-            >
-              {t("common.clearFilters")}
-            </Button>
-          </div>
-
-          {listQuery.isLoading ? <p className="muted">{t("common.refreshing")}</p> : null}
-
-          {!listItems.length && !listQuery.isLoading ? (
-            <div className="pt-list-empty">
-              <p>{t("common.empty")}</p>
+          {selected.length ? (
+            <div className="ne-selection-meta">
+              <span>{t("managedNe.selectedCount", { n: selected.length })}</span>
+              <Button size="sm" variant="ghost" onPress={() => setSelected([])}>
+                {t("managedNe.clearSelection")}
+              </Button>
             </div>
-          ) : (
-            <div className="pt-list-table-wrap">
-              <table className="data-table pt-list-table">
-                <thead>
-                  <tr>
-                    <th>
-                      <Checkbox
-                        isSelected={allSelected}
-                        onChange={toggleSelectAll}
-                        aria-label="select all"
-                      >
-                        <Checkbox.Control>
-                          <Checkbox.Indicator />
-                        </Checkbox.Control>
-                      </Checkbox>
-                    </th>
-                    <th>{t("managedNe.col.name")}</th>
-                    <th>{t("managedNe.col.vendor")}</th>
-                    <th>{t("managedNe.col.deviceType")}</th>
-                    <th>{t("managedNe.col.source")}</th>
-                    <th>{t("managedNe.col.tags")}</th>
-                    <th>{t("managedNe.col.ip")}</th>
-                    <th>{t("managedNe.col.user")}</th>
-                    <th>{t("managedNe.col.connect")}</th>
-                    <th>{t("managedNe.col.testedAt")}</th>
-                    <th>{t("managedNe.col.actions")}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {listItems.map((row) => {
-                    const srcKey = managedSourceKey(row.source);
-                    const srcLabel = srcKey
-                      ? t(`managedNe.source.${srcKey}`)
-                      : String(row.source || "").trim() || t("managedNe.source.manual");
-                    return (
-                    <tr key={row.id}>
-                      <td>
-                        <input
-                          type="checkbox"
-                          checked={selected.includes(row.id)}
-                          onChange={() => toggleSelect(row.id)}
-                        />
-                      </td>
-                      <td className="pt-list-task-name">{row.name || row.ip_address}</td>
-                      <td>{row.vendor}</td>
-                      <td>{row.device_type}</td>
-                      <td title={row.source_ref || undefined}>
-                        <span className="table-tag">{srcLabel}</span>
-                      </td>
-                      <td>
-                        {row.tags
-                          ? row.tags.split(/\s+/).map((tag) => (
-                              <span key={tag} className="table-tag">
-                                {tag}
-                              </span>
-                            ))
-                          : t("common.empty")}
-                      </td>
-                      <td className="pt-list-num">
-                        {row.ip_address}:{row.port}/{row.protocol}
-                        {row.hop_enabled ? (
-                          <span
-                            className="table-tag"
-                            title={`${row.hop_host}:${row.hop_port} (${row.hop_vendor})`}
-                          >
-                            {t(
-                              `managedNe.hop.badge.${["linux", "huawei", "cisco", "zte", "bastion"].includes(row.hop_vendor) ? row.hop_vendor : "zte"}`,
-                            )}
-                          </span>
-                        ) : null}
-                      </td>
-                      <td>{row.username}</td>
-                      <td>
+          ) : null}
+          {listQuery.isFetching ? <p className="muted">{t("common.refreshing")}</p> : null}
+          {listQuery.isError ? (
+            <p className="error-text">{t("managedNe.loadFailed", { error: errText(listQuery.error) })}</p>
+          ) : null}
+
+          <div className="pt-list-table-wrap">
+            <table className="data-table pt-list-table">
+              <thead>
+                <tr>
+                  <th>
+                    <input
+                      type="checkbox"
+                      aria-label="select all"
+                      ref={(input) => { if (input) input.indeterminate = someSelected; }}
+                      checked={allSelected}
+                      disabled={!pageIds.length}
+                      onChange={toggleSelectAll}
+                    />
+                  </th>
+                  <th>{columns.column("name", t("managedNe.col.name"))}</th>
+                  <th>{columns.column("vendor", t("managedNe.col.vendor"))}</th>
+                  <th>{columns.column("deviceType", t("managedNe.col.deviceType"))}</th>
+                  <th>{columns.column("source", t("managedNe.col.source"), sourceLabel)}</th>
+                  <th>{columns.column("tags", t("managedNe.col.tags"))}</th>
+                  <th>{columns.column("ip", t("managedNe.col.ip"))}</th>
+                  <th>{columns.column("username", t("managedNe.col.user"))}</th>
+                  <th>{columns.column("connectStatus", t("managedNe.col.connect"), statusLabel)}</th>
+                  <th>{t("managedNe.col.testedAt")}</th>
+                  <th>{t("managedNe.col.actions")}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {listItems.map((row) => (
+                  <tr key={row.id}>
+                    <td>
+                      <input
+                        type="checkbox"
+                        aria-label={row.name || row.ip_address}
+                        checked={selected.includes(row.id)}
+                        onChange={() => toggleSelect(row.id)}
+                      />
+                    </td>
+                    <td className="pt-list-task-name">{row.name || row.ip_address}</td>
+                    <td>{row.vendor}</td>
+                    <td>{row.device_type}</td>
+                    <td title={row.source_ref || undefined}>
+                      <span className="table-tag">{sourceLabel(row.source || "")}</span>
+                    </td>
+                    <td>
+                      {row.tags
+                        ? row.tags.split(/\s+/).filter(Boolean).map((tag) => (
+                            <span key={tag} className="table-tag">
+                              {tag}
+                            </span>
+                          ))
+                        : "—"}
+                    </td>
+                    <td className="pt-list-num">
+                      {row.ip_address}:{row.port}/{row.protocol}
+                      {row.hop_enabled ? (
                         <span
-                          className={`pt-list-status ${connectStatusClass(row.connect_status)}`}
-                          title={row.connect_message || undefined}
+                          className="table-tag"
+                          title={`${row.hop_host}:${row.hop_port} (${row.hop_vendor})`}
                         >
-                          {row.connect_status}
+                          {t(
+                            `managedNe.hop.badge.${["linux", "huawei", "cisco", "zte", "bastion"].includes(row.hop_vendor) ? row.hop_vendor : "zte"}`,
+                          )}
                         </span>
-                      </td>
-                      <td className="pt-list-time">
-                        {row.connect_tested_at
-                          ? formatSystemTime(row.connect_tested_at, { assumeUtcNaive: true })
-                          : t("common.empty")}
-                      </td>
-                      <td>
-                        <div className="btn-row pt-list-actions table-actions">
-                          <Button
-                            size="sm"
-                            variant="secondary"
-                            onPress={() =>
-                              openOrFocusModule({
-                                moduleId: "webcrt",
-                                path: `/webcrt?ne_id=${encodeURIComponent(row.id)}`,
-                              })
-                            }
-                          >
-                            {t("managedNe.openTerminal")}
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="secondary"
-                            isDisabled={!row.connect_tested_at && !row.connect_message && !row.connect_detail}
-                            onPress={() => setConnectDetailRow(row)}
-                          >
-                            {t("managedNe.connectDetail")}
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="secondary"
-                            isDisabled={!canWriteNe}
-                            onPress={() => openEdit(row)}
-                          >
-                            {t("managedNe.edit")}
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="danger"
-                            isDisabled={!canWriteNe}
-                            onPress={() => {
-                              if (window.confirm(t("managedNe.confirmDelete"))) deleteMutation.mutate(row.id);
-                            }}
-                          >
-                            {t("managedNe.delete")}
-                          </Button>
-                        </div>
-                      </td>
-                    </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          <div className="pager pt-list-pager">
-            <span className="muted">
-              {t("common.pagerMeta", {
-                total: String(total),
-                page: String(page),
-                pages: String(pages),
-              })}
-            </span>
-            <div className="btn-row">
-              <Button
-                size="sm"
-                variant="secondary"
-                isDisabled={page <= 1}
-                onPress={() => setPage(Math.max(1, page - 1))}
-              >
-                {t("common.prevPage")}
-              </Button>
-              <Button
-                size="sm"
-                variant="secondary"
-                isDisabled={page >= pages}
-                onPress={() => setPage(page + 1)}
-              >
-                {t("common.nextPage")}
-              </Button>
-              <FieldSelect
-                value={String(pageSize)}
-                onChange={(e) => {
-                  setPageSize(Number(e.target.value) || 10);
-                  setPage(1);
-                }}
-              >
-                <option value="10">{perPage(10)}</option>
-                <option value="20">{perPage(20)}</option>
-                <option value="50">{perPage(50)}</option>
-                <option value="100">{perPage(100)}</option>
-              </FieldSelect>
-            </div>
+                      ) : null}
+                    </td>
+                    <td>{row.username || "—"}</td>
+                    <td>
+                      <span
+                        className={`pt-list-status ${connectStatusClass(row.connect_status)}`}
+                        title={row.connect_message || undefined}
+                      >
+                        {statusLabel(row.connect_status)}
+                      </span>
+                    </td>
+                    <td className="pt-list-time">
+                      {row.connect_tested_at
+                        ? formatSystemTime(row.connect_tested_at, { assumeUtcNaive: true })
+                        : "—"}
+                    </td>
+                    <td>
+                      <div className="btn-row pt-list-actions table-actions">
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          onPress={() =>
+                            openOrFocusModule({
+                              moduleId: "webcrt",
+                              path: `/webcrt?ne_id=${encodeURIComponent(row.id)}`,
+                            })
+                          }
+                        >
+                          {t("managedNe.openTerminal")}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          isDisabled={!row.connect_tested_at && !row.connect_message && !row.connect_detail}
+                          onPress={() => setConnectDetailRow(row)}
+                        >
+                          {t("managedNe.connectDetail")}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          isDisabled={!canWriteNe}
+                          onPress={() => openEdit(row)}
+                        >
+                          {t("managedNe.edit")}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="danger"
+                          isDisabled={!canWriteNe || deleteMutation.isPending}
+                          onPress={() => {
+                            if (window.confirm(t("managedNe.confirmDelete"))) deleteMutation.mutate(row.id);
+                          }}
+                        >
+                          {t("managedNe.delete")}
+                        </Button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+                {!listItems.length && !listQuery.isFetching && !listQuery.isError ? (
+                  <tr>
+                    <td colSpan={11}>
+                      <div className="pt-list-empty">
+                        <p>{columns.active ? t("managedNe.emptyFiltered") : t("common.empty")}</p>
+                      </div>
+                    </td>
+                  </tr>
+                ) : null}
+              </tbody>
+            </table>
           </div>
+
+          <ListPager
+            page={page}
+            pages={pages}
+            total={total}
+            pageSize={pageSize}
+            pageSizeOptions={[10, 20, 50, 100, 200]}
+            onPageChange={setPage}
+            onPageSizeChange={(size) => {
+              setPageSize(size);
+              setPage(1);
+            }}
+            disabled={listQuery.isLoading}
+          />
         </div>
       </section>
 
@@ -876,7 +867,13 @@ export function NePage() {
         </Modal.Header>
         <Modal.Body className="flex flex-col gap-3">
           <p className="text-sm text-muted">{t("managedNe.hop.batchHint", { n: selected.length })}</p>
-          <HopProxyFields value={batchHop} onChange={(patch) => setBatchHop((prev) => ({ ...prev, ...patch }))} />
+          <p className="text-sm text-muted">{t("managedNe.hop.batchPasswordHint")}</p>
+          <HopProxyFields
+            value={batchHop}
+            onChange={(patch) => setBatchHop((prev) => ({ ...prev, ...patch }))}
+            hopPasswordRequired={false}
+            hopPasswordOptional
+          />
         </Modal.Body>
         <Modal.Footer>
           <Button variant="tertiary" onPress={() => setBatchHopOpen(false)}>
@@ -892,10 +889,6 @@ export function NePage() {
               }
               if (!batchHop.hop_username.trim()) {
                 showError(t("managedNe.hop.userRequired"));
-                return;
-              }
-              if (!batchHop.hop_password && batchHop.hop_target_auth_mode !== "bastion_managed") {
-                showError(t("managedNe.hop.passwordRequired"));
                 return;
               }
               batchHopMutation.mutate();
@@ -964,7 +957,7 @@ export function NePage() {
       <AppModalShell
         open={bulkTagModalOpen}
         onClose={() => setBulkTagModalOpen(false)}
-        dismissible={!bulkByTagMutation.isPending}
+        dismissible={!bulkBusy}
         size="lg"
       >
         <Modal.Header>
@@ -978,7 +971,7 @@ export function NePage() {
             {bulkTagSelected === "__no_tag__" ? ` · ${t("managedNe.stats.noTag")}` : ""}
             {bulkTagSelected === "" ? ` · ${t("managedNe.stats.allTag")}` : ""}
           </Modal.Heading>
-          <Modal.CloseTrigger isDisabled={bulkByTagMutation.isPending} />
+          <Modal.CloseTrigger isDisabled={bulkBusy} />
         </Modal.Header>
         <Modal.Body className="flex flex-col gap-3">
           <FieldSelect
@@ -995,10 +988,18 @@ export function NePage() {
               </option>
             ))}
           </FieldSelect>
+          {bulkScopeCount !== undefined ? (
+            <p className="text-sm text-muted">{t("managedNe.stats.scopeCount", { n: bulkScopeCount })}</p>
+          ) : null}
           {bulkTagAction === "proxy" ? (
             <>
-              <p className="text-sm text-muted">{t("managedNe.hop.batchHint", { n: "?" })}</p>
-              <HopProxyFields value={bulkHop} onChange={(patch) => setBulkHop((prev) => ({ ...prev, ...patch }))} />
+              <p className="text-sm text-muted">{t("managedNe.hop.batchPasswordHint")}</p>
+              <HopProxyFields
+                value={bulkHop}
+                onChange={(patch) => setBulkHop((prev) => ({ ...prev, ...patch }))}
+                hopPasswordRequired={false}
+                hopPasswordOptional
+              />
             </>
           ) : bulkTagAction === "account" ? (
             <>
@@ -1026,48 +1027,68 @@ export function NePage() {
                 </TextField>
               </div>
             </>
-          ) : (
-            <p className="text-sm text-muted">{t("managedNe.stats.confirm", { n: "?" })}</p>
-          )}
+          ) : null}
         </Modal.Body>
         <Modal.Footer>
-          <Button variant="tertiary" onPress={() => setBulkTagModalOpen(false)}>
+          <Button variant="tertiary" isDisabled={bulkBusy} onPress={() => setBulkTagModalOpen(false)}>
             {t("managedNe.form.cancel")}
           </Button>
           <Button
             variant="primary"
-            isDisabled={bulkByTagMutation.isPending}
-            onPress={() => {
-              if (bulkTagAction === "proxy") {
-                if (!bulkHop.hop_host.trim()) {
-                  showError(t("managedNe.hop.hostRequired"));
-                  return;
-                }
-                if (!bulkHop.hop_username.trim()) {
-                  showError(t("managedNe.hop.userRequired"));
-                  return;
-                }
-                if (!bulkHop.hop_password && bulkHop.hop_target_auth_mode !== "bastion_managed") {
-                  showError(t("managedNe.hop.passwordRequired"));
-                  return;
-                }
-              }
-              if (bulkTagAction === "account") {
-                if (!bulkAccount.username.trim() && !bulkAccount.password) {
-                  showError(t("managedNe.account.usernameOrPasswordRequired"));
-                  return;
-                }
-              }
-              bulkByTagMutation.mutate({ action: bulkTagAction, tag: bulkTagSelected });
-            }}
+            isDisabled={bulkBusy || bulkScopeCount === 0}
+            onPress={() => void runBulkByTag()}
           >
-            {bulkByTagMutation.isPending
+            {bulkBusy
               ? t("managedNe.stats.loadingIds")
               : bulkTagAction === "proxy"
                 ? t("managedNe.hop.apply")
                 : bulkTagAction === "account"
                   ? t("managedNe.account.apply")
                   : t("managedNe.connect.run")}
+          </Button>
+        </Modal.Footer>
+      </AppModalShell>
+
+      <AppModalShell open={importResult !== null} onClose={() => setImportResult(null)} size="md">
+        <Modal.Header>
+          <Modal.Heading>{t("managedNe.importResult.title")}</Modal.Heading>
+          <Modal.CloseTrigger />
+        </Modal.Header>
+        <Modal.Body className="flex flex-col gap-3">
+          {importResult ? (
+            <>
+              <p className="text-sm">
+                {t("managedNe.importResult.done", {
+                  inserted: importResult.inserted,
+                  updated: importResult.updated,
+                  failed: importResult.failed.length,
+                })}
+              </p>
+              <h3 className="text-sm">{t("managedNe.importResult.failedTitle", { n: importResult.failed.length })}</h3>
+              <div className="ne-import-failures">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>{t("managedNe.importResult.row")}</th>
+                      <th>{t("managedNe.importResult.reason")}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {importResult.failed.map((item) => (
+                      <tr key={`${item.row}:${item.reason}`}>
+                        <td className="pt-list-num">{item.row}</td>
+                        <td>{errText(new Error(item.reason))}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          ) : null}
+        </Modal.Body>
+        <Modal.Footer>
+          <Button variant="primary" onPress={() => setImportResult(null)}>
+            {t("managedNe.importResult.close")}
           </Button>
         </Modal.Footer>
       </AppModalShell>

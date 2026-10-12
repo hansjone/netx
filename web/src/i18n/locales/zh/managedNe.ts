@@ -17,6 +17,10 @@ const managedNe = {
   batchDeleteDone: "已删除 {{n}} 台网元",
   batchDeleteSelectRequired: "请先勾选要删除的网元",
   keywordPh: "名称 / IP / 用户名 / 标签",
+  emptyFiltered: "没有符合当前筛选条件的网元，请调整或清除筛选条件。",
+  selectedCount: "已选 {{n}} 台",
+  clearSelection: "清除选择",
+  loadFailed: "网元列表加载失败：{{error}}",
   allVendors: "全部厂商",
   allConnectStatus: "全部连通状态",
   stats: {
@@ -37,6 +41,9 @@ const managedNe = {
     proxyDone: "已为 {{n}} 台网元提交代理配置",
     testDone: "已提交 {{n}} 台网元连通性测试",
     loadingIds: "加载中…",
+    noMatchingNe: "所选范围内没有网元",
+    scopeCount: "将作用于 {{n}} 台网元",
+    cardFilterHint: "点击卡片可按标签筛选下方列表",
   },
   col: {
     name: "名称",
@@ -104,6 +111,7 @@ const managedNe = {
     "【批量导入】\n" +
     "· 必填列：device_type、ip、username、port、protocol、name、vendor（可先下载模板）\n" +
     "· password 可留空：直连需填；堡垒机托管或后续「批量添加代理」时可空\n" +
+    "· 已存在的 IP 按更新处理；password 留空时保留已保存的密码\n" +
     "· 推荐：导入网元 → 勾选 →「批量添加代理」统一配置跳板\n\n" +
     "【跳板 / 堡垒机】\n" +
     "· 用户名模板：{hop_user}@{target_user}@{target_ip}（堡垒机地址另填跳板地址）\n" +
@@ -113,6 +121,11 @@ const managedNe = {
     "· 保存密码需配置 NETX_CREDENTIAL_SECRET_KEY\n" +
     "· 编辑时密码留空表示不改；失败请看「详情」中的 hop 上下文（不含密码）",
   importResult: {
+    title: "导入结果",
+    failedTitle: "失败明细（共 {{n}} 行）",
+    row: "行号",
+    reason: "原因",
+    close: "关闭",
     done: "导入完成：新增 {{inserted}}，更新 {{updated}}，失败 {{failed}} 行",
   },
   form: {
@@ -128,6 +141,10 @@ const managedNe = {
     deleted: "网元已删除",
     passwordRequired: "请填写密码",
     passwordOptional: "留空则不修改",
+    ipRequired: "请填写管理地址",
+    ipInvalid: "管理地址格式不正确（应为 IPv4 / IPv6 地址或主机名）",
+    usernameRequired: "请填写用户名",
+    portInvalid: "端口须为 1–65535 的整数",
   },
   hop: {
     sectionTitle: "跳板 / 代理",
@@ -194,6 +211,28 @@ const managedNe = {
     selectRequired: "请先勾选要配置的网元",
     applying: "应用中…",
     apply: "应用到选中网元",
+    batchPasswordHint: "跳板密码留空时沿用各网元已保存的跳板密码；从未保存过跳板密码的网元会被拒绝。",
+  },
+  errors: {
+    ip_address_exists: "该管理地址已存在于网元管理中",
+    ip_address_required: "请填写管理地址",
+    ip_required: "缺少管理地址",
+    invalid_ip_address: "管理地址格式不正确（应为 IPv4 / IPv6 地址或主机名）",
+    invalid_port: "端口须为 1–65535 的整数",
+    unsupported_device_type: "不支持的设备类型",
+    username_required: "缺少用户名",
+    password_required: "手动模式需填写目标网元密码",
+    hop_host_required: "请填写跳板地址",
+    hop_username_required: "请填写跳板用户名",
+    hop_password_required: "跳板密码必填（以下网元未保存跳板密码：{{detail}}）",
+    username_or_password_required: "用户名和密码至少填写一项",
+    managed_ne_not_found: "网元不存在或已被删除：{{detail}}",
+    ids_required: "请先选择网元",
+    credential_secret_key_not_configured: "未配置凭据加密密钥，无法保存密码",
+    import_missing_columns: "导入文件缺少列：{{detail}}",
+    import_parse_failed: "导入文件解析失败：{{detail}}",
+    empty_file: "导入文件为空",
+    invalid_filter_field: "不支持的筛选列",
   },
 };
 

@@ -18,6 +18,10 @@ const managedNe = {
   batchDeleteDone: "Deleted {{n}} network element(s)",
   batchDeleteSelectRequired: "Select network elements to delete",
   keywordPh: "name / IP / user / tags",
+  emptyFiltered: "No NEs match the current filters. Adjust or clear them.",
+  selectedCount: "{{n}} selected",
+  clearSelection: "Clear selection",
+  loadFailed: "Failed to load NEs: {{error}}",
   allVendors: "All vendors",
   allConnectStatus: "All connect status",
   stats: {
@@ -38,6 +42,9 @@ const managedNe = {
     proxyDone: "Proxy applied to {{n}} NE(s)",
     testDone: "Connect-test submitted for {{n}} NE(s)",
     loadingIds: "Loading…",
+    noMatchingNe: "No NEs in the selected scope",
+    scopeCount: "Applies to {{n}} NEs",
+    cardFilterHint: "Click a card to filter the list below by tag",
   },
   col: {
     name: "Name",
@@ -106,6 +113,7 @@ const managedNe = {
     "[Bulk import]\n" +
     "· Required: device_type, ip, username, port, protocol, name, vendor (download template first)\n" +
     "· password may be empty for bastion-managed / later Batch add proxy; required for direct login\n" +
+    "· Existing IPs are updated; a blank password keeps the saved one\n" +
     "· Flow: import → select rows → Batch add proxy\n\n" +
     "[Jump / bastion]\n" +
     "· Username template: {hop_user}@{target_user}@{target_ip} (bastion host filled separately)\n" +
@@ -115,6 +123,11 @@ const managedNe = {
     "· Storing passwords needs NETX_CREDENTIAL_SECRET_KEY\n" +
     "· Blank password on edit keeps current; use Details hop context after failed connect (no secrets)",
   importResult: {
+    title: "Import result",
+    failedTitle: "Failed rows ({{n}})",
+    row: "Row",
+    reason: "Reason",
+    close: "Close",
     done: "Import done: {{inserted}} inserted, {{updated}} updated, {{failed}} failed row(s)",
   },
   form: {
@@ -130,6 +143,10 @@ const managedNe = {
     deleted: "Network element deleted",
     passwordRequired: "Password is required",
     passwordOptional: "leave blank to keep unchanged",
+    ipRequired: "Management address is required",
+    ipInvalid: "Invalid management address (expect an IPv4 / IPv6 address or hostname)",
+    usernameRequired: "Username is required",
+    portInvalid: "Port must be an integer from 1 to 65535",
   },
   hop: {
     sectionTitle: "Jump host / proxy",
@@ -196,6 +213,28 @@ const managedNe = {
     selectRequired: "Select network elements first",
     applying: "Applying…",
     apply: "Apply to selected",
+    batchPasswordHint: "Leave the hop password blank to keep each NE's saved hop password; NEs that never had one are rejected.",
+  },
+  errors: {
+    ip_address_exists: "This management address already exists",
+    ip_address_required: "Management address is required",
+    ip_required: "Management address is missing",
+    invalid_ip_address: "Invalid management address (expect an IPv4 / IPv6 address or hostname)",
+    invalid_port: "Port must be an integer from 1 to 65535",
+    unsupported_device_type: "Unsupported device type",
+    username_required: "Username is missing",
+    password_required: "Manual mode requires the target NE password",
+    hop_host_required: "Hop address is required",
+    hop_username_required: "Hop username is required",
+    hop_password_required: "Hop password is required (these NEs have none saved: {{detail}})",
+    username_or_password_required: "Enter a username or a password",
+    managed_ne_not_found: "NE not found or already deleted: {{detail}}",
+    ids_required: "Select NEs first",
+    credential_secret_key_not_configured: "Credential encryption key is not configured; passwords cannot be saved",
+    import_missing_columns: "Import file is missing columns: {{detail}}",
+    import_parse_failed: "Could not parse the import file: {{detail}}",
+    empty_file: "Import file is empty",
+    invalid_filter_field: "Unsupported filter column",
   },
 };
 

@@ -2,21 +2,17 @@ import { useMemo, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@heroui/react";
 import { useI18n } from "../../i18n";
-import { WorkbenchCardIcon } from "./components/WorkbenchCardIcon";
+import { WorkbenchModules, type DisplaySection } from "./components/WorkbenchModules";
+import { ConsoleIcon } from "./components/ConsoleIcon";
 import { modulesInSection, type ModuleDefinition, type WorkbenchSection } from "../../config/modules";
 import { openOrFocusModule } from "../../utils/moduleWindows";
 import { useAuth } from "../auth/AuthContext";
 import { fetchFabricSummary, fetchManagedNeStats, fetchOpsTasks, fetchRuntimeMetrics, fetchTopologyTree, type OpsTaskItem } from "../../services/api";
-import { formatSystemTime } from "../../utils/time";
+import { parseApiTime } from "../../utils/time";
 import { isUmeWorldContainer, isWorldDrillFolder } from "../topology/lib/treeUtils";
 import type { TopologyTreeFolderItem } from "../../types";
 
 const SECTIONS: WorkbenchSection[] = ["monitoring", "operations", "system"];
-
-type DisplaySection = {
-  key: "operations" | "system";
-  mods: ModuleDefinition[];
-};
 
 function formatCount(n: number | string): string {
   if (typeof n === "string") return n;
@@ -32,20 +28,13 @@ function formatAgeSec(sec: number | null | undefined): string {
   const n = Math.max(0, sec);
   if (n < 60) return `${Math.round(n)}s`;
   if (n < 3600) return `${Math.max(1, Math.round(n / 60))}m`;
-  return `${(n / 3600).toFixed(n >= 10 ? 0 : 1)}h`;
+  return `${(n / 3600).toFixed(n >= 10 * 3600 ? 0 : 1)}h`;
 }
 
 function formatCompactTime(value: string | null | undefined): string {
-  if (!value) return "—";
-  const full = formatSystemTime(value);
-  if (!full) return "—";
-  // Keep date+time but drop seconds when present: "2026/9/12 15:42:01" → "9/12 15:42"
-  const m = full.match(/(\d{1,4}[/-]\d{1,2}[/-]\d{1,2})\s+(\d{1,2}:\d{2})(?::\d{2})?/);
-  if (m) {
-    const date = m[1].replace(/^\d{4}[/-]/, "");
-    return `${date} ${m[2]}`;
-  }
-  return full;
+  const date = parseApiTime(value);
+  if (!date) return "—";
+  return `${date.toLocaleDateString(undefined, { month: "numeric", day: "numeric" })} ${date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false })}`;
 }
 
 const FLEET_TONE_COLOR: Record<"ok" | "mid" | "warn" | "bad" | "muted", string> = {
@@ -121,7 +110,8 @@ function FleetDonut({
     <div
       className="wb-fleet__donut"
       style={{ background: buildDonutGradient(parts) }}
-      aria-hidden="true"
+      role="img"
+      aria-label={`${center} ${unit ?? ""}`.trim()}
     >
       <div className="wb-fleet__donut-hole">
         <div className="wb-fleet__donut-value">{center}</div>
@@ -131,114 +121,14 @@ function FleetDonut({
   );
 }
 
-const SCHED_DISC_COLORS = ["#38bdf8", "#22d3ee", "#818cf8", "#34d399"];
-
-function polarPoint(cx: number, cy: number, r: number, deg: number): [number, number] {
-  const rad = ((deg - 90) * Math.PI) / 180;
-  return [cx + r * Math.cos(rad), cy + r * Math.sin(rad)];
-}
-
-function donutSlicePath(
-  cx: number,
-  cy: number,
-  rOuter: number,
-  rInner: number,
-  startDeg: number,
-  endDeg: number,
-): string {
-  const sweep = endDeg - startDeg;
-  const large = sweep > 180 ? 1 : 0;
-  const [x1, y1] = polarPoint(cx, cy, rOuter, startDeg);
-  const [x2, y2] = polarPoint(cx, cy, rOuter, endDeg);
-  const [x3, y3] = polarPoint(cx, cy, rInner, endDeg);
-  const [x4, y4] = polarPoint(cx, cy, rInner, startDeg);
-  return [
-    `M ${x1.toFixed(2)} ${y1.toFixed(2)}`,
-    `A ${rOuter} ${rOuter} 0 ${large} 1 ${x2.toFixed(2)} ${y2.toFixed(2)}`,
-    `L ${x3.toFixed(2)} ${y3.toFixed(2)}`,
-    `A ${rInner} ${rInner} 0 ${large} 0 ${x4.toFixed(2)} ${y4.toFixed(2)}`,
-    "Z",
-  ].join(" ");
-}
-
 type SchedDiscItem = {
   key: string;
   label: string;
-  on: boolean;
+  on: boolean | null;
   age: string;
   moduleId: string;
   path: string;
 };
-
-function SchedDartDisc({
-  items,
-  center,
-  unit,
-  onSelect,
-}: {
-  items: SchedDiscItem[];
-  center: ReactNode;
-  unit?: ReactNode;
-  onSelect: (item: SchedDiscItem) => void;
-}) {
-  // Match FleetDonut footprint (84px) so the three FLEET cards share one visual rhythm.
-  const size = 84;
-  const cx = size / 2;
-  const cy = size / 2;
-  const rOuter = 39;
-  const rInner = 25;
-  const gap = items.length > 1 ? 2.5 : 0;
-  const slice = items.length > 0 ? 360 / items.length : 360;
-
-  return (
-    <div className="wb-fleet__donut wb-fleet__donut--dart">
-      <svg
-        className="wb-fleet__dart"
-        viewBox={`0 0 ${size} ${size}`}
-        width={size}
-        height={size}
-        role="group"
-        aria-label={typeof unit === "string" ? unit : "schedulers"}
-      >
-        {items.map((item, i) => {
-          const start = i * slice + gap / 2;
-          const end = (i + 1) * slice - gap / 2;
-          const color = item.on
-            ? SCHED_DISC_COLORS[i % SCHED_DISC_COLORS.length]
-            : "#475569";
-          return (
-            <path
-              key={item.key}
-              className={`wb-fleet__dart-slice${item.on ? " is-on" : ""}`}
-              d={donutSlicePath(cx, cy, rOuter, rInner, start, end)}
-              fill={color}
-              role="button"
-              tabIndex={0}
-              aria-label={item.label}
-              onClick={(e) => {
-                e.stopPropagation();
-                onSelect(item);
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  onSelect(item);
-                }
-              }}
-            >
-              <title>{`${item.label} · ${item.on ? "ON" : "OFF"} · ${item.age}`}</title>
-            </path>
-          );
-        })}
-      </svg>
-      <div className="wb-fleet__donut-hole wb-fleet__donut-hole--dart">
-        <div className="wb-fleet__donut-value">{center}</div>
-        {unit ? <div className="wb-fleet__donut-unit">{unit}</div> : null}
-      </div>
-    </div>
-  );
-}
 
 function topLevelRegions(root: TopologyTreeFolderItem | null | undefined): TopologyTreeFolderItem[] {
   if (!root) return [];
@@ -558,17 +448,20 @@ export function WorkbenchPage() {
     return slices;
   }, [topoTreeQuery.data, fabricNodes]);
 
-  const memValue =
-    memTotal > 0 ? `${memPct}% · ${formatBytes(memUsed)}` : `${memPct}%`;
-  const storageValue = storageOk ? formatBytesCompact(storageUsed) : "—";
+  const metricsPlaceholder = metricsQuery.isLoading ? "…" : "—";
+  const hostOk = Boolean(host && !host.error);
+  const memValue = hostOk
+    ? memTotal > 0 ? `${memPct}% · ${formatBytes(memUsed)}` : `${memPct}%`
+    : metricsPlaceholder;
+  const storageValue = storageOk ? formatBytesCompact(storageUsed) : metricsPlaceholder;
 
-  const dash = (v: number | string) => (canReadFleet ? v : "—");
+  const dash = (v: number | string) => (canReadFleet && neStatsQuery.data ? v : neStatsQuery.isLoading ? "…" : "—");
   const tickAge = (sec?: number | null) => formatAgeSec(sec ?? null);
 
   const schedRows: SchedDiscItem[] = [
     {
       key: "config",
-      on: schedConfigOn,
+      on: schedulers && !metricsQuery.isError ? schedConfigOn : null,
       label: t("workbench.fleetSchedConfig"),
       age: tickAge(schedulers?.config_sync?.last_tick_age_sec),
       moduleId: "network",
@@ -576,7 +469,7 @@ export function WorkbenchPage() {
     },
     {
       key: "lldp",
-      on: schedLldpOn,
+      on: schedulers && !metricsQuery.isError ? schedLldpOn : null,
       label: t("workbench.fleetSchedLldp"),
       age: tickAge(schedulers?.lldp_collect?.last_tick_age_sec),
       moduleId: "network",
@@ -584,7 +477,7 @@ export function WorkbenchPage() {
     },
     {
       key: "port",
-      on: schedPortOn,
+      on: schedulers && !metricsQuery.isError ? schedPortOn : null,
       label: t("workbench.fleetSchedPort"),
       age: tickAge(schedulers?.port_traffic?.last_tick_age_sec),
       moduleId: "network",
@@ -592,7 +485,7 @@ export function WorkbenchPage() {
     },
     {
       key: "ne",
-      on: schedNeOn,
+      on: schedulers && !metricsQuery.isError ? schedNeOn : null,
       label: t("workbench.fleetSchedNeCollect"),
       age: tickAge(schedulers?.ne_collect?.last_tick_age_sec),
       moduleId: "network",
@@ -600,80 +493,45 @@ export function WorkbenchPage() {
     },
   ];
   const schedOnCount = schedRows.filter((r) => r.on).length;
+  const refreshing = [metricsQuery, opsQuery, neStatsQuery, fabricQuery, topoTreeQuery].some((query) => query.isFetching);
+  const refreshConsole = () => {
+    void metricsQuery.refetch();
+    void opsQuery.refetch();
+    if (canReadFleet) {
+      void neStatsQuery.refetch();
+      void fabricQuery.refetch();
+      void topoTreeQuery.refetch();
+    }
+  };
+  const healthKnown = Boolean(metrics && hostOk && !metricsQuery.isError);
+  const healthTone = !healthKnown ? "is-unknown" : healthBusy ? "is-busy" : "is-ok";
+  const healthLabel = !healthKnown ? t("workbench.kpi.healthUnknown") : healthBusy ? t("workbench.kpi.healthWarn") : t("workbench.kpi.healthOk");
+  const taskValue = opsQuery.isLoading ? "…" : opsQuery.isError ? "—" : formatCount(activeTasks);
+  const schedValue = metricsQuery.isLoading ? "…" : !schedulers || metricsQuery.isError ? "—" : `${schedOnCount}/${schedRows.length}`;
 
   return (
     <div className="workbench workbench--console">
       <header className="wb-head">
-        <div className="wb-head__title-row">
-          <h1 className="wb-head__title">{t("workbench.title")}</h1>
-          <span className={`wb-head__health${healthBusy ? " is-busy" : " is-ok"}`}>
-            <span className="wb-head__health-dot" aria-hidden="true" />
-            {healthBusy
-              ? t("workbench.kpi.healthWarn")
-              : metrics
-                ? t("workbench.kpi.healthOk")
-                : t("workbench.kpi.healthUnknown")}
-          </span>
+        <div>
+          <div className="wb-head__title-row">
+            <h1 className="wb-head__title">{t("workbench.consoleTitle")}</h1>
+            <span className={`wb-head__health ${healthTone}`}><span className="wb-head__health-dot" aria-hidden="true" />{healthLabel}</span>
+          </div>
+        </div>
+        <div className="wb-head__actions">
+          <span className="wb-head__updated">{metricsQuery.dataUpdatedAt ? t("workbench.refreshedAt", { time: new Date(metricsQuery.dataUpdatedAt).toLocaleTimeString(undefined, { hour12: false }) }) : t("workbench.awaitingData")}</span>
+          <Button size="sm" variant="outline" className="wb-refresh" isDisabled={refreshing} onPress={refreshConsole}><span className={refreshing ? "wb-refresh__icon is-spinning" : "wb-refresh__icon"}><ConsoleIcon kind="refresh" /></span>{t("workbench.refresh")}</Button>
         </div>
       </header>
 
-      <section className="wb-strip wb-panel" aria-label={t("workbench.statusTitle")}>
-        <div className="wb-strip__row">
-          <span className="wb-strip__tag">{t("workbench.hostHealth")}</span>
-          <StatLine label={t("workbench.gauge.cpu")} value={`${cpuPct}%`} pct={cpuPct} />
-          <StatLine label={t("workbench.gauge.mem")} value={memValue} pct={memPct} />
-          <StatLine
-            label={t("workbench.gauge.storage")}
-            value={storageValue}
-            muted={!storageOk}
-          />
-          <span className="wb-strip__divider" aria-hidden="true" />
-          <span className="wb-strip__tag wb-strip__tag--soft">{t("workbench.channels")}</span>
-          <StatLine
-            label={t("workbench.gauge.cli")}
-            value={`${cliUsed}/${cliLimit}`}
-            pct={cliPct}
-          />
-          <StatLine
-            label={t("workbench.gauge.db")}
-            value={`${dbOut}/${dbSize}`}
-            pct={dbPct}
-          />
-          <StatLine
-            label={t("workbench.gauge.webcrt")}
-            value={`${webUsed}/${webMax}`}
-            pct={webPct}
-          />
-        </div>
-      </section>
-
       <div className="wb-body">
         <div className="wb-main">
-          <section className="wb-modules wb-panel" aria-label={t("workbench.modules")}>
-            {displaySections.map((section) => (
-              <div key={section.key} className={`wb-section wb-section--${section.key}`}>
-                <h2 className="wb-section__title">{t(`workbench.${section.key}`)}</h2>
-                <div className="wb-tiles">
-                  {section.mods.map((mod) => (
-                    <Button
-                      key={mod.moduleId}
-                      variant="ghost"
-                      className={`wb-tile wb-tile--${mod.iconTone}`}
-                      aria-label={t("workbench.openModule")}
-                      onPress={() => openOrFocusModule({ moduleId: mod.moduleId, path: mod.path })}
-                    >
-                      <WorkbenchCardIcon tone={mod.iconTone} kind={mod.iconKind} />
-                      <span className="wb-tile__label">{t(mod.labelKey)}</span>
-                    </Button>
-                  ))}
-                </div>
-              </div>
-            ))}
-          </section>
+          <WorkbenchModules sections={displaySections} />
 
           <section className="wb-fleet wb-panel" aria-label={t("workbench.fleet")}>
             <div className="wb-fleet__head">
               <h2 className="wb-fleet__title">{t("workbench.fleet")}</h2>
+              <span className="wb-fleet__live"><span aria-hidden="true" />{t("workbench.autoRefresh")}</span>
             </div>
             <div className="wb-fleet__grid">
               <button
@@ -685,7 +543,7 @@ export function WorkbenchPage() {
                 <div className="wb-fleet__card-top">
                   <div className="wb-fleet__card-label">{t("workbench.fleetNe")}</div>
                   <span className="wb-fleet__card-badge">
-                    {canReadFleet ? `${t("workbench.fleetNeKnown")} ${neKnownPct}%` : "—"}
+                    {neStatsQuery.isError ? t("workbench.loadFailed") : canReadFleet && neStatsQuery.data ? `${t("workbench.fleetNeKnown")} ${neKnownPct}%` : "—"}
                   </span>
                 </div>
                 <div className="wb-fleet__viz">
@@ -746,7 +604,7 @@ export function WorkbenchPage() {
                       ))
                     ) : (
                       <em>
-                        {t("workbench.fleetNeNoTag")} {canReadFleet ? neNoTag : "—"}
+                        {t("workbench.fleetNeNoTag")} {dash(neNoTag)}
                       </em>
                     )}
                   </span>
@@ -762,7 +620,7 @@ export function WorkbenchPage() {
                 <div className="wb-fleet__card-top">
                   <div className="wb-fleet__card-label">{t("workbench.fleetTopo")}</div>
                   <span className="wb-fleet__card-badge">
-                    {canReadFleet
+                    {fabricQuery.isError || topoTreeQuery.isError ? t("workbench.loadFailed") : canReadFleet
                       ? `${formatCount(fabricEdges)} ${t("workbench.fleetTopoEdges")}`
                       : "—"}
                   </span>
@@ -775,15 +633,15 @@ export function WorkbenchPage() {
                         ? "—"
                         : fabricQuery.isLoading || topoTreeQuery.isLoading
                           ? "…"
-                          : formatCount(fabricNodes)
+                          : fabricQuery.isError ? "—" : formatCount(fabricNodes)
                     }
                     unit={t("workbench.fleetTopoNodes")}
                   />
                   <div className="wb-fleet__rows">
                     {(canReadFleet ? regionSlices : []).length === 0 ? (
                       <div className="wb-fleet__row">
-                        <span>{t("workbench.fleetTopoNoRegion")}</span>
-                        <strong>{dash(formatCount(fabricNodes))}</strong>
+                        <span>{fabricQuery.isError || topoTreeQuery.isError ? t("workbench.loadFailed") : t("workbench.fleetTopoNoRegion")}</span>
+                        <strong>{canReadFleet && fabricQuery.data ? formatCount(fabricNodes) : "—"}</strong>
                       </div>
                     ) : (
                       (canReadFleet ? regionSlices : []).map((s) => (
@@ -822,41 +680,16 @@ export function WorkbenchPage() {
 
               <div
                 className="wb-fleet__card wb-fleet__card--sched"
-                role="button"
-                tabIndex={0}
-                onClick={() =>
-                  openOrFocusModule({
-                    moduleId: "network",
-                    path: "/network/tasks/port-traffic/wall",
-                  })
-                }
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.preventDefault();
-                    openOrFocusModule({
-                      moduleId: "network",
-                      path: "/network/tasks/port-traffic/wall",
-                    });
-                  }
-                }}
               >
                 <div className="wb-fleet__card-top">
                   <div className="wb-fleet__card-label">{t("workbench.fleetSched")}</div>
-                  <span className={`wb-fleet__card-badge${schedStale ? " is-warn" : " is-ok"}`}>
-                    {schedStale ? t("workbench.fleetSchedStale") : t("workbench.fleetSchedFresh")}
+                  <span className="wb-fleet__card-badge">
+                    {schedValue} · {t("workbench.enabledSchedulers")}
                   </span>
                 </div>
                 <div className="wb-fleet__viz">
-                  <SchedDartDisc
-                    items={schedRows}
-                    center={`${schedOnCount}/${schedRows.length}`}
-                    unit={t("workbench.fleetSchedOn")}
-                    onSelect={(row) =>
-                      openOrFocusModule({ moduleId: row.moduleId, path: row.path })
-                    }
-                  />
                   <div className="wb-fleet__rows">
-                    {schedRows.map((row, i) => (
+                    {schedRows.map((row) => (
                       <button
                         key={row.key}
                         type="button"
@@ -868,19 +701,13 @@ export function WorkbenchPage() {
                       >
                         <span className="wb-fleet__legend">
                           <i
-                            className="wb-fleet__swatch"
-                            style={{
-                              background: row.on
-                                ? SCHED_DISC_COLORS[i % SCHED_DISC_COLORS.length]
-                                : "#475569",
-                              boxShadow: "none",
-                            }}
+                            className={`wb-fleet__swatch${row.on ? " is-ok" : ""}`}
                             aria-hidden="true"
                           />
                           <span className="wb-fleet__legend-text">{row.label}</span>
                         </span>
                         <span className={`wb-fleet__sched-state${row.on ? " is-ok" : " is-muted"}`}>
-                          {row.on ? "ON" : "OFF"}
+                          {!schedulers || metricsQuery.isError ? "—" : row.on ? "ON" : "OFF"}
                         </span>
                         <span className="wb-fleet__sched-age">{row.age}</span>
                       </button>
@@ -906,7 +733,7 @@ export function WorkbenchPage() {
             <div className="wb-rail__head">
               <h2 className="wb-rail__title">
                 {t("workbench.taskRail")}
-                <span className="wb-rail__count">{activeTasks}</span>
+                <span className="wb-rail__count">{taskValue}</span>
               </h2>
               <Button
                 type="button"
@@ -919,8 +746,10 @@ export function WorkbenchPage() {
               </Button>
             </div>
 
-            {railTasks.length === 0 ? (
-              <p className="wb-rail__empty">{t("workbench.taskRailEmpty")}</p>
+            {opsQuery.isLoading ? <p className="wb-rail__empty" role="status">{t("workbench.loadingTasks")}</p> : opsQuery.isError ? (
+              <div className="wb-rail__empty wb-rail__empty--error" role="status"><ConsoleIcon kind="activity" /><strong>{t("workbench.loadFailed")}</strong><Button size="sm" variant="ghost" onPress={() => void opsQuery.refetch()}>{t("workbench.retry")}</Button></div>
+            ) : railTasks.length === 0 ? (
+              <div className="wb-rail__empty"><span className="wb-rail__empty-icon"><ConsoleIcon kind="check" /></span><strong>{t("workbench.taskRailEmpty")}</strong></div>
             ) : (
             <ul className="wb-rail__list">
               {railTasks.map((row) => (
@@ -939,14 +768,32 @@ export function WorkbenchPage() {
                         <span className="wb-rail__progress"> · {row.progress}</span>
                       ) : null}
                     </span>
+                    <span className="wb-rail__time">{formatCompactTime(row.updated_at || row.started_at)}</span>
                   </button>
                 </li>
               ))}
             </ul>
             )}
           </section>
+
         </aside>
       </div>
+
+      <section className="wb-runtime wb-panel" aria-label={t("workbench.statusTitle")}>
+        <div className="wb-runtime__head"><h2 className="wb-panel-title">{t("workbench.statusTitle")}</h2><ConsoleIcon kind="activity" /></div>
+        {metricsQuery.isError && <p className="wb-runtime__error" role="status">{t("workbench.loadFailed")} · {t("workbench.retryHint")}</p>}
+        <div className="wb-runtime__group wb-runtime__group--host"><h3>{t("workbench.hostHealth")}</h3>
+          <StatLine label={t("workbench.gauge.cpu")} value={hostOk ? `${cpuPct}%` : metricsPlaceholder} pct={hostOk ? cpuPct : undefined} />
+          <StatLine label={t("workbench.gauge.mem")} value={memValue} pct={hostOk ? memPct : undefined} />
+          <StatLine label={t("workbench.gauge.storage")} value={storageValue} muted={!storageOk} />
+        </div>
+        <div className="wb-runtime__group wb-runtime__group--capacity"><h3>{t("workbench.channels")}</h3>
+          <StatLine label={t("workbench.gauge.cli")} value={metrics?.cli_budget ? `${cliUsed}/${cliLimit}` : metricsPlaceholder} pct={metrics?.cli_budget ? cliPct : undefined} />
+          <StatLine label={t("workbench.gauge.db")} value={metrics?.db_pool ? `${dbOut}/${dbSize}` : metricsPlaceholder} pct={metrics?.db_pool ? dbPct : undefined} />
+          <StatLine label={t("workbench.gauge.webcrt")} value={metrics?.webcrt ? `${webUsed}/${webMax}` : metricsPlaceholder} pct={metrics?.webcrt ? webPct : undefined} />
+        </div>
+        <div className="wb-runtime__foot"><span>{t("workbench.kpi.uptime")}</span><strong>{metrics ? formatAgeSec(metrics.uptime_sec) : metricsPlaceholder}</strong></div>
+      </section>
     </div>
   );
 }

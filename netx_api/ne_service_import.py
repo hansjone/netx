@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from .models import ManagedNE, UmeInventoryNE
 from .ne_crypto import CredentialCryptoError, encrypt_secret
-from .device_types import SUPPORTED_DEVICE_TYPES, SUPPORTED_VENDORS
+from .device_types import SUPPORTED_DEVICE_TYPES, SUPPORTED_VENDORS, is_placeholder_ne_source
 from .ne_schemas import (
     ImportFailure,
     ImportResult,
@@ -23,6 +23,9 @@ from .ne_service_common import (
     UME_SYNC_TAG,
     _import_cell_str,
     _infer_managed_ne_type_vendor,
+    _is_valid_mgmt_address,
+    connect_snapshot,
+    reset_connect_status_if_changed,
     _merge_tags,
     _normalize_ip,
     _normalize_protocol,
@@ -188,25 +191,38 @@ def import_managed_ne(db: Session, content: bytes, filename: str) -> ImportResul
     failed: list[ImportFailure] = []
     for idx, row in df.iterrows():
         row_no = int(idx) + 2
+        # Savepoint per row: a failing row must not leave a half-written NE behind.
+        savepoint = db.begin_nested()
         try:
             ip = _normalize_ip(_import_cell_str(row.get("ip", "")))
             if not ip:
                 failed.append(ImportFailure(row=row_no, reason="ip_required"))
+                savepoint.rollback()
+                continue
+            if not _is_valid_mgmt_address(ip):
+                failed.append(ImportFailure(row=row_no, reason="invalid_ip_address"))
+                savepoint.rollback()
                 continue
             device_type = _import_cell_str(row.get("device_type", ""))
             if device_type not in SUPPORTED_DEVICE_TYPES:
                 failed.append(ImportFailure(row=row_no, reason="unsupported_device_type"))
+                savepoint.rollback()
                 continue
             username = _import_cell_str(row.get("username", ""))
             password = _import_cell_str(row.get("password", ""))
             if not username:
                 failed.append(ImportFailure(row=row_no, reason="username_required"))
+                savepoint.rollback()
                 continue
             port_raw = row.get("port", 22)
             try:
                 port = int(port_raw)
             except (TypeError, ValueError):
                 port = 22
+            if not 1 <= port <= 65535:
+                failed.append(ImportFailure(row=row_no, reason="invalid_port"))
+                savepoint.rollback()
+                continue
             protocol = _normalize_protocol(str(row.get("protocol", "ssh")))
             display_name = _import_cell_str(row.get("name", "")) or ip
             vendor_raw = _import_cell_str(row.get("vendor", "")) or "Other"
@@ -217,29 +233,43 @@ def import_managed_ne(db: Session, content: bytes, filename: str) -> ImportResul
                     break
             existing = db.query(ManagedNE).filter(ManagedNE.ip_address == ip).first()
             now = _now()
+            is_new = existing is None
             if existing is None:
-                existing = ManagedNE(ip_address=ip, created_at=now)
+                existing = ManagedNE(ip_address=ip, created_at=now, connect_status="unknown")
                 db.add(existing)
-                inserted += 1
-            else:
-                updated += 1
+            before = connect_snapshot(existing)
             existing.name = display_name
             existing.vendor = vendor
             existing.device_type = device_type
             existing.port = port
             existing.protocol = protocol
             existing.username = username
-            existing.password_enc = encrypt_secret(password) if password else ""
+            # Blank password on an existing NE keeps the stored one (template row 2 is blank).
+            if password:
+                existing.password_enc = encrypt_secret(password)
+            elif is_new:
+                existing.password_enc = ""
             tags_val = _import_cell_str(row.get("tags", ""))
             remark_val = _import_cell_str(row.get("remark", ""))
             if tags_val:
                 existing.tags = tags_val
             if remark_val:
                 existing.remark = remark_val
+            if is_placeholder_ne_source(existing.source):
+                existing.source = ""
+            if not is_new:
+                reset_connect_status_if_changed(existing, before)
             existing.updated_at = now
+            savepoint.commit()
+            if is_new:
+                inserted += 1
+            else:
+                updated += 1
         except CredentialCryptoError as exc:
+            savepoint.rollback()
             failed.append(ImportFailure(row=row_no, reason=str(exc)))
         except Exception as exc:
+            savepoint.rollback()
             failed.append(ImportFailure(row=row_no, reason=str(exc)[:200]))
     db.commit()
     return ImportResult(inserted=inserted, updated=updated, failed=failed)

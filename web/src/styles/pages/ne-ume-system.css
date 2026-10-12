@@ -84,6 +84,47 @@
   padding: 10px 12px;
 }
 
+button.ne-tag-card {
+  display: block;
+  width: 100%;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+button.ne-tag-card > .ne-tag-card__title,
+button.ne-tag-card > .ne-tag-card__total {
+  display: block;
+}
+
+button.ne-tag-card:hover {
+  border-color: rgb(var(--nx-accent-rgb) / 0.45);
+}
+
+button.ne-tag-card:focus-visible {
+  outline: 2px solid var(--nx-accent);
+  outline-offset: 2px;
+}
+
+button.ne-tag-card.is-active {
+  border-color: var(--nx-accent);
+  box-shadow: inset 0 0 0 1px var(--nx-accent);
+}
+
+.ne-selection-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--nx-text-muted);
+  font-size: 12px;
+}
+
+.ne-import-failures {
+  max-height: 320px;
+  overflow: auto;
+}
+
 .ne-tag-card__title {
   font-size: 13px;
   font-weight: 650;

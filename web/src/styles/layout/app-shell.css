@@ -45,6 +45,7 @@
   align-items: center;
   gap: 12px;
   min-width: 0;
+  flex: 1;
 }
 
 .app-brand__apps {
@@ -74,6 +75,9 @@
   color: rgba(255, 255, 255, 0.92);
   white-space: nowrap;
   letter-spacing: 0.02em;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .app-brand__actions {
@@ -102,4 +106,37 @@
   padding: 20px 28px 32px;
   background: var(--nm-chrome, #e8eef6);
   color: var(--nm-text, var(--nx-line));
+}
+
+.app--shell .app-brand .conn-pill.conn-pill--tasks::before {
+  content: none;
+}
+
+.app--shell .app-brand .conn-pill--tasks {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.app-brand__tasks-count { display: none; }
+
+.app--shell .app-brand .conn-pill--user .chip__label {
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+  .app--shell .app-brand { padding-inline: 12px; gap: 8px; }
+  .app-brand__start { gap: 8px; }
+  .app-brand__actions-group { gap: 4px; }
+  .app--shell .app-brand .conn-pill--user .chip__label { max-width: 64px; }
+}
+
+@media (max-width: 480px) {
+  .app-brand__tasks-text { display: none; }
+  .app-brand__tasks-count { display: inline; font-variant-numeric: tabular-nums; }
+  .app--shell .app-brand .conn-pill--tasks { padding-inline: 7px; }
 }

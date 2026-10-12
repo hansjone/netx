@@ -17,7 +17,7 @@ class ManagedNeCreate(BaseModel):
     vendor: str
     device_type: str
     ip_address: str
-    port: int = 22
+    port: int = Field(default=22, ge=1, le=65535)
     protocol: str = "ssh"
     username: str
     password: str = ""
@@ -27,7 +27,7 @@ class ManagedNeCreate(BaseModel):
     hop_enabled: bool = False
     hop_vendor: str = "zte"
     hop_host: str = ""
-    hop_port: int = 22
+    hop_port: int = Field(default=22, ge=1, le=65535)
     hop_protocol: str = "ssh"
     hop_username: str = ""
     hop_password: str = ""
@@ -63,7 +63,7 @@ class ManagedNeUpdate(BaseModel):
     vendor: str | None = None
     device_type: str | None = None
     ip_address: str | None = None
-    port: int | None = None
+    port: int | None = Field(default=None, ge=1, le=65535)
     protocol: str | None = None
     username: str | None = None
     password: str | None = None
@@ -73,7 +73,7 @@ class ManagedNeUpdate(BaseModel):
     hop_enabled: bool | None = None
     hop_vendor: str | None = None
     hop_host: str | None = None
-    hop_port: int | None = None
+    hop_port: int | None = Field(default=None, ge=1, le=65535)
     hop_protocol: str | None = None
     hop_username: str | None = None
     hop_password: str | None = None
@@ -194,7 +194,7 @@ class HopProxyConfig(BaseModel):
 
     hop_vendor: str = "zte"
     hop_host: str
-    hop_port: int = 22
+    hop_port: int = Field(default=22, ge=1, le=65535)
     hop_protocol: str = "ssh"
     hop_username: str
     hop_password: str = ""
