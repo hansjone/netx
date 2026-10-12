@@ -115,9 +115,27 @@ button.ne-tag-card.is-active {
 .ne-selection-meta {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
+  margin-left: 6px;
   color: var(--nx-text-muted);
-  font-size: 12px;
+}
+
+.ne-page .ne-selection-meta__clear {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--nx-accent);
+  cursor: pointer;
+  font: inherit;
+}
+
+.ne-page .ne-selection-meta__clear:hover {
+  text-decoration: underline;
+}
+
+.ne-page .ne-selection-meta__clear:focus-visible {
+  outline: 2px solid var(--nx-accent);
+  outline-offset: 2px;
 }
 
 .ne-import-failures {

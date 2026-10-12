@@ -671,15 +671,6 @@ export function NePage() {
         </div>
 
         <div className="pt-list">
-          {selected.length ? (
-            <div className="ne-selection-meta">
-              <span>{t("managedNe.selectedCount", { n: selected.length })}</span>
-              <Button size="sm" variant="ghost" onPress={() => setSelected([])}>
-                {t("managedNe.clearSelection")}
-              </Button>
-            </div>
-          ) : null}
-          {listQuery.isFetching ? <p className="muted">{t("common.refreshing")}</p> : null}
           {listQuery.isError ? (
             <p className="error-text">{t("managedNe.loadFailed", { error: errText(listQuery.error) })}</p>
           ) : null}
@@ -832,6 +823,19 @@ export function NePage() {
               setPage(1);
             }}
             disabled={listQuery.isLoading}
+            meta={
+              <>
+                {selected.length ? (
+                  <span className="ne-selection-meta">
+                    · {t("managedNe.selectedCount", { n: selected.length })}
+                    <button type="button" className="ne-selection-meta__clear" onClick={() => setSelected([])}>
+                      {t("managedNe.clearSelection")}
+                    </button>
+                  </span>
+                ) : null}
+                {listQuery.isFetching ? <span className="ne-selection-meta"> · {t("common.refreshing")}</span> : null}
+              </>
+            }
           />
         </div>
       </section>

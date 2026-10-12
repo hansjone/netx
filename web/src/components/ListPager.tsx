@@ -1,5 +1,5 @@
 import { Button, Input } from "@heroui/react";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useI18n } from "../i18n";
 import { FieldSelect } from "./ui/FieldSelect";
 
@@ -13,6 +13,8 @@ export type ListPagerProps = {
   onPageSizeChange?: (size: number) => void;
   disabled?: boolean;
   className?: string;
+  /** Extra status shown after the totals (e.g. selection count), so pages need no separate row. */
+  meta?: ReactNode;
 };
 
 /** Shared denser pager: meta + prev/next + jump + optional page size. */
@@ -26,6 +28,7 @@ export function ListPager({
   onPageSizeChange,
   disabled = false,
   className = "",
+  meta,
 }: ListPagerProps) {
   const { t } = useI18n();
   const safePages = Math.max(1, pages || 1);
@@ -54,6 +57,7 @@ export function ListPager({
           page: String(page),
           pages: String(safePages),
         })}
+        {meta}
       </div>
       <div className="pager__controls btn-row">
         <Button
