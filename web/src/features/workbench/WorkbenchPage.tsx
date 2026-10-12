@@ -48,11 +48,11 @@ const FLEET_TONE_COLOR: Record<"ok" | "mid" | "warn" | "bad" | "muted", string> 
 const REGION_PALETTE = [
   "#38bdf8",
   "#22d3ee",
-  "#818cf8",
+  "#60a5fa",
   "#34d399",
   "#fbbf24",
   "#fb7185",
-  "#a78bfa",
+  "#93c5fd",
   "#2dd4bf",
 ];
 
@@ -109,10 +109,10 @@ function FleetDonut({
   return (
     <div
       className="wb-fleet__donut"
-      style={{ background: buildDonutGradient(parts) }}
       role="img"
       aria-label={`${center} ${unit ?? ""}`.trim()}
     >
+      <div className="wb-fleet__donut-ring" style={{ background: buildDonutGradient(parts) }} />
       <div className="wb-fleet__donut-hole">
         <div className="wb-fleet__donut-value">{center}</div>
         {unit ? <div className="wb-fleet__donut-unit">{unit}</div> : null}
@@ -373,17 +373,13 @@ export function WorkbenchPage() {
   const webMax = Math.max(1, Number(metrics?.webcrt?.max_sessions || 20));
   const webPct = ratioPct(webUsed, webMax);
 
-  const hostBusy = cpuPct >= 75 || memPct >= 75;
-  const platformBusy = cliPct >= 75 || dbPct >= 75 || webPct >= 75;
   const schedulers = metrics?.device_schedulers;
   const schedConfigOn = Boolean(schedulers?.config_sync?.running ?? metrics?.config_sync?.running);
   const schedLldpOn = Boolean(schedulers?.lldp_collect?.running ?? metrics?.lldp_collect?.running);
   const schedPortOn = Boolean(schedulers?.port_traffic?.running ?? metrics?.port_traffic?.running);
   const schedNeOn = Boolean(schedulers?.ne_collect?.running);
   const schedStale = Boolean(schedulers?.stale);
-  const schedMode = String(schedulers?.mode || "");
   const schedAge = typeof schedulers?.age_sec === "number" ? schedulers.age_sec : null;
-  const healthBusy = hostBusy || platformBusy || schedStale;
   const canReadFleet = isAdmin || hasScope("ne:read");
 
   const neTotal = neStatsQuery.data?.total ?? 0;
@@ -392,13 +388,6 @@ export function WorkbenchPage() {
   const neFail = Number(neByStatus.fail || 0);
   const neTesting = Number(neByStatus.testing || 0);
   const neUnknown = Number(neByStatus.unknown || 0);
-  const neNoTag = Number(neStatsQuery.data?.no_tag_count || 0);
-  const neKnownPct = neTotal > 0 ? clampPct(((neTotal - neUnknown) / neTotal) * 100) : 0;
-  const neTopTags = Object.entries(neStatsQuery.data?.tag_counts ?? {})
-    .filter(([tag, n]) => tag && tag !== "__no_tag__" && Number(n) > 0)
-    .sort((a, b) => Number(b[1]) - Number(a[1]))
-    .slice(0, 2)
-    .map(([tag, n]) => ({ tag, n: Number(n) }));
   const neValue = !canReadFleet
     ? "—"
     : neStatsQuery.isLoading
@@ -409,8 +398,6 @@ export function WorkbenchPage() {
 
   const fabricNodes = Number(fabricQuery.data?.node_count || 0);
   const fabricEdges = Number(fabricQuery.data?.edge_count || 0);
-  const fabricDiscover = formatCompactTime(fabricQuery.data?.last_discover_at ?? null);
-  const fabricUpdated = formatCompactTime(fabricQuery.data?.updated_at ?? null);
 
   const regionSlices = useMemo((): FleetSlice[] => {
     const regions = topLevelRegions(topoTreeQuery.data?.root)
@@ -493,307 +480,234 @@ export function WorkbenchPage() {
     },
   ];
   const schedOnCount = schedRows.filter((r) => r.on).length;
-  const refreshing = [metricsQuery, opsQuery, neStatsQuery, fabricQuery, topoTreeQuery].some((query) => query.isFetching);
-  const refreshConsole = () => {
-    void metricsQuery.refetch();
-    void opsQuery.refetch();
-    if (canReadFleet) {
-      void neStatsQuery.refetch();
-      void fabricQuery.refetch();
-      void topoTreeQuery.refetch();
-    }
-  };
-  const healthKnown = Boolean(metrics && hostOk && !metricsQuery.isError);
-  const healthTone = !healthKnown ? "is-unknown" : healthBusy ? "is-busy" : "is-ok";
-  const healthLabel = !healthKnown ? t("workbench.kpi.healthUnknown") : healthBusy ? t("workbench.kpi.healthWarn") : t("workbench.kpi.healthOk");
   const taskValue = opsQuery.isLoading ? "…" : opsQuery.isError ? "—" : formatCount(activeTasks);
   const schedValue = metricsQuery.isLoading ? "…" : !schedulers || metricsQuery.isError ? "—" : `${schedOnCount}/${schedRows.length}`;
 
   return (
     <div className="workbench workbench--console">
-      <header className="wb-head">
-        <div>
-          <div className="wb-head__title-row">
-            <h1 className="wb-head__title">{t("workbench.consoleTitle")}</h1>
-            <span className={`wb-head__health ${healthTone}`}><span className="wb-head__health-dot" aria-hidden="true" />{healthLabel}</span>
-          </div>
-        </div>
-        <div className="wb-head__actions">
-          <span className="wb-head__updated">{metricsQuery.dataUpdatedAt ? t("workbench.refreshedAt", { time: new Date(metricsQuery.dataUpdatedAt).toLocaleTimeString(undefined, { hour12: false }) }) : t("workbench.awaitingData")}</span>
-          <Button size="sm" variant="outline" className="wb-refresh" isDisabled={refreshing} onPress={refreshConsole}><span className={refreshing ? "wb-refresh__icon is-spinning" : "wb-refresh__icon"}><ConsoleIcon kind="refresh" /></span>{t("workbench.refresh")}</Button>
-        </div>
-      </header>
-
-      <div className="wb-body">
-        <div className="wb-main">
-          <WorkbenchModules sections={displaySections} />
-
-          <section className="wb-fleet wb-panel" aria-label={t("workbench.fleet")}>
-            <div className="wb-fleet__head">
-              <h2 className="wb-fleet__title">{t("workbench.fleet")}</h2>
-              <span className="wb-fleet__live"><span aria-hidden="true" />{t("workbench.autoRefresh")}</span>
-            </div>
-            <div className="wb-fleet__grid">
-              <button
-                type="button"
-                className="wb-fleet__card"
-                disabled={!canReadFleet}
-                onClick={() => openOrFocusModule({ moduleId: "ne", path: "/ne" })}
-              >
-                <div className="wb-fleet__card-top">
-                  <div className="wb-fleet__card-label">{t("workbench.fleetNe")}</div>
-                  <span className="wb-fleet__card-badge">
-                    {neStatsQuery.isError ? t("workbench.loadFailed") : canReadFleet && neStatsQuery.data ? `${t("workbench.fleetNeKnown")} ${neKnownPct}%` : "—"}
-                  </span>
-                </div>
-                <div className="wb-fleet__viz">
-                  <FleetDonut
-                    parts={[
-                      { key: "pass", n: canReadFleet ? nePass : 0, tone: "ok" },
-                      { key: "fail", n: canReadFleet ? neFail : 0, tone: "bad" },
-                      { key: "testing", n: canReadFleet ? neTesting : 0, tone: "mid" },
-                      { key: "unknown", n: canReadFleet ? neUnknown : 0, tone: "muted" },
-                    ]}
-                    center={typeof neValue === "number" ? formatCount(neValue) : neValue}
-                    unit={
-                      canReadFleet && typeof neValue === "number"
-                        ? t("workbench.fleetNeUnit")
-                        : undefined
-                    }
-                  />
-                  <div className="wb-fleet__rows">
-                    <div className="wb-fleet__row">
-                      <span className="wb-fleet__legend">
-                        <i className="wb-fleet__swatch is-ok" aria-hidden="true" />
-                        {t("workbench.fleetNePass")}
-                      </span>
-                      <strong className="is-ok">{dash(nePass)}</strong>
-                    </div>
-                    <div className="wb-fleet__row">
-                      <span className="wb-fleet__legend">
-                        <i className="wb-fleet__swatch is-bad" aria-hidden="true" />
-                        {t("workbench.fleetNeFail")}
-                      </span>
-                      <strong className="is-bad">{dash(neFail)}</strong>
-                    </div>
-                    <div className="wb-fleet__row">
-                      <span className="wb-fleet__legend">
-                        <i className="wb-fleet__swatch is-mid" aria-hidden="true" />
-                        {t("workbench.fleetNeTesting")}
-                      </span>
-                      <strong className="is-mid">{dash(neTesting)}</strong>
-                    </div>
-                    <div className="wb-fleet__row">
-                      <span className="wb-fleet__legend">
-                        <i className="wb-fleet__swatch is-muted" aria-hidden="true" />
-                        {t("workbench.fleetNeUnknown")}
-                      </span>
-                      <strong className="is-muted">{dash(neUnknown)}</strong>
-                    </div>
-                  </div>
-                </div>
-                <div className="wb-fleet__foot">
-                  <span>
-                    {t("workbench.fleetNeTags")}{" "}
-                    {canReadFleet && neTopTags.length > 0 ? (
-                      neTopTags.map((x, i) => (
-                        <em key={x.tag}>
-                          {i > 0 ? " · " : ""}
-                          {x.tag} {formatCount(x.n)}
-                        </em>
-                      ))
-                    ) : (
-                      <em>
-                        {t("workbench.fleetNeNoTag")} {dash(neNoTag)}
-                      </em>
-                    )}
-                  </span>
-                </div>
-              </button>
-
-              <button
-                type="button"
-                className="wb-fleet__card"
-                disabled={!canReadFleet}
-                onClick={() => openOrFocusModule({ moduleId: "topology", path: "/topology" })}
-              >
-                <div className="wb-fleet__card-top">
-                  <div className="wb-fleet__card-label">{t("workbench.fleetTopo")}</div>
-                  <span className="wb-fleet__card-badge">
-                    {fabricQuery.isError || topoTreeQuery.isError ? t("workbench.loadFailed") : canReadFleet
-                      ? `${formatCount(fabricEdges)} ${t("workbench.fleetTopoEdges")}`
-                      : "—"}
-                  </span>
-                </div>
-                <div className="wb-fleet__viz">
-                  <FleetDonut
-                    parts={canReadFleet ? regionSlices : []}
-                    center={
-                      !canReadFleet
-                        ? "—"
-                        : fabricQuery.isLoading || topoTreeQuery.isLoading
-                          ? "…"
-                          : fabricQuery.isError ? "—" : formatCount(fabricNodes)
-                    }
-                    unit={t("workbench.fleetTopoNodes")}
-                  />
-                  <div className="wb-fleet__rows">
-                    {(canReadFleet ? regionSlices : []).length === 0 ? (
-                      <div className="wb-fleet__row">
-                        <span>{fabricQuery.isError || topoTreeQuery.isError ? t("workbench.loadFailed") : t("workbench.fleetTopoNoRegion")}</span>
-                        <strong>{canReadFleet && fabricQuery.data ? formatCount(fabricNodes) : "—"}</strong>
-                      </div>
-                    ) : (
-                      (canReadFleet ? regionSlices : []).map((s) => (
-                        <div key={s.key} className="wb-fleet__row">
-                          <span className="wb-fleet__legend">
-                            <i
-                              className="wb-fleet__swatch"
-                              style={{ background: sliceColor(s), boxShadow: "none" }}
-                              aria-hidden="true"
-                            />
-                            <span className="wb-fleet__legend-text">
-                              {s.key === "__other__"
-                                ? t("workbench.fleetTopoOther")
-                                : s.key === "__none__"
-                                  ? t("workbench.fleetTopoUnassigned")
-                                  : s.label || s.key}
-                            </span>
-                          </span>
-                          <strong>{formatCount(s.n)}</strong>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </div>
-                <div className="wb-fleet__foot">
-                  <span>
-                    {t("workbench.fleetTopoDiscover")}{" "}
-                    <em>{canReadFleet ? fabricDiscover : "—"}</em>
-                  </span>
-                  <span>
-                    {t("workbench.fleetTopoUpdated")}{" "}
-                    <em>{canReadFleet ? fabricUpdated : "—"}</em>
-                  </span>
-                </div>
-              </button>
-
-              <div
-                className="wb-fleet__card wb-fleet__card--sched"
-              >
-                <div className="wb-fleet__card-top">
-                  <div className="wb-fleet__card-label">{t("workbench.fleetSched")}</div>
-                  <span className="wb-fleet__card-badge">
-                    {schedValue} · {t("workbench.enabledSchedulers")}
-                  </span>
-                </div>
-                <div className="wb-fleet__viz">
-                  <div className="wb-fleet__rows">
-                    {schedRows.map((row) => (
-                      <button
-                        key={row.key}
-                        type="button"
-                        className={`wb-fleet__row wb-fleet__row--sched${row.on ? " is-on" : ""}`}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          openOrFocusModule({ moduleId: row.moduleId, path: row.path });
-                        }}
-                      >
-                        <span className="wb-fleet__legend">
-                          <i
-                            className={`wb-fleet__swatch${row.on ? " is-ok" : ""}`}
-                            aria-hidden="true"
-                          />
-                          <span className="wb-fleet__legend-text">{row.label}</span>
-                        </span>
-                        <span className={`wb-fleet__sched-state${row.on ? " is-ok" : " is-muted"}`}>
-                          {!schedulers || metricsQuery.isError ? "—" : row.on ? "ON" : "OFF"}
-                        </span>
-                        <span className="wb-fleet__sched-age">{row.age}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                <div className="wb-fleet__foot">
-                  <span>
-                    {t("workbench.fleetSchedMode")} <em>{schedMode || "—"}</em>
-                  </span>
-                  <span>
-                    {t("workbench.fleetSchedHeartbeat")}{" "}
-                    <em className={schedStale ? "is-warn" : "is-ok"}>{formatAgeSec(schedAge)}</em>
-                  </span>
-                </div>
-              </div>
-            </div>
-          </section>
-        </div>
-
-        <aside className="wb-side" aria-label={t("workbench.sidePanel")}>
-          <section className="wb-rail wb-panel wb-rail--tasks">
-            <div className="wb-rail__head">
-              <h2 className="wb-rail__title">
-                {t("workbench.taskRail")}
-                <span className="wb-rail__count">{taskValue}</span>
-              </h2>
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                className="wb-rail__all"
-                onPress={() => openOrFocusModule({ moduleId: "audit", path: "/audit/tasks" })}
-              >
-                {t("workbench.taskRailAll")}
-              </Button>
-            </div>
-
-            {opsQuery.isLoading ? <p className="wb-rail__empty" role="status">{t("workbench.loadingTasks")}</p> : opsQuery.isError ? (
-              <div className="wb-rail__empty wb-rail__empty--error" role="status"><ConsoleIcon kind="activity" /><strong>{t("workbench.loadFailed")}</strong><Button size="sm" variant="ghost" onPress={() => void opsQuery.refetch()}>{t("workbench.retry")}</Button></div>
-            ) : railTasks.length === 0 ? (
-              <div className="wb-rail__empty"><span className="wb-rail__empty-icon"><ConsoleIcon kind="check" /></span><strong>{t("workbench.taskRailEmpty")}</strong></div>
-            ) : (
-            <ul className="wb-rail__list">
-              {railTasks.map((row) => (
-                <li key={`${row.kind}:${row.id}`}>
-                  <button
-                    type="button"
-                    className="wb-rail__item"
-                    onClick={() => openTaskHref(row.href)}
-                  >
-                    <span className="wb-rail__item-title">{taskTitle(row, t)}</span>
-                    <span className="wb-rail__item-meta">
-                      <span className={`wb-rail__status wb-rail__status--${statusTone(row.status)}`}>
-                        {statusLabel(row.status, t)}
-                      </span>
-                      {row.progress ? (
-                        <span className="wb-rail__progress"> · {row.progress}</span>
-                      ) : null}
-                    </span>
-                    <span className="wb-rail__time">{formatCompactTime(row.updated_at || row.started_at)}</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-            )}
-          </section>
-
-        </aside>
-      </div>
-
       <section className="wb-runtime wb-panel" aria-label={t("workbench.statusTitle")}>
-        <div className="wb-runtime__head"><h2 className="wb-panel-title">{t("workbench.statusTitle")}</h2><ConsoleIcon kind="activity" /></div>
+        <div className="wb-runtime__head"><ConsoleIcon kind="activity" /><h2 className="wb-panel-title">{t("workbench.statusTitle")}</h2></div>
         {metricsQuery.isError && <p className="wb-runtime__error" role="status">{t("workbench.loadFailed")} · {t("workbench.retryHint")}</p>}
-        <div className="wb-runtime__group wb-runtime__group--host"><h3>{t("workbench.hostHealth")}</h3>
+        <div className="wb-runtime__group wb-runtime__group--host">
           <StatLine label={t("workbench.gauge.cpu")} value={hostOk ? `${cpuPct}%` : metricsPlaceholder} pct={hostOk ? cpuPct : undefined} />
           <StatLine label={t("workbench.gauge.mem")} value={memValue} pct={hostOk ? memPct : undefined} />
           <StatLine label={t("workbench.gauge.storage")} value={storageValue} muted={!storageOk} />
         </div>
-        <div className="wb-runtime__group wb-runtime__group--capacity"><h3>{t("workbench.channels")}</h3>
+        <div className="wb-runtime__group wb-runtime__group--capacity">
           <StatLine label={t("workbench.gauge.cli")} value={metrics?.cli_budget ? `${cliUsed}/${cliLimit}` : metricsPlaceholder} pct={metrics?.cli_budget ? cliPct : undefined} />
           <StatLine label={t("workbench.gauge.db")} value={metrics?.db_pool ? `${dbOut}/${dbSize}` : metricsPlaceholder} pct={metrics?.db_pool ? dbPct : undefined} />
           <StatLine label={t("workbench.gauge.webcrt")} value={metrics?.webcrt ? `${webUsed}/${webMax}` : metricsPlaceholder} pct={metrics?.webcrt ? webPct : undefined} />
         </div>
         <div className="wb-runtime__foot"><span>{t("workbench.kpi.uptime")}</span><strong>{metrics ? formatAgeSec(metrics.uptime_sec) : metricsPlaceholder}</strong></div>
       </section>
+      <div className="wb-body">
+        <WorkbenchModules sections={displaySections} />
+        <aside className="wb-side" aria-label={t("workbench.sidePanel")}>
+        <section className="wb-rail wb-panel wb-rail--tasks">
+          <div className="wb-rail__head">
+            <h2 className="wb-rail__title">
+              {t("workbench.taskRail")}
+              <span className="wb-rail__count">{taskValue}</span>
+            </h2>
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="wb-rail__all"
+              onPress={() => openOrFocusModule({ moduleId: "audit", path: "/audit/tasks" })}
+            >
+              {t("workbench.taskRailAll")}
+            </Button>
+          </div>
+
+          {opsQuery.isLoading ? <p className="wb-rail__empty" role="status">{t("workbench.loadingTasks")}</p> : opsQuery.isError ? (
+            <div className="wb-rail__empty wb-rail__empty--error" role="status"><ConsoleIcon kind="activity" /><strong>{t("workbench.loadFailed")}</strong><Button size="sm" variant="ghost" onPress={() => void opsQuery.refetch()}>{t("workbench.retry")}</Button></div>
+          ) : railTasks.length === 0 ? (
+            <div className="wb-rail__empty"><span className="wb-rail__empty-icon"><ConsoleIcon kind="check" /></span><strong>{t("workbench.taskRailEmpty")}</strong></div>
+          ) : (
+          <ul className="wb-rail__list">
+            {railTasks.map((row) => (
+              <li key={`${row.kind}:${row.id}`}>
+                <button
+                  type="button"
+                  className="wb-rail__item"
+                  onClick={() => openTaskHref(row.href)}
+                >
+                  <span className="wb-rail__item-title">{taskTitle(row, t)}</span>
+                  <span className="wb-rail__item-meta">
+                    <span className={`wb-rail__status wb-rail__status--${statusTone(row.status)}`}>
+                      {statusLabel(row.status, t)}
+                    </span>
+                    {row.progress ? (
+                      <span className="wb-rail__progress"> · {row.progress}</span>
+                    ) : null}
+                  </span>
+                  <span className="wb-rail__time">{formatCompactTime(row.updated_at || row.started_at)}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+          )}
+        </section>
+
+        </aside>
+        <section className="wb-fleet wb-panel" aria-label={t("workbench.fleet")}>
+          <div className="wb-fleet__grid">
+            <button
+              type="button"
+              className="wb-fleet__card"
+              disabled={!canReadFleet}
+              onClick={() => openOrFocusModule({ moduleId: "ne", path: "/ne" })}
+            >
+              <div className="wb-fleet__card-top">
+                <div className="wb-fleet__card-label">{t("workbench.fleetNe")}</div>
+                {neStatsQuery.isError ? <span className="wb-fleet__card-badge is-warn">{t("workbench.loadFailed")}</span> : null}
+              </div>
+              <div className="wb-fleet__viz">
+                <FleetDonut
+                  parts={[
+                    { key: "pass", n: canReadFleet ? nePass : 0, tone: "ok" },
+                    { key: "fail", n: canReadFleet ? neFail : 0, tone: "bad" },
+                    { key: "testing", n: canReadFleet ? neTesting : 0, tone: "mid" },
+                    { key: "unknown", n: canReadFleet ? neUnknown : 0, tone: "muted" },
+                  ]}
+                  center={typeof neValue === "number" ? formatCount(neValue) : neValue}
+                  unit={
+                    canReadFleet && typeof neValue === "number"
+                      ? t("workbench.fleetNeUnit")
+                      : undefined
+                  }
+                />
+                <div className="wb-fleet__rows">
+                  <div className="wb-fleet__row">
+                    <span className="wb-fleet__legend">
+                      <i className="wb-fleet__swatch is-ok" aria-hidden="true" />
+                      {t("workbench.fleetNePass")}
+                    </span>
+                    <strong className="is-ok">{dash(nePass)}</strong>
+                  </div>
+                  <div className="wb-fleet__row">
+                    <span className="wb-fleet__legend">
+                      <i className="wb-fleet__swatch is-bad" aria-hidden="true" />
+                      {t("workbench.fleetNeFail")}
+                    </span>
+                    <strong className="is-bad">{dash(neFail)}</strong>
+                  </div>
+                  <div className="wb-fleet__row">
+                    <span className="wb-fleet__legend">
+                      <i className="wb-fleet__swatch is-mid" aria-hidden="true" />
+                      {t("workbench.fleetNeTesting")}
+                    </span>
+                    <strong className="is-mid">{dash(neTesting)}</strong>
+                  </div>
+                  <div className="wb-fleet__row">
+                    <span className="wb-fleet__legend">
+                      <i className="wb-fleet__swatch is-muted" aria-hidden="true" />
+                      {t("workbench.fleetNeUnknown")}
+                    </span>
+                    <strong className="is-muted">{dash(neUnknown)}</strong>
+                  </div>
+                </div>
+              </div>
+            </button>
+
+            <button
+              type="button"
+              className="wb-fleet__card"
+              disabled={!canReadFleet}
+              onClick={() => openOrFocusModule({ moduleId: "topology", path: "/topology" })}
+            >
+              <div className="wb-fleet__card-top">
+                <div className="wb-fleet__card-label">{t("workbench.fleetTopo")}</div>
+                <span className="wb-fleet__card-badge">
+                  {fabricQuery.isError || topoTreeQuery.isError ? t("workbench.loadFailed") : canReadFleet
+                    ? `${formatCount(fabricEdges)} ${t("workbench.fleetTopoEdges")}`
+                    : "—"}
+                </span>
+              </div>
+              <div className="wb-fleet__viz">
+                <FleetDonut
+                  parts={canReadFleet ? regionSlices : []}
+                  center={
+                    !canReadFleet
+                      ? "—"
+                      : fabricQuery.isLoading || topoTreeQuery.isLoading
+                        ? "…"
+                        : fabricQuery.isError ? "—" : formatCount(fabricNodes)
+                  }
+                  unit={t("workbench.fleetTopoNodes")}
+                />
+                <div className="wb-fleet__rows">
+                  {(canReadFleet ? regionSlices : []).length === 0 ? (
+                    <div className="wb-fleet__row">
+                      <span>{fabricQuery.isError || topoTreeQuery.isError ? t("workbench.loadFailed") : t("workbench.fleetTopoNoRegion")}</span>
+                      <strong>{canReadFleet && fabricQuery.data ? formatCount(fabricNodes) : "—"}</strong>
+                    </div>
+                  ) : (
+                    (canReadFleet ? regionSlices : []).map((s) => (
+                      <div key={s.key} className="wb-fleet__row">
+                        <span className="wb-fleet__legend">
+                          <i
+                            className="wb-fleet__swatch"
+                            style={{ background: sliceColor(s), boxShadow: "none" }}
+                            aria-hidden="true"
+                          />
+                          <span className="wb-fleet__legend-text">
+                            {s.key === "__other__"
+                              ? t("workbench.fleetTopoOther")
+                              : s.key === "__none__"
+                                ? t("workbench.fleetTopoUnassigned")
+                                : s.label || s.key}
+                          </span>
+                        </span>
+                        <strong>{formatCount(s.n)}</strong>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </button>
+
+            <div
+              className="wb-fleet__card wb-fleet__card--sched"
+            >
+              <div className="wb-fleet__card-top">
+                <div className="wb-fleet__card-label">{t("workbench.fleetSched")}</div>
+                <span className={`wb-fleet__card-badge${schedStale ? " is-warn" : ""}`} title={`${t("workbench.fleetSchedHeartbeat")} ${formatAgeSec(schedAge)}`}>
+                  {schedValue}
+                </span>
+              </div>
+              <div className="wb-fleet__viz">
+                <div className="wb-fleet__rows">
+                  {schedRows.map((row) => (
+                    <button
+                      key={row.key}
+                      type="button"
+                      className={`wb-fleet__row wb-fleet__row--sched${row.on ? " is-on" : ""}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openOrFocusModule({ moduleId: row.moduleId, path: row.path });
+                      }}
+                    >
+                      <span className="wb-fleet__legend">
+                        <i
+                          className={`wb-fleet__swatch${row.on ? " is-ok" : ""}`}
+                          aria-hidden="true"
+                        />
+                        <span className="wb-fleet__legend-text">{row.label}</span>
+                      </span>
+                      <span className={`wb-fleet__sched-state${row.on ? " is-ok" : " is-muted"}`}>
+                        {!schedulers || metricsQuery.isError ? "—" : row.on ? "ON" : "OFF"}
+                      </span>
+                      <span className="wb-fleet__sched-age">{row.age}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
     </div>
   );
 }

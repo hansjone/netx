@@ -1,4 +1,6 @@
-/* App shell + brand header (.app--shell, .app-brand, .app-main) */
+/* App shell + brand header (.app--shell, .app-brand, .app-main).
+   This file is the single owner of header styles. Height stays 48px:
+   several pages size themselves with calc(100vh - var(--nx-header-h)). */
 
 .app--shell {
   /* --nm-* chrome tokens: see styles/theme/tokens.css */
@@ -6,99 +8,313 @@
   flex-direction: column;
   min-height: 100vh;
   color: var(--nm-text);
+  /* Ambient backdrop (what the glass bends) is owned by theme/glass.css. */
 }
 
+/* The header capsule lines up with the page's content edge: --nx-gutter is the
+   horizontal inset of the page content (app-main pads 28px; some pages differ). */
+.app--shell { --nx-gutter: 28px; }
+.app--shell:has(.ne-page, .ume-page, .system-page) { --nx-gutter: 22px; }
+/* Sidebar pages (network / audit / topology / WebCRT) float their panels on a
+   16px gutter (theme/glass.css), so the header capsule uses the same inset. */
+.app--shell:has(.network-shell, .topo-page, .webcrt-shell) { --nx-gutter: 16px; }
+/* The traffic wall is a true full-bleed screen: the glass becomes a full-width bar. */
+.app--shell:has(.pt-wall-shell) { --nx-gutter: 0px; }
+
+/* Liquid-glass header: the 48px strip stays in flow and transparent; the glass
+   is a floating capsule (::before) inset inside it. Page content scrolls under
+   it and shows through, blurred and saturated. */
 .app-brand {
+  --glass-inset: 5px;
+  position: sticky;
+  top: 0;
+  z-index: 40;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  height: 48px;
-  padding: 0 20px;
-  background: var(--nm-header, #0f1b2d);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-  box-shadow: none;
+  gap: 16px;
+  height: var(--nx-header-h, 48px);
+  padding: 0 calc(var(--nx-gutter) + 10px) 0 calc(var(--nx-gutter) + 6px);
+  background: transparent;
 }
 
-.app-brand__logo {
-  font-size: 18px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  color: #fff;
-  text-decoration: none;
-  flex-shrink: 0;
-  line-height: 1;
+.app-brand::before {
+  content: "";
+  position: absolute;
+  inset: var(--glass-inset) var(--nx-gutter);
+  z-index: -1;
+  border-radius: 14px;
+  background: var(--nx-glass-fill);
+  -webkit-backdrop-filter: var(--nx-glass-blur);
+  backdrop-filter: var(--nx-glass-blur);
+  border: 1px solid var(--nx-glass-rim);
+  box-shadow: var(--nx-glass-shadow);
 }
 
-.app-brand__logo--static {
-  display: inline-block;
+/* Full-bleed page: edge-to-edge glass bar with a bottom hairline. */
+.app--shell:has(.pt-wall-shell) .app-brand {
+  --glass-inset: 0px;
+  padding-inline: 16px 18px;
 }
+.app--shell:has(.pt-wall-shell) .app-brand::before {
+  border-radius: 0;
+  border-width: 0 0 1px;
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.08), 0 6px 18px rgb(0 0 0 / 0.30);
+}
+.app--shell:has(.pt-wall-shell) .app-brand::after { display: none; }
 
-.app-brand__sep {
-  width: 1px;
-  height: 16px;
-  background: rgba(255, 255, 255, 0.22);
-  flex-shrink: 0;
+/* Specular rim on the capsule (same ring as the glass panels). */
+.app-brand::after {
+  content: "";
+  position: absolute;
+  inset: var(--glass-inset) var(--nx-gutter);
+  z-index: -1;
+  padding: 1px;
+  border-radius: 14px;
+  background: var(--nx-glass-specular);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+  pointer-events: none;
 }
 
 .app-brand__start {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   min-width: 0;
   flex: 1;
 }
 
-.app-brand__apps {
+/* Brand: mark + wordmark, clickable everywhere (returns to the workbench). */
+.app-brand__logo {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  height: 32px;
+  padding: 0 8px 0 4px;
+  margin: 0;
+  border: 0;
+  border-radius: var(--nx-radius);
+  background: transparent;
+  color: var(--nx-text-strong);
+  text-decoration: none;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.14s ease;
+}
+
+.app-brand__logo:hover { background: rgb(255 255 255 / 0.06); }
+.app-brand__logo:focus-visible { outline: none; box-shadow: var(--nx-ring); }
+.app-brand__mark { display: block; flex-shrink: 0; filter: drop-shadow(0 2px 6px rgb(var(--nx-accent-rgb) / 0.35)); }
+
+.app-brand__wordmark {
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  line-height: 1;
+  color: var(--nx-text-strong);
+}
+
+.app-brand__crumb {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.app-brand__sep {
+  width: 1px;
+  height: 18px;
+  margin-right: 4px;
+  background: var(--nx-line);
+  flex-shrink: 0;
+}
+
+.app--shell .app-brand .app-brand__apps {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 30px;
+  min-width: 30px;
   height: 30px;
   padding: 0;
-  border: none;
-  border-radius: 4px;
+  border: 0;
+  border-radius: var(--nx-radius-sm);
   background: transparent;
-  color: rgba(255, 255, 255, 0.88);
-  cursor: pointer;
+  color: var(--nx-text-muted);
 }
 
-.app-brand__apps:hover,
-.app-brand__apps:focus-visible {
-  background: rgb(var(--nx-accent-rgb) / 0.22);
-  color: #fff;
+.app--shell .app-brand .app-brand__apps svg { width: 17px; height: 17px; }
+
+.app--shell .app-brand .app-brand__apps:hover,
+.app--shell .app-brand .app-brand__apps:focus-visible {
+  background: var(--nx-accent-soft);
+  color: var(--nx-text-strong);
   outline: none;
 }
 
 .app-brand__module-title {
   font-size: 14px;
-  font-weight: 500;
-  color: rgba(255, 255, 255, 0.92);
+  font-weight: 600;
+  color: var(--nx-text);
   white-space: nowrap;
-  letter-spacing: 0.02em;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
+/* Right-side actions share one quiet button style. */
 .app-brand__actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   flex-shrink: 0;
 }
 
-.app-brand__actions-group {
+.app-brand__divider {
+  width: 1px;
+  height: 18px;
+  margin: 0 4px;
+  background: var(--nx-line);
+}
+
+.app--shell .app-brand .app-brand__btn {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 7px;
+  height: 30px;
+  min-width: 0;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: var(--nx-radius);
+  background: transparent;
+  color: var(--nx-text-muted);
+  font: 500 12px/1 var(--nx-font-sans);
+  white-space: nowrap;
+  box-shadow: none;
+  transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease;
 }
 
-.app-brand__actions-sep {
-  width: 1px;
-  height: 14px;
-  margin: 0 4px;
-  background: rgba(255, 255, 255, 0.18);
+.app--shell .app-brand .app-brand__btn:hover,
+.app--shell .app-brand .app-brand__btn[aria-expanded="true"] {
+  background: rgb(255 255 255 / 0.08);
+  border-color: rgb(255 255 255 / 0.08);
+  color: var(--nx-text);
+}
+
+.app--shell .app-brand .app-brand__btn:focus-visible { outline: none; box-shadow: var(--nx-ring); }
+
+/* Tasks: a count badge that lights up only while work is running. */
+.app-brand__tasks-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--nx-text-faint);
   flex-shrink: 0;
+}
+
+.app-brand__tasks-count {
+  min-width: 20px;
+  height: 18px;
+  padding: 0 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 0.06);
+  color: var(--nx-text-soft);
+  font: 600 11px/1 var(--nx-font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.app-brand__tasks.is-busy .app-brand__tasks-dot {
+  background: var(--nx-accent);
+  box-shadow: 0 0 0 3px rgb(var(--nx-accent-rgb) / 0.2);
+  animation: app-brand-pulse 1.8s ease-in-out infinite;
+}
+
+.app-brand__tasks.is-busy .app-brand__tasks-count {
+  background: rgb(var(--nx-accent-rgb) / 0.2);
+  color: var(--nx-accent-text);
+}
+
+@keyframes app-brand-pulse {
+  50% { box-shadow: 0 0 0 5px rgb(var(--nx-accent-rgb) / 0); }
+}
+
+.app--shell .app-brand .app-brand__locale { gap: 5px; padding: 0 8px; letter-spacing: 0.04em; }
+
+/* User menu */
+.app--shell .app-brand .app-brand__user { gap: 8px; padding: 0 8px 0 4px; color: var(--nx-text-soft); }
+
+.app-brand__avatar {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--nx-accent-strong), #0ea5e9);
+  color: #fff;
+  font: 600 11px/1 var(--nx-font-sans);
+  flex-shrink: 0;
+}
+
+.app-brand__avatar--lg { width: 34px; height: 34px; font-size: 14px; }
+
+.app-brand__user-name {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.app-brand__chevron { color: var(--nx-text-faint); transition: transform 0.14s ease; }
+.app-brand__user[aria-expanded="true"] .app-brand__chevron { transform: rotate(180deg); }
+
+/* Popover renders in a portal, outside .app--shell. */
+.app-brand__menu {
+  min-width: 220px;
+  padding: 6px;
+  border: 1px solid rgb(255 255 255 / 0.10);
+  border-radius: 14px;
+  background:
+    linear-gradient(180deg, rgb(255 255 255 / 0.08), rgb(255 255 255 / 0.02)),
+    rgb(var(--nx-ink-rgb) / 0.62);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  backdrop-filter: blur(24px) saturate(180%);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.18), var(--nx-shadow-pop);
+}
+
+.app-brand__menu-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 8px 12px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--nx-line-soft);
+}
+
+.app-brand__menu-id { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.app-brand__menu-id strong { font-size: 13px; font-weight: 600; color: var(--nx-text-strong); overflow: hidden; text-overflow: ellipsis; }
+.app-brand__menu-id span { font-size: 11px; color: var(--nx-text-faint); }
+
+.app-brand__menu .app-brand__menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--nx-text-soft);
+  border-radius: var(--nx-radius-sm);
+  outline: none;
+}
+
+.app-brand__menu .app-brand__menu-item[data-focus-visible] { box-shadow: var(--nx-ring); }
+
+.app-brand__menu .app-brand__menu-item[data-hovered],
+.app-brand__menu .app-brand__menu-item[data-focused] {
+  background: rgb(var(--nx-bad-rgb) / 0.12);
+  color: var(--nx-bad-text);
 }
 
 .app-main {
@@ -108,35 +324,23 @@
   color: var(--nm-text, var(--nx-line));
 }
 
-.app--shell .app-brand .conn-pill.conn-pill--tasks::before {
-  content: none;
-}
-
-.app--shell .app-brand .conn-pill--tasks {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  cursor: pointer;
-}
-
-.app-brand__tasks-count { display: none; }
-
-.app--shell .app-brand .conn-pill--user .chip__label {
-  max-width: 110px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 @media (max-width: 640px) {
-  .app--shell .app-brand { padding-inline: 12px; gap: 8px; }
-  .app-brand__start { gap: 8px; }
-  .app-brand__actions-group { gap: 4px; }
-  .app--shell .app-brand .conn-pill--user .chip__label { max-width: 64px; }
+  .app--shell { --nx-gutter: 16px; }
+  .app-brand { --glass-inset: 4px; gap: 8px; }
+  .app-brand__start { gap: 6px; }
+  .app-brand__actions { gap: 2px; }
+  .app-brand__wordmark,
+  .app-brand__user-name,
+  .app-brand__tasks-text,
+  .app-brand__divider { display: none; }
+  .app--shell .app-brand .app-brand__btn { padding-inline: 7px; }
 }
 
-@media (max-width: 480px) {
-  .app-brand__tasks-text { display: none; }
-  .app-brand__tasks-count { display: inline; font-variant-numeric: tabular-nums; }
-  .app--shell .app-brand .conn-pill--tasks { padding-inline: 7px; }
+/* No backdrop blur (or the user asked for less transparency): solid glass. */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .app-brand::before, .app-brand__menu { background-color: var(--nx-surface-2); }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .app-brand::before, .app-brand__menu { background: var(--nx-surface-2); backdrop-filter: none; -webkit-backdrop-filter: none; }
 }

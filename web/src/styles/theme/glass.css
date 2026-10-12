@@ -1,0 +1,235 @@
+/*
+ * Liquid-glass layer, applied across pages. Loaded LAST (after theme.css), so
+ * equal-specificity selectors here win. Tokens live in theme/tokens.css.
+ *
+ *   1. One ambient backdrop for the whole app; page roots go transparent.
+ *   2. Panels/cards: full glass (translucent fill + blur + rim + specular).
+ *   3. Inside panels (tables, KPI strips, tag cards): a darker translucent
+ *      layer WITHOUT its own blur, so dense text stays readable.
+ *   4. Sidebar pages (network / audit / topology / WebCRT): the side nav and
+ *      the work area float as rounded glass panels on a 16px gutter, lined up
+ *      with the header capsule (--nx-gutter, set in layout/app-shell.css).
+ *
+ * Working surfaces stay solid on purpose: the WebCRT terminal, the topology
+ * canvas and the traffic wall.
+ *
+ * Note: backdrop-filter makes an element the containing block for
+ * position:fixed descendants. Menus are portaled to .network-main or <body>
+ * (never glassed); panels holding a pseudo-fullscreen element drop the blur.
+ */
+
+/* ------------------------------------------------------------- 1. Backdrop */
+.app--shell {
+  /* Black-blue wallpaper, all hues 200-215deg (never indigo). Clear glass needs
+     something to look through, so there is texture: a faint network dot grid,
+     two light streaks, and a few defined color pools. */
+  background:
+    radial-gradient(circle, rgb(147 197 253 / 0.10) 1px, transparent 1.6px) 0 0 / 24px 24px,
+    linear-gradient(118deg, transparent 38%, rgb(56 152 255 / 0.10) 46%, transparent 54%),
+    linear-gradient(118deg, transparent 62%, rgb(34 180 230 / 0.07) 67%, transparent 72%),
+    radial-gradient(34% 44% at 6% 10%, rgb(20 110 230 / 0.42), transparent 62%),
+    radial-gradient(28% 36% at 94% 6%, rgb(6 150 210 / 0.26), transparent 62%),
+    radial-gradient(40% 46% at 58% 64%, rgb(14 84 180 / 0.34), transparent 64%),
+    radial-gradient(30% 40% at 10% 96%, rgb(4 120 175 / 0.28), transparent 62%),
+    radial-gradient(28% 38% at 98% 98%, rgb(16 100 210 / 0.24), transparent 62%),
+    linear-gradient(140deg, #030a16 0%, #05132a 40%, #041022 72%, #020a14 100%);
+  background-attachment: fixed;
+}
+
+.app--shell .app-main,
+.app--shell .app-main:has(> .workbench),
+.app--shell .network-shell,
+.app--shell .network-main,
+.app--shell .ne-page,
+.app--shell .ume-page,
+.app--shell .system-page,
+.app--shell .topo-page,
+.app--shell .webcrt-shell {
+  background: transparent;
+}
+
+/* --------------------------------------------------------------- 2. Panels */
+.app--shell .network-main > .panel,
+.app--shell .network-main .page-stack > .panel,
+.app--shell .network-main > .nm-page-panel,
+.app--shell .app-main .card,
+.app--shell .app-main .panel {
+  border: 1px solid var(--nx-glass-rim);
+  border-radius: 16px;
+  background: var(--nx-glass-fill);
+  -webkit-backdrop-filter: var(--nx-glass-blur);
+  backdrop-filter: var(--nx-glass-blur);
+  box-shadow: var(--nx-glass-shadow);
+}
+
+/* Specular rim: a 1px ring painted with --nx-glass-specular (bright top-left
+   and bottom-right, like light on a curved glass edge), masked to the border. */
+:where(.app--shell .app-main) :is(.panel, .card),
+:where(.app--shell) :is(.network-nav, .topo-sidebar, .webcrt-sidebar, .topo-main, .webcrt-main) {
+  position: relative;
+}
+
+.app--shell .app-main :is(.panel, .card)::before,
+.app--shell .wb-panel::before,
+.app--shell :is(.network-nav, .topo-sidebar, .webcrt-sidebar, .topo-main, .webcrt-main)::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  padding: 1px;
+  border-radius: inherit;
+  background: var(--nx-glass-specular);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+  pointer-events: none;
+}
+
+/* A panel nested in a panel: no second blur or rim, just a lighter sheet. */
+.app--shell .app-main :is(.panel, .card) :is(.panel, .card)::before { display: none; }
+
+.app--shell .app-main :is(.panel, .card) :is(.panel, .card) {
+  background: rgb(255 255 255 / 0.03);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.06);
+}
+
+/* Pseudo-fullscreen children are position:fixed; keep them out of the glass trap. */
+.app--shell .app-main :is(.panel, .card):has(.is-fullscreen) {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+/* ------------------------------------------------- 3. Content inside panels */
+.app--shell :is(.app-main, .app-heroui-modal) .pt-list-table-wrap {
+  border: 1px solid rgb(255 255 255 / 0.06);
+  border-radius: 12px;
+  background: rgb(2 8 18 / 0.30);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.04);
+}
+
+/* theme.css paints table headers solid with !important; match it to override. */
+.app--shell .app-main .pt-list-table thead th,
+.app--shell .app-main .data-table thead th {
+  background: rgb(255 255 255 / 0.045) !important;
+  border-bottom-color: rgb(255 255 255 / 0.10);
+}
+
+.app--shell .app-main .pt-list-kpis,
+.app--shell .network-main .pt-list-kpis {
+  border: 1px solid rgb(255 255 255 / 0.06);
+  border-radius: 12px;
+  background: rgb(255 255 255 / 0.03);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.06);
+}
+
+.app--shell .app-main .ne-tag-card {
+  border-color: rgb(255 255 255 / 0.08);
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgb(255 255 255 / 0.06), rgb(255 255 255 / 0.015));
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.10);
+  transition: background 0.2s, border-color 0.2s, box-shadow 0.2s;
+}
+
+.app--shell .app-main .ne-tag-card:hover {
+  background: linear-gradient(180deg, rgb(255 255 255 / 0.09), rgb(255 255 255 / 0.03));
+}
+
+.app--shell .app-main .ne-tag-card.is-active {
+  border-color: rgb(var(--nx-accent-rgb) / 0.55);
+  background: linear-gradient(180deg, rgb(var(--nx-accent-rgb) / 0.16), rgb(var(--nx-accent-rgb) / 0.05));
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.14), 0 6px 20px rgb(var(--nx-accent-rgb) / 0.15);
+}
+
+/* Topology workspace: rim + corners of a glass panel, but a dense fill and no
+   blur (its dialogs render inside it, and the canvas needs a calm ground). */
+.app--shell .topo-main {
+  border: 1px solid var(--nx-glass-rim);
+  border-radius: 16px;
+  background: rgb(2 10 20 / 0.62);
+  box-shadow: var(--nx-glass-shadow);
+  overflow: hidden;
+}
+
+.app--shell .topo-main .topo-browser { background: transparent; }
+
+/* ------------------------------------------------------- 4. Sidebar pages */
+/* Shells: inset by the gutter (4px top: the header strip already has its own). */
+.app--shell .app-main:has(> .network-shell) {
+  padding: 4px var(--nx-gutter) var(--nx-gutter);
+}
+
+.app--shell .network-shell { gap: var(--nx-gutter); }
+.app--shell .network-main { padding: 0 2px 8px; }
+
+.app--shell .topo-page,
+.app--shell .webcrt-shell {
+  padding: 4px var(--nx-gutter) var(--nx-gutter);
+  gap: var(--nx-gutter);
+}
+
+/* Side navs: floating glass columns. */
+.app--shell .network-nav,
+.app--shell .topo-sidebar,
+.app--shell .webcrt-sidebar {
+  border: 1px solid var(--nx-glass-rim);
+  border-radius: 16px;
+  background:
+    linear-gradient(180deg, rgb(255 255 255 / 0.06), rgb(255 255 255 / 0.01)),
+    rgb(6 14 28 / 0.16);
+  -webkit-backdrop-filter: var(--nx-glass-blur);
+  backdrop-filter: var(--nx-glass-blur);
+  box-shadow: var(--nx-glass-shadow);
+  overflow: hidden;
+}
+
+/* WebCRT terminal area: same rim and corners, solid fill (terminal readability). */
+.app--shell .webcrt-main {
+  border: 1px solid var(--nx-glass-rim);
+  border-radius: 16px;
+  box-shadow: var(--nx-glass-shadow);
+}
+
+/* ---------------------------------------------------- 5. Controls on glass */
+/* Solid dark buttons/fields read as holes in the glass; make them translucent.
+   Scoped to .app-main only: dialogs keep their solid controls. */
+:where(.app--shell .app-main) button.button--secondary {
+  background: rgb(255 255 255 / 0.08);
+  border-color: rgb(255 255 255 / 0.14);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.10);
+}
+
+:where(.app--shell .app-main) button.button--secondary:where(:hover:not(:disabled)) {
+  background: rgb(255 255 255 / 0.14);
+  border-color: rgb(var(--nx-accent-rgb) / 0.55);
+}
+
+:where(.app--shell .app-main) :is(button.button--tertiary, button.button--ghost) {
+  background: rgb(255 255 255 / 0.04);
+  border-color: rgb(255 255 255 / 0.12);
+}
+
+:where(.app--shell .app-main) :is(button.button--tertiary, button.button--ghost):where(:hover:not(:disabled)) {
+  background: rgb(255 255 255 / 0.10);
+}
+
+.app--shell :where(.app-main) :is(input:not([type="checkbox"], [type="radio"], [type="range"], [type="file"]), select, textarea) {
+  background-color: rgb(2 8 18 / 0.30);
+  border-color: rgb(255 255 255 / 0.10);
+}
+
+/* --------------------------------------------------------------- Fallbacks */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .app--shell .app-main :is(.panel, .card),
+  .app--shell :is(.network-nav, .topo-sidebar, .webcrt-sidebar) { background: var(--nx-surface-1); }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .app--shell .app-main :is(.panel, .card),
+  .app--shell :is(.network-nav, .topo-sidebar, .webcrt-sidebar) {
+    background: var(--nx-surface-1);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}

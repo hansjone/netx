@@ -15,6 +15,7 @@ const layout = {
   netxApi: "netx api",
   oclawBridge: "oclaw WSS",
   activeTasks: "活跃任务 {{count}}",
+  activeTasksLabel: "任务",
   activeTasksHint: "打开操作审计 · 任务概览",
   language: "语言",
   switchLanguage: "切换语言 / Switch language",

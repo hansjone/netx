@@ -73,68 +73,6 @@ table,
   }
 }
 
-/* ----------------------------------------------------------------- 2. Header */
-/* Height stays 48px: several pages use calc(100vh - 48px). */
-.app--shell .app-brand {
-  background: linear-gradient(180deg, var(--nx-surface-2) 0%, var(--nx-surface-1) 100%);
-  border-bottom: 1px solid var(--nx-line);
-  box-shadow: 0 1px 0 rgb(var(--nx-accent-rgb) / 0.06);
-}
-
-.app--shell .app-brand__logo {
-  font-size: 16px;
-  font-weight: 800;
-  letter-spacing: 0.22em;
-  background: linear-gradient(90deg, #ffffff 0%, #9fcbff 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-}
-
-.app--shell .app-brand__sep {
-  background: var(--nx-line-strong);
-}
-
-.app--shell .app-brand__module-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--nx-text);
-}
-
-.app--shell .app-brand .app-brand__apps {
-  border-radius: var(--nx-radius-sm);
-  color: var(--nx-text-muted);
-}
-
-.app--shell .app-brand .app-brand__apps:hover,
-.app--shell .app-brand .app-brand__apps:focus-visible {
-  background: var(--nx-accent-soft);
-  color: #fff;
-}
-
-.app--shell .app-brand .conn-pill.conn-pill--on-brand,
-.app--shell .app-brand .header-menu__trigger.header-menu__trigger--on-brand {
-  height: 26px;
-  border-radius: 999px;
-  border-color: var(--nx-line-strong);
-  background: rgb(255 255 255 / 0.05);
-  color: var(--nx-text-muted);
-  font-size: 12px;
-  transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease;
-}
-
-.app--shell .app-brand .conn-pill.conn-pill--on-brand.conn-pill--user {
-  color: var(--nx-text);
-  font-weight: 500;
-}
-
-.app--shell .app-brand .conn-pill.conn-pill--on-brand:hover,
-.app--shell .app-brand .header-menu__trigger.header-menu__trigger--on-brand:hover {
-  background: var(--nx-accent-soft);
-  border-color: rgb(var(--nx-accent-rgb) / 0.6);
-  color: #fff;
-}
-
 /* Workbench styles are owned by pages/workbench.css. */
 
 /* ---------------------------------------------------------- 4. Nav + panels */
