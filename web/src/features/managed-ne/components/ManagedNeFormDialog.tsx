@@ -89,16 +89,25 @@ export function ManagedNeFormDialog({
     },
   });
 
+  // Re-seed the form once each time the dialog opens (or switches row). Done
+  // during render — React's pattern for resetting state when inputs change.
   const editingId = editing?.id ?? "";
+  const seedKey = open ? `open:${editingId}` : "";
+  const [seededKey, setSeededKey] = useState("");
+  if (seedKey !== seededKey) {
+    setSeededKey(seedKey);
+    if (open) {
+      const seed = editing ? formFromManagedNe(editing) : { ...emptyManagedNeForm(), ...(initialValues || {}) };
+      setForm(seed);
+      setPortDraft(String(seed.port));
+      setSubmitted(false);
+    }
+  }
+  // The mutation's error/result belongs to the previous opening.
+  const resetSave = saveMutation.reset;
   useEffect(() => {
-    if (!open) return;
-    const seed = editing ? formFromManagedNe(editing) : { ...emptyManagedNeForm(), ...(initialValues || {}) };
-    setForm(seed);
-    setPortDraft(String(seed.port));
-    setSubmitted(false);
-    saveMutation.reset();
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- seed once per open/create
-  }, [open, editingId]);
+    if (open) resetSave();
+  }, [open, editingId, resetSave]);
 
   return (
     <AppModalShell open={open} onClose={onClose} dismissible={!saveMutation.isPending} size="lg">

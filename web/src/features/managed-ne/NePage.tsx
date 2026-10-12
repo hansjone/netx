@@ -21,7 +21,8 @@ import {
 } from "../../services/api";
 import { HelpHint } from "../../components/HelpHint";
 import { ListPager } from "../../components/ListPager";
-import { HopProxyFields, emptyHopProxyFields, type HopProxyFieldsState } from "./components/HopProxyFields";
+import { HopProxyFields } from "./components/HopProxyFields";
+import { emptyHopProxyFields, type HopProxyFieldsState } from "./lib/hopProxy";
 import { AppModalShell } from "../../components/ui/AppModalShell";
 import { FieldSelect } from "../../components/ui/FieldSelect";
 import { queryKeys } from "../../constants/queryKeys";
@@ -145,19 +146,14 @@ export function NePage() {
     },
   });
 
-  useEffect(() => {
-    if (!connectDetailRow) return;
-    const updated = listQuery.data?.items?.find((x) => x.id === connectDetailRow.id);
-    if (!updated) return;
-    if (
-      updated.connect_status !== connectDetailRow.connect_status ||
-      updated.connect_message !== connectDetailRow.connect_message ||
-      updated.connect_detail !== connectDetailRow.connect_detail ||
-      updated.connect_tested_at !== connectDetailRow.connect_tested_at
-    ) {
-      setConnectDetailRow(updated);
-    }
-  }, [listQuery.data, connectDetailRow]);
+  // The detail dialog follows the list's latest copy of the row (status polling).
+  const connectDetailLive = useMemo(
+    () =>
+      connectDetailRow
+        ? (listQuery.data?.items?.find((x) => x.id === connectDetailRow.id) ?? connectDetailRow)
+        : null,
+    [listQuery.data, connectDetailRow],
+  );
 
   const total = listQuery.data?.total ?? 0;
   const pages = pageCount(total, pageSize);
@@ -341,34 +337,30 @@ export function NePage() {
       );
     };
 
-    if (neId) {
-      void (async () => {
-        try {
-          const row = await fetchManagedNeById(neId);
-          openEdit(row);
-        } catch (err) {
-          showError(managedNeErrorText(err, t));
-        } finally {
-          clearDeepLink();
+    void (async () => {
+      try {
+        if (neId) {
+          openEdit(await fetchManagedNeById(neId));
+          return;
         }
-      })();
-      return;
-    }
-
-    const name = String(searchParams.get("name") || "").trim();
-    const ip = String(searchParams.get("ip_address") || "").trim();
-    const vendorRaw = String(searchParams.get("vendor") || "").trim();
-    const base = emptyManagedNeForm();
-    const vendor = vendorRaw || base.vendor;
-    setEditing(null);
-    setFormSeed({
-      name,
-      vendor,
-      device_type: deviceTypeForVendor(vendor),
-      ip_address: ip,
-    });
-    setModalOpen(true);
-    clearDeepLink();
+        const name = String(searchParams.get("name") || "").trim();
+        const ip = String(searchParams.get("ip_address") || "").trim();
+        const vendorRaw = String(searchParams.get("vendor") || "").trim();
+        const vendor = vendorRaw || emptyManagedNeForm().vendor;
+        setEditing(null);
+        setFormSeed({
+          name,
+          vendor,
+          device_type: deviceTypeForVendor(vendor),
+          ip_address: ip,
+        });
+        setModalOpen(true);
+      } catch (err) {
+        showError(managedNeErrorText(err, t));
+      } finally {
+        clearDeepLink();
+      }
+    })();
   }, [searchParams, setSearchParams, showError, t]);
 
   const toggleSelect = (id: string) => {
@@ -386,7 +378,7 @@ export function NePage() {
 
   const stats: ManagedNeStats | undefined = statsQuery.data;
   const statTags: string[] = stats?.tags ?? [];
-  const perTag = stats?.per_tag ?? {};
+  const perTag = useMemo(() => stats?.per_tag ?? {}, [stats]);
   const tagCardItems = useMemo(() => {
     if (!stats) return [];
     const items: Array<{ key: string; title: string; total: number; by_status: Record<string, number> }> = [];
@@ -525,7 +517,6 @@ export function NePage() {
         </div>
         {stats ? (
           <>
-            <p className="muted text-sm">{t("managedNe.stats.cardFilterHint")}</p>
             <div className="ne-stats-card__tag-cards">
               {tagCardItems.map((x) => (
                 <button
@@ -1098,7 +1089,7 @@ export function NePage() {
       </AppModalShell>
 
       <ManagedNeConnectDetailDialog
-        row={connectDetailRow}
+        row={connectDetailLive}
         onClose={() => setConnectDetailRow(null)}
         onRetestSubmitted={() => {
           void invalidateList();

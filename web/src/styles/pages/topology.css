@@ -2,7 +2,7 @@
 
 /* ---- Topology — dark sidebar + canvas (shared chrome tokens) ---- */
 .topo-page {
-  --topo-sidebar-w: 260px;
+  --topo-sidebar-w: 280px;
   display: grid;
   grid-template-columns: var(--topo-sidebar-w) 1fr;
   gap: 12px;
@@ -1243,10 +1243,11 @@
   flex-direction: column;
   gap: 2px;
   padding: 2px 0;
-  /* Allow deep indent + actions to extend; parent scroll shows a horizontal bar. */
-  width: max-content;
-  min-width: 100%;
-  max-width: none;
+  /* Rows fit the sidebar: long names ellipsize (full name on hover), counts
+     stay visible on the right — no horizontal scrollbar. */
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   box-sizing: border-box;
 }
 
@@ -1254,7 +1255,7 @@
   flex: 1 1 auto;
   min-height: 0;
   min-width: 0;
-  overflow-x: auto;
+  overflow-x: hidden;
   overflow-y: auto;
   border: 1px solid rgba(148, 163, 184, 0.22);
   border-radius: 6px;
@@ -1432,10 +1433,10 @@
 }
 
 .topo-region-list .topo-map-list__title {
-  min-width: max-content;
+  min-width: 0;
   flex: 0 1 auto;
-  overflow: visible;
-  text-overflow: clip;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 13px;
   font-weight: 650;
@@ -1449,7 +1450,8 @@
 
 .topo-region-list .topo-map-list__count {
   flex: 0 0 auto;
-  margin-left: 4px;
+  margin-left: auto;
+  padding-left: 6px;
   padding: 0;
   border-radius: 0;
   font-size: 11px;

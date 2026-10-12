@@ -12,7 +12,8 @@ import {
   fetchUmeNe,
   postUmeConnectTest,
 } from "../../../services/api";
-import { HopProxyFields, emptyHopProxyFields, type HopProxyFieldsState } from "../../managed-ne/components/HopProxyFields";
+import { HopProxyFields } from "../../managed-ne/components/HopProxyFields";
+import { emptyHopProxyFields, type HopProxyFieldsState } from "../../managed-ne/lib/hopProxy";
 import { HelpHint } from "../../../components/HelpHint";
 import { FieldSelect } from "../../../components/ui/FieldSelect";
 import { queryKeys } from "../../../constants/queryKeys";

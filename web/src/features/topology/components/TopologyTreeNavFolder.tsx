@@ -112,7 +112,7 @@ function ViewRow({
             >
               <LayerGlyph role={isPhysical ? "core" : "aggregation"} size={13} />
             </span>
-            <span className="topo-map-list__title">
+            <span className="topo-map-list__title" title={displayViewName(v.name, t)}>
               {displayViewName(v.name, t)}
               {viewActive && dirty ? " *" : ""}
             </span>
@@ -249,7 +249,7 @@ export function TopologyTreeNavFolder({
             <span className="topo-region-list__glyph" aria-hidden="true">
               <RegionGlyph size={14} />
             </span>
-            <span className="topo-map-list__title">{regionDisplayName(folder, t)}</span>
+            <span className="topo-map-list__title" title={regionDisplayName(folder, t)}>{regionDisplayName(folder, t)}</span>
             <span className="topo-map-list__count">{formatNeCount(folderNeCount(folder))}</span>
           </span>
         </button>

@@ -4,7 +4,7 @@ export const WORLD_MAP_ENABLED = false;
 export const LAST_LEAF_KEY = "netx.topology.lastLeafViewId";
 export const TREE_EXPAND_KEY = "netx.topology.treeExpanded";
 export const SIDEBAR_WIDTH_KEY = "netx.topology.sidebarWidth";
-export const SIDEBAR_WIDTH_DEFAULT = 260;
+export const SIDEBAR_WIDTH_DEFAULT = 280;
 export const SIDEBAR_WIDTH_MIN = 180;
 export const SIDEBAR_WIDTH_MAX = 560;
 

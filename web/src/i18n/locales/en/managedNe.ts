@@ -44,7 +44,6 @@ const managedNe = {
     loadingIds: "Loading…",
     noMatchingNe: "No NEs in the selected scope",
     scopeCount: "Applies to {{n}} NEs",
-    cardFilterHint: "Click a card to filter the list below by tag",
   },
   col: {
     name: "Name",

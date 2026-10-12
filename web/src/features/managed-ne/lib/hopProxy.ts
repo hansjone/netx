@@ -163,3 +163,30 @@ export function patchHopVendorChange(
 }
 
 export { ciscoHopTemplate, huaweiHopTemplate, isAutoHopTemplate, zteHopTemplate };
+
+/** Form state shared by the hop/proxy fields (NE form, UME CLI connect). */
+export type HopProxyFieldsState = {
+  hop_vendor: HopVendor;
+  hop_host: string;
+  hop_port: number;
+  hop_protocol: string;
+  hop_username: string;
+  hop_password: string;
+  hop_command_template: string;
+  hop_vrf: string;
+  hop_target_auth_mode: HopTargetAuthMode;
+  hop_enter_system_view: boolean;
+};
+
+export const emptyHopProxyFields = (): HopProxyFieldsState => ({
+  hop_vendor: "zte",
+  hop_host: "",
+  hop_port: 22,
+  hop_protocol: "ssh",
+  hop_username: "",
+  hop_password: "",
+  hop_command_template: defaultHopTemplate("zte", "ssh", ""),
+  hop_vrf: "",
+  hop_target_auth_mode: "bastion_managed",
+  hop_enter_system_view: false,
+});

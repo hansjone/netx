@@ -1280,3 +1280,14 @@ button.ne-tag-card.is-active {
   padding: 8px 10px;
   background: rgb(var(--nx-accent-rgb) / 0.06);
 }
+
+/* NE list: row actions stay on one line (the table scrolls sideways if it must)
+   instead of wrapping and doubling the row height. */
+.ne-page .pt-list-table .pt-list-actions {
+  flex-wrap: nowrap;
+  gap: 6px;
+}
+
+.ne-page .pt-list-table td:has(> .pt-list-actions) {
+  white-space: nowrap;
+}

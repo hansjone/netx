@@ -43,7 +43,6 @@ const managedNe = {
     loadingIds: "加载中…",
     noMatchingNe: "所选范围内没有网元",
     scopeCount: "将作用于 {{n}} 台网元",
-    cardFilterHint: "点击卡片可按标签筛选下方列表",
   },
   col: {
     name: "名称",
