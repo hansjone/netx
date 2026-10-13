@@ -3404,6 +3404,27 @@ Management Addresses:
         self.assertEqual(full["detail"], "full")
         self.assertIn("attrs", full["paths"][0]["nodes"][0])
 
+        # A parallel A—B link must not spawn a duplicate 1-hop path.
+        svc.upsert_fabric_edge(
+            self.db,
+            a_node_id=nodes[1].id,
+            b_node_id=nodes[0].id,
+            a_port="Gi0/9",
+            b_port="Gi0/9",
+            source="manual",
+        )
+        self.db.commit()
+        dedup = svc.find_fabric_paths(
+            self.db,
+            from_managed_ne_id=nes[0].id,
+            to_managed_ne_id=nes[1].id,
+            max_paths=3,
+            max_hops=6,
+        )
+        self.assertEqual([p["hops"] for p in dedup["paths"]], [1, 2])
+        self.assertEqual(dedup["paths"][0]["edges"][0]["parallel_links"], 2)
+        self.assertNotIn("parallel_links", dedup["paths"][1]["edges"][0])
+
 
 if __name__ == "__main__":
     unittest.main()

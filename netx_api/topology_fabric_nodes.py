@@ -620,9 +620,13 @@ def find_fabric_paths(
         if len(edge_path) >= max_hops:
             continue
         _ensure_adj({node})
+        # Parallel links (LAG members / dual fibers) between the same two NEs are one hop:
+        # expanding each would return near-identical paths that differ only by port.
+        seen_nbrs: set[str] = set()
         for nbr, eid in adj_cache.get(node, []):
-            if nbr in visited:
+            if nbr in visited or nbr in seen_nbrs:
                 continue
+            seen_nbrs.add(nbr)
             explored += 1
             new_path = edge_path + [eid]
             if nbr == to_id:
@@ -650,10 +654,15 @@ def find_fabric_paths(
             "vendor": n.vendor or "",
         }
 
+    def _parallel_count(e: TopoFabricEdge) -> int:
+        # Only expanded nodes have adjacency loaded; the path's last node never is.
+        src, dst = (e.a_node_id, e.b_node_id) if e.a_node_id in adj_loaded else (e.b_node_id, e.a_node_id)
+        return sum(1 for nbr, _ in adj_cache.get(src, []) if nbr == dst) or 1
+
     def _edge_summary(e: TopoFabricEdge) -> dict[str, Any]:
         a_node = node_map.get(e.a_node_id)
         b_node = node_map.get(e.b_node_id)
-        return {
+        out = {
             "a_name": (a_node.name if a_node else "") or "",
             "b_name": (b_node.name if b_node else "") or "",
             "a_ip": (a_node.ip if a_node else "") or "",
@@ -662,6 +671,10 @@ def find_fabric_paths(
             "b_port": e.b_port or "",
             "status": _normalize_edge_status(e.status or "active"),
         }
+        parallel = _parallel_count(e)
+        if parallel > 1:
+            out["parallel_links"] = parallel
+        return out
 
     def _path_node_ids(edge_ids: list[str]) -> list[str]:
         ids = [from_id]

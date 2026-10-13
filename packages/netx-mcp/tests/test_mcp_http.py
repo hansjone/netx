@@ -74,7 +74,7 @@ def test_call_aggregate_nms_alarms_group_by_routes_to_raw() -> None:
         params = mock_http.call_args[1]["params"]
         assert params["group_by"] == "alarm_host_name"
         assert params["severity"] == "critical"
-        assert params["limit"] == "20"
+        assert params["limit"] == 20
         payload = json.loads(out["content"][0]["text"])
         assert payload["ok"] is True
 
@@ -285,6 +285,14 @@ def test_stdio_initialize_and_tools_list() -> None:
         assert msg.get("id") == 1
         assert "result" in msg
 
+        # Notifications must not be answered; the next line belongs to ping.
+        for note in ("notifications/initialized", "notifications/cancelled"):
+            proc.stdin.write(json.dumps({"jsonrpc": "2.0", "method": note, "params": {}}) + "\n")
+        proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": 9, "method": "ping"}) + "\n")
+        proc.stdin.flush()
+        pong = json.loads(proc.stdout.readline())
+        assert pong == {"jsonrpc": "2.0", "id": 9, "result": {}}
+
         proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}) + "\n")
         proc.stdin.flush()
         line2 = proc.stdout.readline()
@@ -297,3 +305,92 @@ def test_stdio_initialize_and_tools_list() -> None:
     finally:
         proc.kill()
         proc.wait(timeout=5)
+
+
+def test_bad_integer_arg_is_tool_error_not_crash() -> None:
+    with patch("netx_mcp.http_tools.http_json") as mock_http:
+        out = call_http_tool("queryNmsAlarms", {"page": "two"})
+        mock_http.assert_not_called()
+    assert out["isError"] is True
+    payload = json.loads(out["content"][0]["text"])
+    assert payload["error"] == "invalid_argument"
+    assert "page" in payload["detail"]
+
+
+def test_query_nms_alarms_pages_past_two_and_normalizes_severity() -> None:
+    with patch("netx_mcp.http_tools.http_json") as mock_http:
+        mock_http.return_value = {
+            "ok": True,
+            "data": {"items": [{"ne_id": "u-1", "ne_name": "ME{u-1}", "host_name": "H1"}]},
+        }
+        out = call_http_tool("queryNmsAlarms", {"page": 5, "severity": "Critical", "is_cleared": "False"})
+        params = mock_http.call_args[1]["params"]
+    assert params["page"] == 5
+    assert params["severity"] == "critical"
+    assert params["is_cleared"] == "False"
+    row = json.loads(out["content"][0]["text"])["data"]["items"][0]
+    assert "ne_name" not in row
+    assert row["host_name"] == "H1"
+
+
+def test_nested_api_failure_is_marked_error() -> None:
+    with patch("netx_mcp.http_tools.http_json") as mock_http:
+        mock_http.return_value = {"ok": True, "data": {"ok": False, "error": "job_not_found"}}
+        out = call_http_tool("getNeExecJob", {"job_id": "nope"})
+    assert out.get("isError") is True
+
+
+def test_raw_query_strips_echoed_field_lists() -> None:
+    with patch("netx_mcp.http_tools.http_json") as mock_http:
+        mock_http.return_value = {
+            "ok": True,
+            "data": {
+                "items": [],
+                "meta": {"available_fields": ["a"], "order_by_allowed": ["b"], "time_filter_field": "last_seen_at"},
+            },
+        }
+        out = call_http_tool("queryNmsAlarmsRaw", {"field_preset": "brief"})
+    meta = json.loads(out["content"][0]["text"])["data"]["meta"]
+    assert meta == {"time_filter_field": "last_seen_at"}
+
+
+def test_get_nms_ne_resolves_host_name() -> None:
+    calls: list[str] = []
+
+    def fake(method: str, path: str, params: dict | None = None) -> dict:
+        calls.append(path)
+        if path == "/v1/ume/inventory/ne":
+            return {"ok": True, "data": {"items": [{"ne_id": "uuid-1", "host_name": "MDN-X-AN1"}]}}
+        if path.endswith("/uuid-1"):
+            return {"ok": True, "data": {"ne_id": "uuid-1"}}
+        return {"ok": False, "error": "netx_http_404", "detail": "ume_ne_not_found"}
+
+    with patch("netx_mcp.http_tools.http_json", side_effect=fake):
+        out = call_http_tool("getNmsNe", {"ne_id": "mdn-x-an1"})
+    assert json.loads(out["content"][0]["text"])["data"]["ne_id"] == "uuid-1"
+    assert calls[-1] == "/v1/ume/inventory/ne/uuid-1"
+
+
+def test_cli_targets_and_paths_use_nms_naming() -> None:
+    with patch("netx_mcp.http_tools.http_json") as mock_http:
+        mock_http.return_value = {"ok": True, "data": {"items": [{"source": "ume", "ume_ne_id": "u-1"}]}}
+        out = call_http_tool("listCliTargets", {"source": "nms"})
+    row = json.loads(out["content"][0]["text"])["data"]["items"][0]
+    assert row == {"source": "nms", "nms_ne_id": "u-1"}
+
+    with patch("netx_mcp.http_tools.http_post_json") as mock_post:
+        mock_post.return_value = {"ok": True, "data": {"paths": [{"nodes": [{"name": "A", "ume_ne_id": "u-1"}]}]}}
+        out = call_http_tool("findTopologyPaths", {"from_nms_ne_id": "u-1", "to_nms_ne_id": "u-2"})
+    node = json.loads(out["content"][0]["text"])["data"]["paths"][0]["nodes"][0]
+    assert node == {"name": "A", "nms_ne_id": "u-1"}
+
+
+def test_managed_ne_list_drops_disabled_hop_noise() -> None:
+    with patch("netx_mcp.http_tools.http_json") as mock_http:
+        mock_http.return_value = {
+            "ok": True,
+            "data": {"items": [{"id": "m1", "hop_enabled": False, "hop_vrf": "", "connect_detail": "long"}]},
+        }
+        out = call_http_tool("listManagedNe", {"connect_status": "pass"})
+    row = json.loads(out["content"][0]["text"])["data"]["items"][0]
+    assert row == {"id": "m1", "hop_enabled": False}

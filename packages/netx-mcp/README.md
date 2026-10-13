@@ -38,13 +38,15 @@ python -m netx_mcp
 
 [`mcp.json`](./mcp.json) — `command: python`，`args: ["-m", "netx_mcp"]`，`env` 见文件。
 
-## 工具（14）— skill 组 **ops**（`netx-ops`）
+## 工具（15）— skill 组 **ops**（`netx-ops`）
 
 **NMS**（模型面通用名；当前适配器 zte-ume，REST 仍 `/v1/ume/*`）：  
 `queryNmsAlarms`, `aggregateNmsAlarms`, `runNmsDiagnostics`, `queryNmsNeInventory`, `getNmsNe`, `queryNmsAlarmsRaw`, `aggregateNmsAlarmsRaw`, `listNmsAlarmFields`, `sqlQueryNms`
 
 **Managed CLI + paths**（问「能否登录」必须走这里，不要只查 inventory）：  
 `listManagedNe`, `getManagedNe`, `execManagedNe`, `getNeExecJob`, `listCliTargets`, `findTopologyPaths`
+
+0.3.1：`getNmsNe` 可直接传 host_name/IP；输出统一 `nms_ne_id` / `source=nms`；参数类型错误返回工具错误而非协议崩溃。
 
 参数优先 `nms_ne_id` / `nms_ne_ids`（保留 `ume_*` 别名）。
 

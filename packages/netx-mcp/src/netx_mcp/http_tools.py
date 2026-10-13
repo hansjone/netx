@@ -75,6 +75,80 @@ def _should_run_exec_async(args: dict[str, Any]) -> bool:
     return _count_exec_ne_targets(args) >= min_n
 
 
+class ToolArgError(ValueError):
+    """Bad tool argument; surfaced to the model as a tool error (not a JSON-RPC crash)."""
+
+
+def _int_arg(args: dict[str, Any], key: str, default: int, lo: int, hi: int) -> int:
+    raw = args.get(key)
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return default
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        raise ToolArgError(f"{key} must be an integer, got {raw!r}") from None
+    return max(lo, min(hi, val))
+
+
+def _severity(args: dict[str, Any]) -> str:
+    # Stored values are lowercase (critical/major/minor/warning); exact match server-side.
+    return str(args.get("severity") or "").strip().lower()
+
+
+def _is_me_placeholder(ne_name: Any, ne_id: Any) -> bool:
+    return bool(ne_id) and str(ne_name or "") == f"ME{{{ne_id}}}"
+
+
+def _compact_rows(out: dict[str, Any], *, name_key: str, id_key: str) -> dict[str, Any]:
+    """Drop ZTE ``ME{<uuid>}`` ne_name placeholders: they repeat ne_id and carry no meaning."""
+    data = out.get("data") if isinstance(out, dict) else None
+    items = data.get("items") if isinstance(data, dict) else None
+    if isinstance(items, list):
+        for row in items:
+            if isinstance(row, dict) and _is_me_placeholder(row.get(name_key), row.get(id_key)):
+                row.pop(name_key, None)
+    return out
+
+
+def _strip_meta_field_lists(out: dict[str, Any]) -> dict[str, Any]:
+    """Raw endpoints echo ~40 field names per call; listNmsAlarmFields already serves them."""
+    data = out.get("data") if isinstance(out, dict) else None
+    meta = data.get("meta") if isinstance(data, dict) else None
+    if isinstance(meta, dict):
+        for k in ("available_fields", "group_by_allowed", "order_by_allowed"):
+            meta.pop(k, None)
+    return out
+
+
+def _nms_naming(row: dict[str, Any]) -> None:
+    """REST still speaks ume_*; model-facing params are nms_* -- keep output consistent."""
+    if "ume_ne_id" in row:
+        row["nms_ne_id"] = row.pop("ume_ne_id")
+    if row.get("source") == "ume":
+        row["source"] = "nms"
+
+
+_HOP_KEYS = (
+    "hop_vendor",
+    "hop_host",
+    "hop_port",
+    "hop_protocol",
+    "hop_username",
+    "hop_command_template",
+    "hop_vrf",
+    "hop_target_auth_mode",
+    "hop_enter_system_view",
+)
+
+
+def _compact_managed_ne(row: dict[str, Any], *, keep_detail: bool) -> None:
+    if row.get("hop_enabled") is False:
+        for k in _HOP_KEYS:
+            row.pop(k, None)
+    if not keep_detail:
+        row.pop("connect_detail", None)
+
+
 UME_RAW_GROUP_FIELDS = [
     "alarm_alarm_key",
     "alarm_host_name",
@@ -121,7 +195,6 @@ _UME_RAW_FIELD_PRESETS: dict[str, list[str]] = {
         "alarm_last_seen_at",
         "ne_host_name",
         "ne_user_label",
-        "ne_ne_name",
         "ne_ip_address",
         "ne_exists",
     ],
@@ -137,7 +210,6 @@ _UME_RAW_FIELD_PRESETS: dict[str, list[str]] = {
         "alarm_last_seen_at",
         "ne_host_name",
         "ne_user_label",
-        "ne_ne_name",
         "ne_ip_address",
         "ne_connection_status",
         "ne_exists",
@@ -148,7 +220,6 @@ _UME_RAW_FIELD_PRESETS: dict[str, list[str]] = {
         "alarm_perceived_severity",
         "alarm_last_seen_at",
         "ne_user_label",
-        "ne_ne_name",
         "ne_ip_address",
         "ne_ipv6_address",
         "ne_device_level",
@@ -163,13 +234,14 @@ _UME_RAW_FIELD_PRESETS: dict[str, list[str]] = {
 
 
 def _query_ume_alarms(args: dict[str, Any]) -> dict[str, Any]:
-    page = max(1, int(args.get("page") or 1))
-    if page > 2:
-        page = 2
-    page_size = min(500, max(1, int(args.get("page_size") or 50)))
-    params: dict[str, Any] = {"page": page, "page_size": page_size}
-    if str(args.get("severity") or "").strip():
-        params["severity"] = str(args.get("severity")).strip()
+    params: dict[str, Any] = {
+        "page": _int_arg(args, "page", 1, 1, 100000),
+        "page_size": _int_arg(args, "page_size", 50, 1, 500),
+    }
+    if _severity(args):
+        params["severity"] = _severity(args)
+    if str(args.get("is_cleared") or "").strip():
+        params["is_cleared"] = str(args.get("is_cleared")).strip()
     keyword = str(args.get("keyword") or "").strip()
     ne_name = str(args.get("ne_name") or "").strip()
     if keyword:
@@ -183,7 +255,7 @@ def _query_ume_alarms(args: dict[str, Any]) -> dict[str, Any]:
     for k in ("time_from", "time_to"):
         if str(args.get(k) or "").strip():
             params[k] = str(args.get(k)).strip()
-    return http_json("GET", "/v1/ume/alarms", params=params)
+    return _compact_rows(http_json("GET", "/v1/ume/alarms", params=params), name_key="ne_name", id_key="ne_id")
 
 
 def _aggregate_ume_alarms(args: dict[str, Any]) -> dict[str, Any]:
@@ -192,11 +264,12 @@ def _aggregate_ume_alarms(args: dict[str, Any]) -> dict[str, Any]:
     if group_by:
         return _aggregate_ume_alarms_raw(args)
     # Default top 50 named NEs — missing host buckets reported separately.
-    top_ne = max(0, min(500, int(args.get("top_ne") if args.get("top_ne") is not None else 50)))
-    params: dict[str, Any] = {"top_ne": top_ne}
+    params: dict[str, Any] = {"top_ne": _int_arg(args, "top_ne", 50, 0, 500)}
     if "exclude_missing_host" in args:
         params["exclude_missing_host"] = bool(args.get("exclude_missing_host"))
-    for k in ("severity", "time_from", "time_to"):
+    if _severity(args):
+        params["severity"] = _severity(args)
+    for k in ("time_from", "time_to"):
         if str(args.get(k) or "").strip():
             params[k] = str(args.get(k)).strip()
     return http_json("GET", "/v1/ume/alarms/aggregate", params=params)
@@ -208,26 +281,58 @@ def _run_ume_diagnostics(args: dict[str, Any]) -> dict[str, Any]:
 
 
 def _query_ume_ne_inventory(args: dict[str, Any]) -> dict[str, Any]:
-    page = max(1, int(args.get("page") or 1))
-    page_size = min(500, max(1, int(args.get("page_size") or 50)))
-    params: dict[str, Any] = {"page": page, "page_size": page_size}
+    params: dict[str, Any] = {
+        "page": _int_arg(args, "page", 1, 1, 100000),
+        "page_size": _int_arg(args, "page_size", 50, 1, 500),
+    }
     if str(args.get("keyword") or "").strip():
         params["keyword"] = str(args.get("keyword")).strip()
-    return http_json("GET", "/v1/ume/inventory/ne", params=params)
+    return _compact_rows(http_json("GET", "/v1/ume/inventory/ne", params=params), name_key="ne_name", id_key="ne_id")
+
+
+def _looks_like_uuid(text: str) -> bool:
+    parts = text.split("-")
+    return len(parts) == 5 and all(p and all(c in "0123456789abcdefABCDEF" for c in p) for p in parts)
 
 
 def _get_ume_ne(args: dict[str, Any]) -> dict[str, Any]:
     ne_id = str(args.get("ne_id") or "").strip()
     if not ne_id:
         return {"ok": False, "error": "ne_id_required", "error_code": "ne_id_required"}
-    return http_json("GET", f"/v1/ume/inventory/ne/{quote_ne_id(ne_id)}", params=None)
+    out = http_json("GET", f"/v1/ume/inventory/ne/{quote_ne_id(ne_id)}", params=None)
+    if out.get("ok") or out.get("error") != "netx_http_404" or _looks_like_uuid(ne_id):
+        return out
+    # Agents usually know the host_name (alarms show it), not the UUID: resolve it.
+    found = http_json("GET", "/v1/ume/inventory/ne", params={"keyword": ne_id, "page": 1, "page_size": 20})
+    items = ((found.get("data") or {}).get("items") or []) if found.get("ok") else []
+    needle = ne_id.lower()
+    exact = [
+        r
+        for r in items
+        if isinstance(r, dict)
+        and needle in {str(r.get(k) or "").lower() for k in ("host_name", "user_label", "ip_address", "ne_name")}
+    ]
+    if len(exact) == 1 and exact[0].get("ne_id"):
+        return http_json("GET", f"/v1/ume/inventory/ne/{quote_ne_id(str(exact[0]['ne_id']))}", params=None)
+    out = dict(out)
+    out["hint"] = "ne_id is the NMS UUID. Resolve host_name/IP via queryNmsNeInventory(keyword=...)."
+    if items:
+        out["candidates"] = [
+            {"ne_id": r.get("ne_id"), "host_name": r.get("host_name"), "ip_address": r.get("ip_address")}
+            for r in items[:10]
+            if isinstance(r, dict)
+        ]
+    return out
 
 
 def _query_ume_alarms_raw(args: dict[str, Any]) -> dict[str, Any]:
-    page = max(1, int(args.get("page") or 1))
-    page_size = min(500, max(1, int(args.get("page_size") or 50)))
-    params: dict[str, Any] = {"page": page, "page_size": page_size}
-    for k in ("severity", "is_cleared", "ne_id", "event_type", "keyword", "time_from", "time_to", "order_by", "order"):
+    params: dict[str, Any] = {
+        "page": _int_arg(args, "page", 1, 1, 100000),
+        "page_size": _int_arg(args, "page_size", 50, 1, 500),
+    }
+    if _severity(args):
+        params["severity"] = _severity(args)
+    for k in ("is_cleared", "ne_id", "event_type", "keyword", "time_from", "time_to", "order_by", "order"):
         v = str(args.get(k) or "").strip()
         if v:
             params[k] = v
@@ -240,7 +345,15 @@ def _query_ume_alarms_raw(args: dict[str, Any]) -> dict[str, Any]:
         fields = list(_UME_RAW_FIELD_PRESETS.get(preset) or [])
     if fields:
         params["select_fields"] = ",".join(fields)
-    return http_json("GET", "/v1/ume/alarms/raw", params=params)
+    out = http_json("GET", "/v1/ume/alarms/raw", params=params)
+    data = out.get("data") if isinstance(out.get("data"), dict) else None
+    if data and isinstance(data.get("items"), list):
+        for row in data["items"]:
+            if isinstance(row, dict) and _is_me_placeholder(
+                row.get("ne_ne_name"), row.get("ne_ne_id") or row.get("alarm_ne_id")
+            ):
+                row.pop("ne_ne_name", None)
+    return _strip_meta_field_lists(out)
 
 
 def _aggregate_ume_alarms_raw(args: dict[str, Any]) -> dict[str, Any]:
@@ -248,7 +361,6 @@ def _aggregate_ume_alarms_raw(args: dict[str, Any]) -> dict[str, Any]:
     for k in (
         "group_by",
         "group_by2",
-        "severity",
         "is_cleared",
         "ne_id",
         "event_type",
@@ -263,9 +375,13 @@ def _aggregate_ume_alarms_raw(args: dict[str, Any]) -> dict[str, Any]:
         sv = str(v).strip()
         if sv:
             params[k] = sv
+    if _severity(args):
+        params["severity"] = _severity(args)
+    if "limit" in params:
+        params["limit"] = _int_arg(args, "limit", 200, 1, 2000)
     if "exclude_missing_host" in args:
         params["exclude_missing_host"] = bool(args.get("exclude_missing_host"))
-    return http_json("GET", "/v1/ume/alarms/aggregate/raw", params=params)
+    return _strip_meta_field_lists(http_json("GET", "/v1/ume/alarms/aggregate/raw", params=params))
 
 
 def _list_ume_alarm_fields(args: dict[str, Any]) -> dict[str, Any]:
@@ -275,8 +391,8 @@ def _list_ume_alarm_fields(args: dict[str, Any]) -> dict[str, Any]:
 
 def _sql_query_ume(args: dict[str, Any]) -> dict[str, Any]:
     sql = str(args.get("sql") or "").strip()
-    limit = max(1, min(2000, int(args.get("limit") or 200)))
-    statement_timeout_ms = max(0, min(30000, int(args.get("statement_timeout_ms") or 0)))
+    limit = _int_arg(args, "limit", 200, 1, 2000)
+    statement_timeout_ms = _int_arg(args, "statement_timeout_ms", 0, 0, 30000)
     if not sql:
         return {"ok": False, "error": "sql_required"}
     return http_post_json(
@@ -287,13 +403,18 @@ def _sql_query_ume(args: dict[str, Any]) -> dict[str, Any]:
 
 
 def _list_managed_ne(args: dict[str, Any]) -> dict[str, Any]:
-    page = max(1, int(args.get("page") or 1))
-    page_size = min(100, max(1, int(args.get("page_size") or 20)))
+    page = _int_arg(args, "page", 1, 1, 100000)
+    page_size = _int_arg(args, "page_size", 20, 1, 100)
     keyword = str(args.get("keyword") or "").strip()
     vendor = str(args.get("vendor") or "").strip()
     connect_status = str(args.get("connect_status") or "").strip()
     if not (keyword or vendor or connect_status):
-        return {"ok": False, "error": "managed_ne_filter_required", "error_code": "managed_ne_filter_required"}
+        return {
+            "ok": False,
+            "error": "managed_ne_filter_required",
+            "error_code": "managed_ne_filter_required",
+            "hint": "Pass keyword (name/IP, >=2 chars), vendor, or connect_status (e.g. pass).",
+        }
     if keyword and len(keyword) < 2:
         return {"ok": False, "error": "managed_ne_keyword_too_short", "error_code": "managed_ne_keyword_too_short"}
     params: dict[str, Any] = {"page": page, "page_size": page_size}
@@ -303,7 +424,13 @@ def _list_managed_ne(args: dict[str, Any]) -> dict[str, Any]:
         params["vendor"] = vendor
     if connect_status:
         params["connect_status"] = connect_status
-    return http_json("GET", "/v1/managed-ne", params=params)
+    out = http_json("GET", "/v1/managed-ne", params=params)
+    items = (out.get("data") or {}).get("items") if out.get("ok") else None
+    if isinstance(items, list):
+        for row in items:
+            if isinstance(row, dict):
+                _compact_managed_ne(row, keep_detail=False)
+    return out
 
 
 def _first_str(*vals: Any) -> str:
@@ -330,7 +457,9 @@ def _get_managed_ne(args: dict[str, Any]) -> dict[str, Any]:
             "example": {"ne_id": "<managed-ne-uuid-from-listManagedNe>"},
         }
     # NMS ne_id is typically a UUID; managed NE may differ. Soft-guide when callers mix them.
-    out = http_json("GET", f"/v1/managed-ne/{ne_id}", params=None)
+    out = http_json("GET", f"/v1/managed-ne/{quote_ne_id(ne_id)}", params=None)
+    if out.get("ok") and isinstance(out.get("data"), dict):
+        _compact_managed_ne(out["data"], keep_detail=True)
     if isinstance(out, dict) and out.get("ok") is False:
         detail = str(out.get("detail") or out.get("error") or "")
         low = detail.lower()
@@ -391,11 +520,9 @@ def _exec_managed_ne(args: dict[str, Any]) -> dict[str, Any]:
             if len(shared_commands) > exec_max_commands():
                 return {"ok": False, "error": "too_many_commands", "error_code": "too_many_commands"}
             body["commands"] = shared_commands
-        rts = args.get("read_timeout_sec")
-        body["read_timeout_sec"] = int(rts) if rts is not None else 60
-        conc = args.get("concurrency")
-        if conc is not None:
-            body["concurrency"] = int(conc)
+        body["read_timeout_sec"] = _int_arg(args, "read_timeout_sec", 60, 10, 120)
+        if args.get("concurrency") is not None:
+            body["concurrency"] = _int_arg(args, "concurrency", 4, 1, 8)
         if want_async:
             out = http_post_json("/v1/managed-ne/exec-jobs", body, timeout=60.0)
             if not out.get("ok"):
@@ -434,8 +561,7 @@ def _exec_managed_ne(args: dict[str, Any]) -> dict[str, Any]:
     if nms_ne_id:
         body["ume_ne_id"] = nms_ne_id
     # Default 60s matches netx API default; slow show commands often exceed 30s.
-    rts = args.get("read_timeout_sec")
-    body["read_timeout_sec"] = int(rts) if rts is not None else 60
+    body["read_timeout_sec"] = _int_arg(args, "read_timeout_sec", 60, 10, 120)
     if want_async:
         out = http_post_json("/v1/managed-ne/exec-jobs", body, timeout=60.0)
         if not out.get("ok"):
@@ -464,16 +590,23 @@ def _get_ne_exec_job(args: dict[str, Any]) -> dict[str, Any]:
 
 
 def _list_cli_targets(args: dict[str, Any]) -> dict[str, Any]:
-    page = max(1, int(args.get("page") or 1))
-    page_size = min(500, max(1, int(args.get("page_size") or 50)))
-    params: dict[str, Any] = {"page": page, "page_size": page_size}
+    params: dict[str, Any] = {
+        "page": _int_arg(args, "page", 1, 1, 100000),
+        "page_size": _int_arg(args, "page_size", 50, 1, 500),
+    }
     source = str(args.get("source") or "").strip()
     if source:
         # API still uses source=ume; accept model-facing "nms".
         params["source"] = "ume" if source.lower() == "nms" else source
     if str(args.get("keyword") or "").strip():
         params["keyword"] = str(args.get("keyword")).strip()
-    return http_json("GET", "/v1/cli/targets", params=params)
+    out = http_json("GET", "/v1/cli/targets", params=params)
+    items = (out.get("data") or {}).get("items") if out.get("ok") else None
+    if isinstance(items, list):
+        for row in items:
+            if isinstance(row, dict):
+                _nms_naming(row)
+    return out
 
 
 def _find_topology_paths(args: dict[str, Any]) -> dict[str, Any]:
@@ -489,8 +622,8 @@ def _find_topology_paths(args: dict[str, Any]) -> dict[str, Any]:
     if detail not in {"summary", "full"}:
         detail = "summary"
     body: dict[str, Any] = {
-        "max_paths": max(1, min(10, int(args.get("max_paths") or 3))),
-        "max_hops": max(1, min(12, int(args.get("max_hops") or 6))),
+        "max_paths": _int_arg(args, "max_paths", 3, 1, 10),
+        "max_hops": _int_arg(args, "max_hops", 6, 1, 12),
         "layer": str(args.get("layer") or "physical").strip() or "physical",
         "detail": detail,
     }
@@ -502,7 +635,14 @@ def _find_topology_paths(args: dict[str, Any]) -> dict[str, Any]:
         body["to_ume_ne_id"] = to_uid
     else:
         body["to_managed_ne_id"] = to_mid
-    return http_post_json("/v1/topology/fabric/paths", body, timeout=30.0)
+    out = http_post_json("/v1/topology/fabric/paths", body, timeout=30.0)
+    paths = (out.get("data") or {}).get("paths") if out.get("ok") else None
+    if isinstance(paths, list):
+        for p in paths:
+            for node in (p.get("nodes") or []) if isinstance(p, dict) else []:
+                if isinstance(node, dict):
+                    _nms_naming(node)
+    return out
 
 
 HTTP_MCP_TOOLS: list[dict[str, Any]] = [
@@ -520,7 +660,8 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "severity": {"type": "string"},
+                "severity": {"type": "string", "description": "critical/major/minor/warning"},
+                "is_cleared": {"type": "string", "description": "\"False\" = active only; \"True\" = cleared."},
                 "ne_id": {"type": "string", "description": "Filter only; do not show UUID to users"},
                 "host_name": {"type": "string", "description": "Filter by NE host_name"},
                 "ne_name": {"type": "string", "description": "Legacy alias mapped to keyword"},
@@ -626,10 +767,10 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "getNmsNe",
-        "description": "Get single NMS NE detail by ne_id (UUID).",
+        "description": "Get single NMS NE detail by ne_id (UUID); exact host_name / user_label / IP also resolve.",
         "inputSchema": {
             "type": "object",
-            "properties": {"ne_id": {"type": "string"}},
+            "properties": {"ne_id": {"type": "string", "description": "NMS UUID, or exact host_name / IP."}},
             "required": ["ne_id"],
             "additionalProperties": False,
         },
@@ -907,7 +1048,8 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
     {
         "name": "findTopologyPaths",
         "description": (
-            "Find up to max_paths simple paths between two fabric nodes for troubleshooting. "
+            "Find up to max_paths simple paths between two fabric nodes for troubleshooting "
+            "(parallel links between the same NEs count as one hop; see edges[].parallel_links). "
             "For each endpoint provide exactly one of nms_ne_id (from NMS alarm ne_id; alias "
             "from_ume_ne_id) or managed_ne_id — resolved to fabric node internally. Returns "
             "shortest paths first with compact label + node/edge summary (detail=summary default). "
@@ -1014,4 +1156,8 @@ def call_http_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
     fn = _HANDLERS.get(str(name or "").strip())
     if not fn:
         raise ValueError(f"unknown tool: {name}")
-    return mcp_from_handler_result(fn(dict(args or {})))
+    try:
+        result = fn(dict(args or {}))
+    except ToolArgError as exc:
+        result = {"ok": False, "error": "invalid_argument", "error_code": "invalid_argument", "detail": str(exc)}
+    return mcp_from_handler_result(result)

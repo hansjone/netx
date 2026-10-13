@@ -12,9 +12,9 @@ import pytest
 from netx_mcp.http_tools import HTTP_MCP_TOOLS, call_http_tool
 
 
-def test_http_mcp_tool_list_has_fourteen_tools() -> None:
+def test_http_mcp_tool_list_has_fifteen_tools() -> None:
     names = [str(t.get("name") or "") for t in HTTP_MCP_TOOLS]
-    assert len(names) == 14
+    assert len(names) == 15
     assert "queryNmsAlarms" in names
     assert "queryNmsAlarmsRaw" in names
     assert "execManagedNe" in names
@@ -92,7 +92,7 @@ def test_stdio_initialize_and_tools_list() -> None:
     assert "error" not in list_resp, list_resp
     tools = list_resp["result"]["tools"]
     names = {t["name"] for t in tools}
-    assert len(tools) == 14
+    assert len(tools) == 15
     assert "queryNmsAlarms" in names
     assert "findTopologyPaths" in names
 

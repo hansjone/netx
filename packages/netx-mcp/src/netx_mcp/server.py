@@ -43,6 +43,15 @@ def _err(rid: Any, code: int, message: str) -> None:
 _UNSET = object()
 
 
+def _version() -> str:
+    try:
+        from importlib.metadata import version
+
+        return version("netx-mcp")
+    except Exception:
+        return "0.0.0"
+
+
 def _fetch_scopes() -> list[str] | None:
     """Return granted scopes from /v1/auth/me, or None if the call fails (show all tools)."""
     try:
@@ -81,6 +90,7 @@ def run_stdio_loop() -> None:
         except Exception:
             continue
         rid = req.get("id")
+        is_notification = "id" not in req
         method = str(req.get("method") or "")
         params = req.get("params") if isinstance(req.get("params"), dict) else {}
 
@@ -91,11 +101,15 @@ def run_stdio_loop() -> None:
                     {
                         "protocolVersion": "2024-11-05",
                         "capabilities": {"tools": {}},
-                        "serverInfo": {"name": "netx-mcp", "version": "0.3.0", "mode": "http"},
+                        "serverInfo": {"name": "netx-mcp", "version": _version(), "mode": "http"},
                     },
                 )
                 continue
-            if method == "notifications/initialized":
+            if is_notification:
+                # JSON-RPC: notifications (initialized, cancelled, ...) never get a response.
+                continue
+            if method == "ping":
+                _ok(rid, {})
                 continue
             if method == "tools/list":
                 _ok(rid, {"tools": tools_for_scopes(scopes())})

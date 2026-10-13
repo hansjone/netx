@@ -117,7 +117,9 @@ def mcp_text_result(payload: Any, *, is_error: bool = False) -> dict[str, Any]:
 
 
 def mcp_from_handler_result(result: dict[str, Any]) -> dict[str, Any]:
-    if not result.get("ok"):
+    # API envelopes may nest a failure: {"ok": true, "data": {"ok": false, ...}} (e.g. job_not_found).
+    data = result.get("data")
+    if not result.get("ok") or (isinstance(data, dict) and data.get("ok") is False):
         return mcp_text_result(result, is_error=True)
     return mcp_text_result(result)
 
