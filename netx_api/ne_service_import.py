@@ -1,14 +1,13 @@
 """Managed NE Excel import and UME inventory sync into managed_ne."""
 from __future__ import annotations
 
-from io import BytesIO
 from typing import Any
 
-import pandas as pd
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from .models import ManagedNE, UmeInventoryNE
+from .tabular import read_table, write_csv, write_xlsx
 from .ne_crypto import CredentialCryptoError, encrypt_secret
 from .device_types import SUPPORTED_DEVICE_TYPES, SUPPORTED_VENDORS, is_placeholder_ne_source
 from .ne_schemas import (
@@ -151,46 +150,41 @@ def build_managed_ne_import_template(fmt: str = "xlsx") -> tuple[str, bytes, str
             "remark": "no direct password, use batch proxy",
         },
     ]
-    df = pd.DataFrame(rows, columns=list(IMPORT_COLUMNS))
-    buf = BytesIO()
+    headers = list(IMPORT_COLUMNS)
+    table = [[r.get(c, "") for c in headers] for r in rows]
     kind = str(fmt or "xlsx").strip().lower()
     if kind == "csv":
-        df.to_csv(buf, index=False, encoding="utf-8-sig")
         return (
             "managed_ne_import_template.csv",
-            buf.getvalue(),
+            write_csv(headers, table),
             "text/csv; charset=utf-8",
         )
-    device_types_df = pd.DataFrame({"device_type": list(SUPPORTED_DEVICE_TYPES)})
-    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        df.to_excel(writer, sheet_name="import", index=False)
-        device_types_df.to_excel(writer, sheet_name="device_type", index=False)
+    payload = write_xlsx([
+        ("import", headers, table),
+        ("device_type", ["device_type"], [[t] for t in SUPPORTED_DEVICE_TYPES]),
+    ])
     return (
         "managed_ne_import_template.xlsx",
-        buf.getvalue(),
+        payload,
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
 
 def import_managed_ne(db: Session, content: bytes, filename: str) -> ImportResult:
     _require_crypto()
-    name = str(filename or "").lower()
     try:
-        if name.endswith(".csv"):
-            df = pd.read_csv(BytesIO(content))
-        else:
-            df = pd.read_excel(BytesIO(content))
+        headers, raw_rows = read_table(content, filename)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"import_parse_failed: {exc}") from exc
-    df.columns = [str(c).strip().lower() for c in df.columns]
-    missing = [c for c in _REQUIRED_IMPORT_COLUMNS if c not in df.columns]
+    columns = [h.strip().lower() for h in headers]
+    missing = [c for c in _REQUIRED_IMPORT_COLUMNS if c not in columns]
     if missing:
         raise HTTPException(status_code=400, detail=f"import_missing_columns: {','.join(missing)}")
     inserted = 0
     updated = 0
     failed: list[ImportFailure] = []
-    for idx, row in df.iterrows():
-        row_no = int(idx) + 2
+    for row_no, cells in raw_rows:
+        row = {k.strip().lower(): v for k, v in cells.items()}
         # Savepoint per row: a failing row must not leave a half-written NE behind.
         savepoint = db.begin_nested()
         try:
@@ -214,16 +208,16 @@ def import_managed_ne(db: Session, content: bytes, filename: str) -> ImportResul
                 failed.append(ImportFailure(row=row_no, reason="username_required"))
                 savepoint.rollback()
                 continue
-            port_raw = row.get("port", 22)
+            port_raw = row.get("port")
             try:
-                port = int(port_raw)
-            except (TypeError, ValueError):
+                port = int(float(port_raw)) if port_raw is not None else 22
+            except (TypeError, ValueError, OverflowError):
                 port = 22
             if not 1 <= port <= 65535:
                 failed.append(ImportFailure(row=row_no, reason="invalid_port"))
                 savepoint.rollback()
                 continue
-            protocol = _normalize_protocol(str(row.get("protocol", "ssh")))
+            protocol = _normalize_protocol(_import_cell_str(row.get("protocol")) or "ssh")
             display_name = _import_cell_str(row.get("name", "")) or ip
             vendor_raw = _import_cell_str(row.get("vendor", "")) or "Other"
             vendor = "Other"

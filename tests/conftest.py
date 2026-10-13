@@ -15,9 +15,12 @@ os.environ["NETX_CREDENTIAL_SECRET_FILE"] = str(Path(_TEST_STATE.name) / "creden
 
 
 def pytest_sessionstart(session):
+    from sqlalchemy.engine import make_url
+
     from netx_api.db import engine
 
-    if str(engine.url) != _TEST_DATABASE_URL:
+    # Compare parsed URLs: newer SQLAlchemy renders "C:" as "C%3A" in str(url).
+    if engine.url != make_url(_TEST_DATABASE_URL):
         raise pytest.UsageError("NetX tests require the isolated temporary database")
 
 

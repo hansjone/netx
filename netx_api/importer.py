@@ -1,29 +1,34 @@
 from __future__ import annotations
 
 import json
+import math
 from datetime import datetime, timezone
-from io import BytesIO
 from typing import Any
 
-import pandas as pd
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .config import settings
 from .models import AlarmBatch, AlarmNorm, ImportErrorRow
 from .parser_config import ParserConfig
+from .tabular import parse_datetime, read_xlsx
+
+
+def _blank(v: Any) -> bool:
+    if v is None:
+        return True
+    if isinstance(v, float) and math.isnan(v):
+        return True
+    text = str(v).strip()
+    return not text or text.lower() == "nan"
 
 
 def _dt(v: Any) -> datetime | None:
-    if v is None:
+    if _blank(v):
         return None
-    text = str(v).strip()
-    if not text or text.lower() == "nan":
+    dt = parse_datetime(v)
+    if dt is None:
         return None
-    parsed = pd.to_datetime(text, errors="coerce")
-    if pd.isna(parsed):
-        return None
-    dt = parsed.to_pydatetime()
     # Convention: Excel source time is local timezone time.
     # Convert to UTC before persisting; keep DB as naive UTC for compatibility.
     if dt.tzinfo is None:
@@ -35,20 +40,15 @@ def _dt(v: Any) -> datetime | None:
 
 
 def _str(v: Any) -> str:
-    if v is None:
+    if _blank(v):
         return ""
-    text = str(v).strip()
-    if text.lower() == "nan":
-        return ""
-    return text
+    return str(v).strip()
 
 
 def _int(v: Any) -> int:
-    if v is None:
+    if _blank(v):
         return 0
     text = str(v).strip()
-    if not text or text.lower() == "nan":
-        return 0
     try:
         return int(float(text))
     except Exception:
@@ -56,8 +56,7 @@ def _int(v: Any) -> int:
 
 
 def import_alarm_excel(db: Session, filename: str, content: bytes, parser: ParserConfig) -> AlarmBatch:
-    df = pd.read_excel(BytesIO(content))
-    headers = [str(h) for h in df.columns]
+    headers, rows = read_xlsx(content)
 
     col_alarm_time = parser.resolve_col(headers, "alarm_time")
     col_clear_time = parser.resolve_col(headers, "clear_time")
@@ -80,7 +79,7 @@ def import_alarm_excel(db: Session, filename: str, content: bytes, parser: Parse
         source_file=filename,
         parser_version=parser.parser_version,
         dict_version=parser.dict_version,
-        total_rows=int(len(df.index)),
+        total_rows=len(rows),
         status="processing",
     )
     db.add(batch)
@@ -89,8 +88,8 @@ def import_alarm_excel(db: Session, filename: str, content: bytes, parser: Parse
     success_rows = 0
     failed_rows = 0
 
-    for idx, row in df.iterrows():
-        row_no = int(idx) + 2  # Excel header is row 1
+    for row_no, row in rows:  # row_no = sheet row (header is row 1)
+        raw_json = json.dumps(row, ensure_ascii=False, default=str)
         alarm_time = _dt(row.get(col_alarm_time)) if col_alarm_time else None
         raw_severity = _str(row.get(col_severity)) if col_severity else ""
         alarm_code = _str(row.get(col_alarm_code)) if col_alarm_code else ""
@@ -111,7 +110,7 @@ def import_alarm_excel(db: Session, filename: str, content: bytes, parser: Parse
                     batch_id=batch.batch_id,
                     row_no=row_no,
                     reason="missing_or_invalid_alarm_time",
-                    raw_json=json.dumps(row.to_dict(), ensure_ascii=False, default=str),
+                    raw_json=raw_json,
                 )
             )
             continue
@@ -122,7 +121,7 @@ def import_alarm_excel(db: Session, filename: str, content: bytes, parser: Parse
                     batch_id=batch.batch_id,
                     row_no=row_no,
                     reason="missing_ne_name_and_ne_id",
-                    raw_json=json.dumps(row.to_dict(), ensure_ascii=False, default=str),
+                    raw_json=raw_json,
                 )
             )
             continue
@@ -151,7 +150,7 @@ def import_alarm_excel(db: Session, filename: str, content: bytes, parser: Parse
                 vendor=settings.vendor,
                 source_type=settings.source_type,
                 source_file=filename,
-                raw_json=json.dumps(row.to_dict(), ensure_ascii=False, default=str),
+                raw_json=raw_json,
             )
         )
         success_rows += 1

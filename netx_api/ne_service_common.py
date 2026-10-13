@@ -2,10 +2,10 @@
 from __future__ import annotations
 
 from datetime import datetime
+import math
 import re
 from typing import Any
 
-import pandas as pd
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
@@ -199,7 +199,7 @@ def _parse_import_bool(value: Any) -> bool:
 
 
 def _import_cell_str(value: Any) -> str:
-    if value is None or (isinstance(value, float) and pd.isna(value)):
+    if value is None or (isinstance(value, float) and math.isnan(value)):
         return ""
     text = str(value).strip()
     return "" if text.lower() == "nan" else text
