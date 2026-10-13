@@ -181,6 +181,8 @@ export function WorkbenchModules({ opsCandidates, systemMods }: Props) {
               <div
                 key={mod.moduleId}
                 className={`wb-tile-wrap${editing ? " wb-tile-wrap--edit" : ""}${dragId === mod.moduleId ? " is-dragging" : ""}`}
+                // Launcher labels may be abbreviated; hover shows the full module title.
+                title={editing ? undefined : t(mod.titleKey)}
                 draggable={editing}
                 onDragStart={editing ? onDragStart(mod.moduleId) : undefined}
                 onDragOver={editing ? onDragOver(mod.moduleId) : undefined}
@@ -192,8 +194,8 @@ export function WorkbenchModules({ opsCandidates, systemMods }: Props) {
                   className={`wb-tile wb-tile--${mod.iconTone}`}
                   aria-label={
                     editing
-                      ? t(mod.labelKey)
-                      : `${t(mod.labelKey)} · ${t("workbench.openModule")}`
+                      ? t(mod.titleKey)
+                      : `${t(mod.titleKey)} · ${t("workbench.openModule")}`
                   }
                   onPress={() => {
                     if (editing) return;
