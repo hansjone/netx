@@ -1,19 +1,46 @@
 import { Alert, Button, Card, Form, Input, Label, TextField } from "@heroui/react";
-import { useState, type FormEvent } from "react";
+import { useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { Navigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "./AuthContext";
 import { useI18n } from "../../i18n";
 import { LoginShell } from "./LoginShell";
+import { DropletGlassFilter } from "./DropletGlass";
+import { ApiRequestError } from "../../services/api/http";
+
+const LAST_USER_KEY = "netx.login.lastUser";
+
+function readLastUser(): string {
+  try {
+    return localStorage.getItem(LAST_USER_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
+/** Map the login endpoint's error codes to readable text. */
+function loginErrorText(err: unknown, t: (key: string, vars?: Record<string, string | number>) => string): string {
+  if (err instanceof ApiRequestError) {
+    if (err.detail === "invalid_credentials") return t("auth.badCredentials");
+    const d = err.detail as { error?: string; retry_after_sec?: number } | null;
+    if (d && typeof d === "object" && d.error === "login_locked") {
+      return t("auth.loginLocked", { minutes: Math.max(1, Math.ceil((d.retry_after_sec || 60) / 60)) });
+    }
+  }
+  return String(err instanceof Error ? err.message : err) || t("auth.loginFailed");
+}
 
 export function LoginPage() {
   const { t } = useI18n();
   const { ready, user, login } = useAuth();
   const [params] = useSearchParams();
-  const [username, setUsername] = useState("admin");
+  const [lastUser] = useState(readLastUser);
+  const [username, setUsername] = useState(lastUser || "admin");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [capsLock, setCapsLock] = useState(false);
+  const cardRef = useRef<HTMLDivElement>(null);
 
   if (ready && user) {
     const next = params.get("next") || "/";
@@ -24,23 +51,32 @@ export function LoginPage() {
     e.preventDefault();
     setError("");
     setBusy(true);
+    const name = username.trim();
     try {
-      await login(username.trim(), password);
+      await login(name, password);
+      try {
+        localStorage.setItem(LAST_USER_KEY, name);
+      } catch {
+        /* storage blocked — nothing to remember */
+      }
     } catch (err) {
-      setError(String(err instanceof Error ? err.message : err) || t("auth.loginFailed"));
+      setError(loginErrorText(err, t));
     } finally {
       setBusy(false);
     }
   };
 
+  const syncCaps = (e: KeyboardEvent) => setCapsLock(e.getModifierState("CapsLock"));
+
   return (
     <LoginShell>
-      <Card className="login-card login-card--heroui" variant="transparent">
+      <DropletGlassFilter id="login-droplet" target={cardRef} />
+      <Card ref={cardRef} className="login-card login-card--heroui" variant="transparent">
         <Card.Header className="login-card__head">
-          <Card.Title className="login-card__title">{t("auth.loginTitle")}</Card.Title>
-          <div className="login-card__brand" aria-label="NETX">
+          <div className="login-card__brand" aria-hidden="true">
             NETX
           </div>
+          <Card.Title className="login-card__sr">{t("auth.loginTitle")}</Card.Title>
         </Card.Header>
         <Card.Content>
           <Form className="login-card__form" onSubmit={(e) => void onSubmit(e)}>
@@ -48,28 +84,36 @@ export function LoginPage() {
               fullWidth
               name="username"
               value={username}
-              onChange={setUsername}
+              onChange={(v) => {
+                setUsername(v);
+                setError("");
+              }}
               isDisabled={busy || !ready}
-              autoFocus
+              autoFocus={!lastUser}
               autoComplete="username"
             >
               <Label className="login-card__sr">{t("auth.username")}</Label>
               <Input placeholder={t("auth.username")} />
             </TextField>
 
-            <div className="login-card__password">
+            <div className="login-card__password" onKeyDown={syncCaps} onKeyUp={syncCaps}>
               <TextField
                 fullWidth
                 name="password"
                 type={showPassword ? "text" : "password"}
                 value={password}
-                onChange={setPassword}
+                onChange={(v) => {
+                  setPassword(v);
+                  setError("");
+                }}
                 isDisabled={busy || !ready}
+                autoFocus={!!lastUser}
                 autoComplete="current-password"
               >
                 <Label className="login-card__sr">{t("auth.password")}</Label>
                 <Input placeholder={t("auth.password")} />
               </TextField>
+              {capsLock ? <span className="login-card__caps">{t("auth.capsLock")}</span> : null}
               <button
                 type="button"
                 className="login-card__eye"

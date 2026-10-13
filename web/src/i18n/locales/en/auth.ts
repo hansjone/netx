@@ -5,6 +5,9 @@ const auth = {
   login: "Sign in",
   loggingIn: "Signing in…",
   loginFailed: "Login failed",
+  capsLock: "Caps Lock",
+  badCredentials: "Wrong username or password",
+  loginLocked: "Too many attempts. Try again in {{minutes}} min",
   logout: "Sign out",
   sessionsTitle: "Login sessions",
   sessionsHelp:
