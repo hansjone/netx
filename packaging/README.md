@@ -121,7 +121,7 @@ Stops services, replaces program folders (`netx_api`, `web`, `packaging`, `postg
 |----------|------|
 | `NETX_UPDATE_FORGEJO_URL` | Forgejo/Gitea `releases/latest` API (default: git.avelo.top mirror) |
 | `NETX_UPDATE_GITHUB_REPO` | GitHub `owner/repo` (default `hansjone/netx`) |
-| `NETX_UPDATE_SOURCES` | Probe order / tie-break order, e.g. `github,forgejo` |
+| `NETX_UPDATE_SOURCES` | Probe order / tie-break order, e.g. `github,forgejo`. Tray → Settings → Update source sets it: *GitHub (default)* = empty (GitHub + git.avelo.top fallback), *git.avelo.top* = `forgejo` only |
 | `NETX_UPDATE_URL` | Optional custom JSON manifest |
 
 ```powershell

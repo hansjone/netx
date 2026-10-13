@@ -627,6 +627,9 @@ $miRestart = New-NetxMenuItem -Text (T "Restart" "重启") -Glyph "restart"
 $miSettings = New-NetxMenuItem -Text (T "Settings" "设置") -Glyph "settings"
 $miAutostart = New-NetxMenuItem -Text (T "Start with Windows" "登录 Windows 时自动启动") -Glyph "check"
 $miAutoUpdate = New-NetxMenuItem -Text (T "Daily automatic updates" "每日自动更新") -Glyph "check"
+$miSource = New-NetxMenuItem -Text (T "Update source" "更新源") -Glyph "update"
+$miSourceGithub = New-NetxMenuItem -Text (T "GitHub (default)" "GitHub（默认）") -Glyph "check"
+$miSourceForgejo = New-NetxMenuItem -Text "git.avelo.top" -Glyph "check"
 $miReconfig = New-NetxMenuItem -Text (T "Reconfigure database…" "重新配置数据库…") -Glyph "repair"
 $miLogs = New-NetxMenuItem -Text (T "Open log folder" "打开日志目录") -Glyph "log"
 $miData = New-NetxMenuItem -Text (T "Open data folder" "打开数据目录") -Glyph "folder"
@@ -634,8 +637,9 @@ $miUpdate = New-NetxMenuItem -Text (T "Check for updates…" "检查更新…") 
 $miExit = New-NetxMenuItem -Text (T "Exit tray (keep NetX running)" "退出托盘（NetX 保持运行）") -Glyph "exit"
 $miStopExit = New-NetxMenuItem -Text (T "Stop NetX and exit" "停止 NetX 并退出") -Glyph "power"
 
+[void]$miSource.DropDownItems.AddRange(@($miSourceGithub, $miSourceForgejo))
 [void]$miSettings.DropDownItems.AddRange(@(
-        $miAutostart, $miAutoUpdate, (New-NetxMenuSeparator),
+        $miAutostart, $miAutoUpdate, $miSource, (New-NetxMenuSeparator),
         $miReconfig, $miLogs, $miData
     ))
 [void]$menu.Items.AddRange(@(
@@ -656,6 +660,7 @@ function Set-NetxTrayTheme {
     $script:renderer = New-Object NetxMenuRenderer($script:theme, [float]$script:dpiScale)
     $menu.Renderer = $script:renderer
     $miSettings.DropDown.Renderer = $script:renderer
+    $miSource.DropDown.Renderer = $script:renderer
     $script:glyphImages = @{}
     foreach ($k in $script:glyphs.Keys) {
         $script:glyphImages[$k] = New-NetxGlyph $script:glyphs[$k] $script:theme.Text
@@ -673,6 +678,15 @@ function Set-NetxTrayTheme {
 Set-NetxTrayTheme
 Set-NetxDropDownChrome $menu
 Set-NetxDropDownChrome $miSettings.DropDown
+Set-NetxDropDownChrome $miSource.DropDown
+
+# Update source = NETX_UPDATE_SOURCES in .env (read by check_update.ps1).
+# Empty = default (GitHub first, git.avelo.top mirror as fallback); "forgejo" = mirror only.
+function Get-NetxUpdateSource {
+    $v = [string](Read-DotEnv -Path $envPath)["NETX_UPDATE_SOURCES"]
+    if ($v.Trim().ToLowerInvariant() -eq "forgejo") { return "forgejo" }
+    return "github"
+}
 
 $menu.add_Opening({
         Set-NetxTrayTheme
@@ -684,6 +698,13 @@ $miSettings.DropDown.add_Opening({
         if ($dd.IsHandleCreated) { [void][NetxNative]::RoundCorners($dd.Handle, $script:theme.Border) }
         $miAutostart.Image = if ($script:sync.Autostart) { $script:glyphImages["check"] } else { $null }
         $miAutoUpdate.Image = if ($script:sync.AutoUpdate) { $script:glyphImages["check"] } else { $null }
+    })
+$miSource.DropDown.add_Opening({
+        $dd = $miSource.DropDown
+        if ($dd.IsHandleCreated) { [void][NetxNative]::RoundCorners($dd.Handle, $script:theme.Border) }
+        $src = Get-NetxUpdateSource
+        $miSourceGithub.Image = if ($src -eq "github") { $script:glyphImages["check"] } else { $null }
+        $miSourceForgejo.Image = if ($src -eq "forgejo") { $script:glyphImages["check"] } else { $null }
     })
 
 function Invoke-NetxTrayDeferred([scriptblock]$Work) {
@@ -749,6 +770,23 @@ $miAutostart.add_Click({
                 (T "Start with Windows turned off." "已关闭登录自动启动。")
         }
     })
+function Set-NetxUpdateSource([string]$Source) {
+    $value = if ($Source -eq "forgejo") { "forgejo" } else { "" }
+    try {
+        Write-DotEnvValue -Path $envPath -Values @{ "NETX_UPDATE_SOURCES" = $value }
+    } catch {
+        Show-NetxToast ((T "Could not save the update source: " "无法保存更新源：") + $_.Exception.Message) "Error"
+        return
+    }
+    Show-NetxToast $(if ($value) {
+            (T "Updates now come from git.avelo.top." "更新源已切换为 git.avelo.top。")
+        } else {
+            (T "Updates now come from GitHub (git.avelo.top as fallback)." "更新源已切换为 GitHub（git.avelo.top 作为备用）。")
+        })
+}
+$miSourceGithub.add_Click({ Invoke-NetxTrayDeferred { Set-NetxUpdateSource "github" } })
+$miSourceForgejo.add_Click({ Invoke-NetxTrayDeferred { Set-NetxUpdateSource "forgejo" } })
+
 $miAutoUpdate.add_Click({
         Invoke-NetxTrayDeferred {
             Switch-NetxTaskToggle $updateTaskPs1 "AutoUpdate" `
