@@ -53,6 +53,10 @@ $bizStateWorkerPidDir = Join-Path $runDir "biz_state_workers"
 $webPidFile = Join-Path $runDir "web.pid"
 $webLogFile = Join-Path $runDir "web.out.log"
 $webErrFile = Join-Path $runDir "web.err.log"
+# Children share this console; give them an empty stdin so Vite (raw-mode CLI shortcuts)
+# and python cannot steal keystrokes from the shell that launched them.
+$nullStdin = Join-Path $runDir "stdin.empty"
+if (-not (Test-Path -LiteralPath $nullStdin)) { New-Item -ItemType File -Path $nullStdin -Force | Out-Null }
 
 $venvPython = Join-Path $projectRoot ".venv\Scripts\python.exe"
 if (Get-Command Test-NetxVenvRunnable -ErrorAction SilentlyContinue) {
@@ -184,6 +188,7 @@ function Start-NetxWorker {
         -ArgumentList @("-m", "netx_api.worker") `
         -WorkingDirectory $projectRoot `
         -WindowStyle Hidden `
+        -RedirectStandardInput $nullStdin `
         -RedirectStandardOutput $outLog `
         -RedirectStandardError $errLog `
         -PassThru
@@ -228,6 +233,7 @@ function Start-BizStateWorkers {
             -ArgumentList @("-m", "netx_api.biz_state_worker") `
             -WorkingDirectory $projectRoot `
             -WindowStyle Hidden `
+            -RedirectStandardInput $nullStdin `
             -RedirectStandardOutput $outLog `
             -RedirectStandardError $errLog `
             -PassThru
@@ -251,6 +257,7 @@ if ($Background) {
         -ArgumentList @("-m", "netx_api.main") `
         -WorkingDirectory $projectRoot `
         -WindowStyle Hidden `
+        -RedirectStandardInput $nullStdin `
         -RedirectStandardOutput $logFile `
         -RedirectStandardError $errFile `
         -PassThru
@@ -293,6 +300,7 @@ if ($Background) {
             -ArgumentList @("run", "dev", "--", "--host", $BindHost, "--port", "$WebPort") `
             -WorkingDirectory $webRoot `
             -WindowStyle Hidden `
+            -RedirectStandardInput $nullStdin `
             -RedirectStandardOutput $webLogFile `
             -RedirectStandardError $webErrFile `
             -PassThru
@@ -332,6 +340,7 @@ if ($WithWeb) {
         -ArgumentList @("run", "dev", "--", "--host", $BindHost, "--port", "$WebPort") `
         -WorkingDirectory $webRoot `
         -WindowStyle Hidden `
+        -RedirectStandardInput $nullStdin `
         -RedirectStandardOutput $webLogFile `
         -RedirectStandardError $webErrFile `
         -PassThru
