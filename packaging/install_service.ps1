@@ -65,10 +65,20 @@ function Ensure-WinSW {
     $stopPs1 = ConvertTo-WinSWPath (Join-Path $PSScriptRoot "stop_netx_app.ps1")
     $progFs = ConvertTo-WinSWPath $prog
     $dataFs = ConvertTo-WinSWPath $data
-    $logPath = ConvertTo-WinSWPath (Join-Path $data "data\runtime")
-    if (-not (Test-Path (Join-Path $data "data\runtime"))) {
-        New-Item -ItemType Directory -Path (Join-Path $data "data\runtime") -Force | Out-Null
+    # Own folder: WinSW writes <id>.out.log / <id>.err.log = NetX.out.log, which on Windows is
+    # the same file as start_netx.ps1's netx.out.log. WinSW keeps it open, so NetX could not
+    # truncate its log and every service start failed.
+    $svcLogDir = Join-Path $data "data\runtime\service"
+    $logPath = ConvertTo-WinSWPath $svcLogDir
+    if (-not (Test-Path $svcLogDir)) {
+        New-Item -ItemType Directory -Path $svcLogDir -Force | Out-Null
     }
+
+    # Stop hook via cmd: NUL stdin + output to a file. Launched by WinSW directly,
+    # powershell.exe never reached the script's first line (stuck on the inherited
+    # std handles), so the supervisor was never told to exit and stops hung.
+    $stopLog = Join-Path $svcLogDir "stopexec.log"
+    $stopCmd = "/d /s /c `"powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$stopPs1`" -ProgramRoot `"$progFs`" -DataRoot `"$dataFs`" &lt;NUL &gt;&gt;`"$stopLog`" 2&gt;&amp;1`""
 
     $xml = @"
 <service>
@@ -86,8 +96,8 @@ function Ensure-WinSW {
   <onfailure action="restart" delay="30 sec"/>
   <resetfailure>1 hour</resetfailure>
   <stoptimeout>60sec</stoptimeout>
-  <stopexecutable>powershell.exe</stopexecutable>
-  <stoparguments>-NoProfile -ExecutionPolicy Bypass -File "$stopPs1" -ProgramRoot "$progFs" -DataRoot "$dataFs"</stoparguments>
+  <stopexecutable>cmd.exe</stopexecutable>
+  <stoparguments>$stopCmd</stoparguments>
   <workingdirectory>$progFs</workingdirectory>
 </service>
 "@

@@ -57,7 +57,16 @@ function Start-NetxChildren {
 
 function Stop-NetxChildren {
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $stopPs1 `
-        -ProgramRoot $prog -DataRoot $data
+        -ProgramRoot $prog -DataRoot $data -KeepSupervisor
+}
+
+function Wait-NetxStopFlag([int]$Seconds) {
+    # Sleep in 1s steps so a service stop (stop flag) is noticed quickly.
+    for ($i = 0; $i -lt $Seconds; $i++) {
+        if (Test-Path $stopFlag) { return $true }
+        Start-Sleep -Seconds 1
+    }
+    return (Test-Path $stopFlag)
 }
 
 try {
@@ -83,11 +92,11 @@ try {
                 Start-NetxChildren
                 $failStreak = 0
                 # Give API time to come up before counting failures again.
-                Start-Sleep -Seconds ([Math]::Max(15, $HealthIntervalSec))
+                $null = Wait-NetxStopFlag ([Math]::Max(15, $HealthIntervalSec))
                 continue
             }
         }
-        Start-Sleep -Seconds $HealthIntervalSec
+        $null = Wait-NetxStopFlag $HealthIntervalSec
     }
 } catch {
     Write-SvcLog "ERROR: $($_.Exception.Message)"

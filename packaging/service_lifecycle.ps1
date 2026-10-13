@@ -32,6 +32,7 @@ function Stop-NetxRunners([switch]$Remove) {
         $state | ConvertTo-Json | Set-Content -LiteralPath $stateFile -Encoding utf8
         if ($svc.Status -ne 'Stopped') {
             Write-LifecycleLog 'Stopping Windows service NetX'
+            Write-NetxServiceStopFlag -DataRoot $data
             Stop-Service -Name 'NetX' -Force -ErrorAction Stop
             (Get-Service -Name 'NetX').WaitForStatus('Stopped', [TimeSpan]::FromSeconds(60))
         }
