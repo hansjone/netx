@@ -38,8 +38,17 @@ if (-not $SkipWebBuild) {
     Write-Host "==> npm build"
     Push-Location $webRoot
     try {
-        & npm.cmd ci
-        if ($LASTEXITCODE -ne 0) { throw "npm_install_failed" }
+        # npm ci wipes node_modules first; on a dev box a running Vite locks native
+        # .node files and leaves it half-deleted. Skip when installed deps match the lockfile.
+        $installedLock = Join-Path $webRoot "node_modules\.package-lock.json"
+        $lock = Join-Path $webRoot "package-lock.json"
+        if ((Test-Path $installedLock) -and
+            (Get-Item $installedLock).LastWriteTimeUtc -ge (Get-Item $lock).LastWriteTimeUtc) {
+            Write-Host "==> node_modules up to date with package-lock.json - skip npm ci"
+        } else {
+            & npm.cmd ci
+            if ($LASTEXITCODE -ne 0) { throw "npm_install_failed" }
+        }
         # Release packaging skips tsc (dev CI still uses `npm run build`).
         & npm.cmd run build:release
         if ($LASTEXITCODE -ne 0) { throw "web_build_failed" }
@@ -175,7 +184,21 @@ foreach ($cmdName in @("NetX-FirstRun.cmd", "NetX-Start.cmd", "NetX-Tray.cmd", "
 
 if ($CreateVenv) {
     Write-Host "==> Creating portable python/runtime + .venv (must not reference build-machine paths)"
-    $pyPath = Get-NetxSystemPython
+    # Releases pin 3.12 (same as CI); prefer it even when another version is first on PATH.
+    $pyPath = $null
+    $pyLauncher = Get-Command "py" -ErrorAction SilentlyContinue
+    if ($pyLauncher -and $pyLauncher.Source -notmatch '\\WindowsApps\\') {
+        try {
+            $resolved = (& $pyLauncher.Source -3.12 -c "import sys; print(sys.executable)" 2>$null | Out-String).Trim()
+            if ($resolved -and (Test-Path -LiteralPath $resolved)) { $pyPath = $resolved }
+        } catch {}
+    }
+    if (-not $pyPath) {
+        foreach ($p in @("$env:LOCALAPPDATA\Programs\Python\Python312\python.exe", "$env:ProgramFiles\Python312\python.exe")) {
+            if (Test-Path -LiteralPath $p) { $pyPath = $p; break }
+        }
+    }
+    if (-not $pyPath) { $pyPath = Get-NetxSystemPython }
     if (-not $pyPath) { throw "python_not_found_for_venv: need Python 3.12.x (not WindowsApps stub)" }
     $pyVersion = (& $pyPath -c "import sys; print('%d.%d' % sys.version_info[:2])" 2>$null | Out-String).Trim()
     if ($pyVersion -ne '3.12') { throw "python_version_mismatch: Windows releases require Python 3.12.x for reproducible runtimes; found $pyVersion at $pyPath" }
@@ -213,8 +236,10 @@ if ($CreateVenv) {
     & $venvPy -c "from pathlib import Path; import glob; print(Path.cwd()); print(glob.__file__)"
     if ($LASTEXITCODE -ne 0) { throw "python_stdlib_smoke_failed: pathlib/glob import mismatch" }
 
-    & $venvPy -m pip install --upgrade pip
-    & $venvPy -m pip install -r (Join-Path $stage "requirements.txt")
+    # --no-warn-script-location: the PATH check realpath()s every entry and aborts on a
+    # broken reparse point (e.g. a stale app folder on a detached volume). Irrelevant here.
+    & $venvPy -m pip install --upgrade pip --no-warn-script-location
+    & $venvPy -m pip install -r (Join-Path $stage "requirements.txt") --no-warn-script-location
     if ($LASTEXITCODE -ne 0) { throw "pip_install_failed" }
 
     $null = Repair-NetxShippedVenv -ProgramRoot $stage

@@ -50,6 +50,14 @@ ISCC.exe packaging\installer\netx.iss
 Override version in the `.iss` or edit `#define MyAppVersion`.  
 Optional local zip only: `build_release.ps1 -CreateZip` (not for release upload).
 
+### Local release without GitHub
+
+GitHub Actions (`.github/workflows/release-windows.yml`, on `v*` tags) runs the same scripts. To release without it:
+
+1. Install Python **3.12** (same as CI; side by side with other versions is fine, PATH not needed — the build picks it via `py -3.12` or `%LOCALAPPDATA%\Programs\Python\Python312`) and Inno Setup 6.
+2. `powershell -ExecutionPolicy Bypass -File .\packaging\publish_release.ps1 -Version x.y.z -SkipGitHub` → `packaging\release\NetX-Setup-x.y.z.exe` + `.sha256`. PostgreSQL and WinSW come from `packaging\cache` (offline once cached). `npm ci` is skipped when `web\node_modules` already matches `package-lock.json`, so a running Vite dev server does not break the build.
+3. Publish to Forgejo with `publish_forgejo_release.ps1`, or copy the Setup to offline machines; clients can update from Forgejo only via `NETX_UPDATE_SOURCES=forgejo`.
+
 ## End-user install
 
 ### Setup.exe
