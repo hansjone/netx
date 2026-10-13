@@ -313,6 +313,14 @@ function Get-NetxManagedRunner {
     return ""
 }
 
+function Write-NetxServiceStopFlag {
+    param([Parameter(Mandatory = $true)][string]$DataRoot)
+    # service_run.ps1 (the WinSW supervisor) exits when this file appears.
+    $runtimeDir = Join-Path $DataRoot "data\runtime"
+    if (-not (Test-Path $runtimeDir)) { return }
+    Set-Content -Path (Join-Path $runtimeDir "service.stop") -Value (Get-Date -Format o) -Encoding ascii -ErrorAction SilentlyContinue
+}
+
 function Wait-NetxApiHealthy {
     param(
         [string]$HostName = "127.0.0.1",
@@ -371,10 +379,19 @@ function Start-NetxPowerShell {
         $sp.WindowStyle = $WindowStyle
     }
     if ($WorkingDirectory) { $sp.WorkingDirectory = $WorkingDirectory }
-    if ($Wait) { $sp.Wait = $true }
     if ($PassThru -or $Wait) { $sp.PassThru = $true }
     if ($RunAs) { $sp.Verb = "RunAs" }
-    return Start-Process @sp
+    $p = Start-Process @sp
+    if ($Wait -and $p) { Wait-NetxProcessExit -Process $p }
+    return $p
+}
+
+function Wait-NetxProcessExit {
+    param([Parameter(Mandatory = $true)]$Process)
+    # Windows PowerShell 5.1 Start-Process -Wait also waits for every descendant; the
+    # postgres / NetX processes a start script leaves running would block it forever.
+    $null = $Process.Handle  # keep a handle so ExitCode survives the exit
+    $Process.WaitForExit()
 }
 
 function Test-NetxIsAdmin {
@@ -449,7 +466,8 @@ function Assert-NetxAdminOrRelaunch {
         $p = Start-Process -FilePath "powershell.exe" `
             -ArgumentList (ConvertTo-NetxProcessArgumentString -Arguments $parts) `
             -WorkingDirectory $wd `
-            -Verb RunAs -Wait -PassThru
+            -Verb RunAs -PassThru
+        if ($p) { Wait-NetxProcessExit -Process $p }
     } catch {
         if ($null -ne $prevRel) { $env:NETX_ELEVATION_RELAUNCH = $prevRel } else { Remove-Item Env:NETX_ELEVATION_RELAUNCH -ErrorAction SilentlyContinue }
         throw ("admin_required: UAC cancelled or elevation failed. Run NetX as Administrator. {0}" -f $_.Exception.Message)

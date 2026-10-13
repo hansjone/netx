@@ -429,7 +429,8 @@ try {
         Write-Host "==> Program directory is not writable; relaunching update as Administrator (UAC)..." -ForegroundColor Yellow
         $arg = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -ProgramRoot `"$prog`" -DataRoot `"$data`" -Apply"
         $ep = Start-Process -FilePath "powershell.exe" -ArgumentList $arg -WorkingDirectory $prog `
-            -Verb RunAs -Wait -PassThru
+            -Verb RunAs -PassThru
+        Wait-NetxProcessExit -Process $ep
         if ($null -eq $ep.ExitCode) { exit 1 }
         exit $ep.ExitCode
     }
@@ -444,7 +445,8 @@ try {
         $trayWasRunning = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
                 $_.CommandLine -and $_.CommandLine -match 'netx_tray\.ps1'
             }).Count -gt 0
-        $sp = Start-Process -FilePath $pkgPath -ArgumentList $setupArgs -Wait -PassThru
+        $sp = Start-Process -FilePath $pkgPath -ArgumentList $setupArgs -PassThru
+        Wait-NetxProcessExit -Process $sp
         if ($null -eq $sp.ExitCode -or $sp.ExitCode -ne 0) {
             $code = if ($null -eq $sp.ExitCode) { "null" } else { $sp.ExitCode }
             throw "setup_update_failed: exit $code"
