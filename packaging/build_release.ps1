@@ -242,7 +242,9 @@ if ($CreateVenv) {
     # Keep ensurepip - venv creation needs it. Same result on CI and local builds.
     $xdRuntime = @("Doc", "tcl", "Tools", "Lib\test", "Lib\idlelib", "Lib\tkinter", "Lib\turtledemo") |
         ForEach-Object { Join-Path $prefix $_ }
-    $xfRuntime = @("_tkinter.pyd", "tcl86t.dll", "tk86t.dll", "*.pyc")
+    # python-*.exe: the GitHub runner's toolcache keeps the full Python installer (~25MB)
+    # in the prefix; _test*.pyd: stdlib test extensions.
+    $xfRuntime = @("_tkinter.pyd", "tcl86t.dll", "tk86t.dll", "*.pyc", "python-*.exe", "_test*.pyd", "_ctypes_test.pyd", "xxlimited*.pyd")
     & $robocopy $prefix $rtDir /E /XD $spEx __pycache__ @xdRuntime /XF @xfRuntime /NFL /NDL /NJH /NJS /nc /ns /np | Out-Null
     if ($LASTEXITCODE -ge 8) { throw "robocopy_python_runtime_failed: exit $LASTEXITCODE" }
 

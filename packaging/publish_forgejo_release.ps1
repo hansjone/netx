@@ -115,7 +115,9 @@ function Upload-ForgejoAsset {
     $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
     if (-not $curl) { throw "curl.exe required for asset upload" }
     # --ssl-no-revoke: schannel CRYPT_E_REVOCATION_OFFLINE often fails via proxy/offline CA.
-    & $curl.Source -f -sS --ssl-no-revoke -X POST `
+    # --noproxy: a desktop proxy in HTTP(S)_PROXY cannot reach a LAN Forgejo (502).
+    $forgejoHost = ([Uri]$ForgejoBase).Host
+    & $curl.Source -f -sS --ssl-no-revoke --noproxy $forgejoHost -X POST `
         -H "Authorization: token $Token" `
         -F "attachment=@$Path" `
         $url
