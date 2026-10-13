@@ -440,6 +440,10 @@ try {
         # (see installer/netx.iss /InstallMode=update).
         Write-Host "==> Applying update via silent Setup.exe"
         $setupArgs = "/VERYSILENT /NORESTART /SUPPRESSMSGBOXES /DIR=`"$prog`" /InstallMode=update"
+        # Setup stops the tray (StopForUpdate -KillTray); remember to bring it back.
+        $trayWasRunning = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+                $_.CommandLine -and $_.CommandLine -match 'netx_tray\.ps1'
+            }).Count -gt 0
         $sp = Start-Process -FilePath $pkgPath -ArgumentList $setupArgs -Wait -PassThru
         if ($null -eq $sp.ExitCode -or $sp.ExitCode -ne 0) {
             $code = if ($null -eq $sp.ExitCode) { "null" } else { $sp.ExitCode }
@@ -474,6 +478,14 @@ try {
             & (Join-Path $PSScriptRoot "start_netx_app.ps1") `
                 -ProgramRoot $prog -DataRoot $data -SkipBrowser
             if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        }
+        if ($trayWasRunning) {
+            $trayPs1 = Join-Path $prog "packaging\netx_tray.ps1"
+            if (Test-Path -LiteralPath $trayPs1) {
+                Write-Host "==> Restarting NetX tray"
+                Start-NetxPowerShell -File $trayPs1 -Arguments @("-ProgramRoot", $prog, "-DataRoot", $data, "-QuietStart") `
+                    -WorkingDirectory $prog -WindowStyle Hidden | Out-Null
+            }
         }
     } else {
         Write-Host "==> Applying legacy zip update via update_netx.ps1"

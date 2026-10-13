@@ -43,15 +43,16 @@ if (Test-Path (Join-Path $dist "index.html")) {
 $mode = Get-DbMode -EnvMap $map
 $hostBind = if ($env:NETX_HOST) { $env:NETX_HOST } else { "127.0.0.1" }
 $port = if ($env:NETX_PORT) { [int]$env:NETX_PORT } else { 8890 }
+$clientHost = Get-NetxClientHost -BindHost $hostBind
 
 Write-Host "==> Program: $prog"
 Write-Host "==> Data:    $data"
 Write-Host "==> DB mode: $mode"
 
-if (-not $Force -and (Test-NetxApiHealthy -HostName $hostBind -Port $port)) {
-    Write-Host "==> NetX already healthy at http://${hostBind}:${port}/ — skip start (use -Force to restart)" -ForegroundColor Green
+if (-not $Force -and (Test-NetxApiHealthy -HostName $clientHost -Port $port)) {
+    Write-Host "==> NetX already healthy at http://${clientHost}:${port}/ — skip start (use -Force to restart)" -ForegroundColor Green
     if (-not $SkipBrowser) {
-        try { Start-Process "http://${hostBind}:${port}/" } catch {}
+        Open-NetxUrl -Url "http://${clientHost}:${port}/"
     }
     exit 0
 }
@@ -106,8 +107,8 @@ try {
     exit 1
 }
 
-if (-not (Test-NetxTcpPortFree -HostName $hostBind -Port $port)) {
-    if (Test-NetxApiHealthy -HostName $hostBind -Port $port) {
+if (-not (Test-NetxTcpPortFree -HostName $clientHost -Port $port)) {
+    if (Test-NetxApiHealthy -HostName $clientHost -Port $port) {
         Write-Host "==> Port $port already serves NetX — skip start" -ForegroundColor Green
         exit 0
     }
@@ -132,14 +133,14 @@ if ($InlineSchedulers) { $startArgs["InlineSchedulers"] = $true }
 & $startScript @startArgs
 if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-$url = "http://${hostBind}:${port}/"
-if (-not (Test-NetxApiHealthy -HostName $hostBind -Port $port -TimeoutSec 2)) {
-    if (-not (Wait-NetxApiHealthy -HostName $hostBind -Port $port -TimeoutSec 30)) {
+$url = "http://${clientHost}:${port}/"
+if (-not (Test-NetxApiHealthy -HostName $clientHost -Port $port -TimeoutSec 2)) {
+    if (-not (Wait-NetxApiHealthy -HostName $clientHost -Port $port -TimeoutSec 30)) {
         Write-Host "[ERR] NetX started but /health not ready: $url" -ForegroundColor Red
         exit 1
     }
 }
 Write-Host "==> Open: $url" -ForegroundColor Green
 if (-not $SkipBrowser) {
-    try { Start-Process $url } catch {}
+    Open-NetxUrl -Url $url
 }

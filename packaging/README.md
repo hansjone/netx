@@ -61,7 +61,10 @@ Optional local zip only: `build_release.ps1 -CreateZip` (not for release upload)
    - **Reinstall** — same Database wizard as first install (`ApplyDatabaseConfig`); does **not** delete ProgramData (use Uninstall → delete data for a wipe).
 4. Files → `%ProgramFiles%\NetX\` (program root).
 5. Data → `%ProgramData%\NetX\` (`.env`, `pgdata`, spool, secrets).
-6. Start menu: **Start NetX** / **Stop NetX** / **Open NetX UI** / **Reconfigure database**.
+6. **Tasks page — run mode (exclusive):** *Desktop tray* (default; optional *start when I sign in* → `\NetX\NetXTray` logon task for local Administrators, quiet start without a browser) or *Windows service* (WinSW, runs at boot). Optional *daily automatic updates* (`\NetX\NetXUpdate`). On upgrades the page pre-selects what is actually installed; silent installs leave these alone unless `/TASKS=` is passed (e.g. `/TASKS="runservice,autoupdate"`).
+7. Start menu: **NetX** (tray) / **Start NetX** / **Stop NetX** / **Check for updates** / **Reconfigure database** (names follow the Setup language). Autostart and auto-update can also be toggled later from tray → Settings.
+
+Start/stop from the tray or shortcuts go through `packaging\runtime_ctl.ps1`, which drives the Windows service / SYSTEM task when one is installed (stopping its children directly would just get them restarted). Uninstall removes the service and all `\NetX\` scheduled tasks.
 
 **Elevation (required on fresh PCs):** all end-user entry points (`NetX-Start.cmd`, `NetX-Tray.cmd`, `NetX-Stop.cmd`, `NetX-FirstRun.cmd`, tray, start/stop/setup/update) **self-elevate via UAC**. Program Files installs cannot start reliably as a normal user (`.venv` repair / writes). Approve the UAC prompt once per launch (tray stays elevated afterward).
 

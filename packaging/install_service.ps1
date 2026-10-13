@@ -129,7 +129,9 @@ if ($Mode -eq "winsw") {
     $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $arg -WorkingDirectory $prog
     $trigger = New-ScheduledTaskTrigger -AtStartup
     $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
-    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
+    # ExecutionTimeLimit 0: the default (72h) would kill the long-running supervisor.
+    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) `
+        -ExecutionTimeLimit ([TimeSpan]::Zero)
     Register-ScheduledTask -TaskName "NetXService" -TaskPath "\NetX\" -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
     if ($Start) {
         Start-ScheduledTask -TaskName "NetXService" -TaskPath "\NetX\"

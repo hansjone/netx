@@ -79,7 +79,7 @@ try {
             }
         }
         "stop" {
-            $p = Invoke-NetxHiddenPs1 -File (Join-Path $PSScriptRoot "stop_netx_app.ps1")
+            $p = Invoke-NetxHiddenPs1 -File (Join-Path $PSScriptRoot "runtime_ctl.ps1") -ExtraArgs @("-Action", "stop")
             if ($null -ne $p.ExitCode -and $p.ExitCode -ne 0) { throw "stop_exit_$($p.ExitCode)" }
         }
         "update" {
@@ -102,10 +102,11 @@ try {
                 if ($map["NETX_HOST"]) { $hostBind = $map["NETX_HOST"] }
                 if ($map["NETX_PORT"]) { try { $port = [int]$map["NETX_PORT"] } catch {} }
             }
-            $p = Invoke-NetxHiddenPs1 -File (Join-Path $PSScriptRoot "start_netx_app.ps1") -ExtraArgs @("-SkipBrowser")
+            $hostBind = Get-NetxClientHost -BindHost $hostBind
+            $p = Invoke-NetxHiddenPs1 -File (Join-Path $PSScriptRoot "runtime_ctl.ps1") -ExtraArgs @("-Action", "start")
             if ($p.ExitCode -ne 0) { throw "start_exit_$($p.ExitCode)" }
             if (Wait-NetxApiHealthy -HostName $hostBind -Port $port -TimeoutSec 180) {
-                try { Start-Process "http://${hostBind}:${port}/" } catch {}
+                Open-NetxUrl -Url "http://${hostBind}:${port}/"
             } else {
                 throw (T `
                     "NetX started but /health not ready within 180s.`nSee: $logDir\netx.err.log" `

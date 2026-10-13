@@ -84,11 +84,12 @@ try {
         'ResumeAfterUpdate' {
             if (-not (Test-Path -LiteralPath $stateFile)) { break }
             $state = Get-Content -LiteralPath $stateFile -Raw | ConvertFrom-Json
-            if ($state.serviceWasRunning) {
+            # Setup may have switched run mode (service -> tray) in between: skip what is gone.
+            if ($state.serviceWasRunning -and (Get-Service -Name 'NetX' -ErrorAction SilentlyContinue)) {
                 Write-LifecycleLog 'Restarting Windows service NetX after update'
                 Start-Service -Name 'NetX' -ErrorAction Stop
             }
-            if ($state.taskWasRunning) {
+            if ($state.taskWasRunning -and (Get-NetxTask)) {
                 Write-LifecycleLog 'Restarting scheduled task NetXService after update'
                 Start-ScheduledTask -TaskName 'NetXService' -TaskPath '\NetX\' -ErrorAction Stop
             }
@@ -96,6 +97,17 @@ try {
         }
         'RemoveForUninstall' {
             $null = Stop-NetxRunners -Remove
+            # Logon tray + daily update tasks would otherwise outlive the program files.
+            foreach ($t in @('NetXTray', 'NetXUpdate')) {
+                Unregister-ScheduledTask -TaskName $t -TaskPath '\NetX\' -Confirm:$false -ErrorAction SilentlyContinue
+            }
+            try {
+                $sched = New-Object -ComObject Schedule.Service
+                $sched.Connect()
+                $root = $sched.GetFolder('\')
+                $nx = $root.GetFolder('\NetX')
+                if ($nx.GetTasks(1).Count -eq 0 -and $nx.GetFolders(0).Count -eq 0) { $root.DeleteFolder('NetX', 0) }
+            } catch {}
             $stopScript = Join-Path $prog 'packaging\stop_netx_app.ps1'
             if (Test-Path -LiteralPath $stopScript) {
                 & powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File $stopScript `

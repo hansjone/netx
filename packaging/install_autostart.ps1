@@ -28,11 +28,18 @@ if ($Remove) {
     exit 0
 }
 
-$arg = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$tray`" -ProgramRoot `"$prog`" -DataRoot `"$data`" -StartOnLaunch"
+# -QuietStart: bring NetX up at logon without popping a browser window.
+$arg = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$tray`" -ProgramRoot `"$prog`" -DataRoot `"$data`" -StartOnLaunch -QuietStart"
 $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $arg -WorkingDirectory $prog
-$trig = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
-$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
-$principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Highest
+# Any user logon, run for the local Administrators group: Setup runs elevated
+# (often as a different admin account), so $env:USERNAME is not the desktop user.
+$trig = New-ScheduledTaskTrigger -AtLogOn
+$trig.Delay = "PT10S"
+$admins = (New-Object System.Security.Principal.SecurityIdentifier("S-1-5-32-544")).Translate(
+    [System.Security.Principal.NTAccount]).Value
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable `
+    -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances Parallel
+$principal = New-ScheduledTaskPrincipal -GroupId $admins -RunLevel Highest
 Register-ScheduledTask -TaskName $taskName -TaskPath $taskPath `
     -Action $action -Trigger $trig -Settings $settings -Principal $principal -Force | Out-Null
 

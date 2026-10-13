@@ -1,6 +1,6 @@
-# NetX packaging assets
+﻿# NetX packaging assets
 
-- `netx.ico` — installer / shortcuts / tray (regenerate with `python gen_icon.py`)
-- `netx-256.png` / `netx-64.png` — previews
+- `netx.ico` 鈥?installer / shortcuts / tray (regenerate with `python gen_icon.py`)
+- `netx-256.png` / `netx-64.png` 鈥?previews
 
-Mark matches `web/public/favicon.svg` (network “N” nodes on navy).
+Mark matches `web/public/favicon.svg` (network 鈥淣鈥?nodes on navy).

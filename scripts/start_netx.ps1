@@ -147,6 +147,8 @@ function Show-LogTail {
 function Test-NetxApiListening {
     param([string]$HostName, [int]$LocalPort, [int]$WaitSec = 45)
     $deadline = (Get-Date).AddSeconds($WaitSec)
+    # Wildcard binds are not connectable on Windows; probe via loopback.
+    if ($HostName -in @("0.0.0.0", "::", "[::]", "*")) { $HostName = "127.0.0.1" }
     $healthUrl = "http://${HostName}:${LocalPort}/health"
     while ((Get-Date) -lt $deadline) {
         try {

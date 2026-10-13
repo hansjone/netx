@@ -282,6 +282,37 @@ function Test-NetxApiHealthy {
     }
 }
 
+function Get-NetxClientHost {
+    param([string]$BindHost = "")
+    # A wildcard bind address is not connectable on Windows; probe/open via loopback.
+    $h = "$BindHost".Trim()
+    if (-not $h -or $h -in @("0.0.0.0", "::", "[::]", "*")) { return "127.0.0.1" }
+    return $h
+}
+
+function Open-NetxUrl {
+    param([Parameter(Mandatory = $true)][string]$Url)
+    # Packaged scripts run elevated; Start-Process <url> would launch the browser
+    # elevated too. explorer.exe hands the URL to the user's non-elevated shell.
+    try {
+        Start-Process -FilePath (Join-Path $env:SystemRoot "explorer.exe") -ArgumentList "`"$Url`"" | Out-Null
+        return
+    } catch {}
+    try { Start-Process $Url | Out-Null } catch {}
+}
+
+function Get-NetxManagedRunner {
+    # "service" (WinSW) / "task" (SYSTEM startup task) own the runtime when present;
+    # killing their children directly would just make service_run.ps1 restart them.
+    $svc = Get-Service -Name "NetX" -ErrorAction SilentlyContinue
+    if ($svc -and [string]$svc.StartType -ne "Disabled") { return "service" }
+    try {
+        $t = Get-ScheduledTask -TaskName "NetXService" -TaskPath "\NetX\" -ErrorAction Stop
+        if ([string]$t.State -ne "Disabled") { return "task" }
+    } catch {}
+    return ""
+}
+
 function Wait-NetxApiHealthy {
     param(
         [string]$HostName = "127.0.0.1",

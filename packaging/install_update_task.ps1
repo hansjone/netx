@@ -22,6 +22,11 @@ $checkPs1 = Join-Path $PSScriptRoot "check_update.ps1"
 
 if ($Remove) {
     Unregister-ScheduledTask -TaskName $taskName -TaskPath $taskPath -Confirm:$false -ErrorAction SilentlyContinue
+    # Tray also applies updates on launch when NETX_UPDATE_AUTO=true; turn that off too.
+    $envFile = Join-Path $data ".env"
+    if (Test-Path $envFile) {
+        Write-DotEnvValue -Path $envFile -Values @{ "NETX_UPDATE_AUTO" = "false" }
+    }
     Write-Host "==> Update task removed"
     exit 0
 }

@@ -14,11 +14,16 @@
 ; Stage directory produced by build_release.ps1 (relative to this .iss)
 #define StageDir "..\release\netx-win64"
 #define IconFile "..\assets\netx.ico"
+#define AssetsDir "..\assets"
 
 [Setup]
 AppId={{A7E3C2D1-9F40-4B8E-9C1A-NETXWIN64001}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
+AppVerName={#MyAppName} {#MyAppVersion}
+VersionInfoVersion={#MyAppVersion}
+VersionInfoProductName={#MyAppName}
+UninstallDisplayName={#MyAppName} {#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 DefaultDirName={autopf}\NetX
@@ -34,7 +39,11 @@ SetupIconFile={#IconFile}
 UninstallDisplayIcon={app}\packaging\assets\netx.ico
 Compression=lzma2
 SolidCompression=yes
-WizardStyle=modern
+; Follows the Windows light/dark setting; windows11 = flat Fluent-style controls.
+WizardStyle=modern dynamic windows11 hidebevels
+WizardImageFile={#AssetsDir}\wizard-100.png,{#AssetsDir}\wizard-125.png,{#AssetsDir}\wizard-150.png,{#AssetsDir}\wizard-200.png
+WizardSmallImageFile={#AssetsDir}\wizard-small-100.png,{#AssetsDir}\wizard-small-125.png,{#AssetsDir}\wizard-small-150.png,{#AssetsDir}\wizard-small-200.png
+WizardImageBackColor=#0a1222
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=admin
@@ -42,7 +51,8 @@ PrivilegesRequired=admin
 ; Do NOT use CloseApplications=yes — it can freeze/beep on the Tasks/Ready
 ; pages while scanning locked NetX tray/service processes with no visible dialog.
 CloseApplications=no
-ShowLanguageDialog=yes
+; Pick from the Windows UI language; no extra dialog.
+ShowLanguageDialog=auto
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -51,10 +61,17 @@ Name: "chinesesimplified"; MessagesFile: "Languages\ChineseSimplified.isl"
 [CustomMessages]
 english.CreateDesktopIcon=Create a desktop shortcut
 english.SetupOptions=After install:
-english.StartTrayNow=Start NetX tray now
-english.EnableAutostart=Start NetX tray at Windows logon
-english.EnableAutoUpdate=Enable daily silent auto-update (needs network later)
-english.InstallService=Install as Windows Service (uses bundled WinSW, offline)
+english.StartTrayNow=Start NetX now
+english.RunModeGroup=How NetX runs:
+english.RunModeTray=Desktop tray (recommended) - control NetX from the notification area
+english.EnableAutostart=Start automatically when I sign in to Windows
+english.RunModeService=Windows service - runs at boot without anyone signed in (servers)
+english.MaintenanceGroup=Maintenance:
+english.EnableAutoUpdate=Install updates automatically every day (needs network)
+english.ServiceInstallFailed=NetX was installed, but the Windows service could not be registered (exit %1).%n%nYou can still start NetX from the Start Menu. Log: %2
+english.IconStart=Start NetX
+english.IconStop=Stop NetX
+english.IconUpdate=Check for updates
 english.UninstallDeleteData=Also delete NetX data (%ProgramData%\NetX)?%n%nYes = remove database, settings, and secrets%nNo = keep data for a later reinstall
 english.DbPageCaption=Database
 english.DbPageDescription=Choose built-in or external PostgreSQL. Optional credential key: paste from an existing install, or leave empty to auto-generate.
@@ -86,10 +103,17 @@ english.ModeUpdateHint=Replaces program files only. ProgramData\.env and databas
 english.ModeReinstallHint=Shows the Database page again. Does not delete ProgramData unless you uninstall and choose to.
 chinesesimplified.CreateDesktopIcon=创建桌面快捷方式
 chinesesimplified.SetupOptions=安装完成后:
-chinesesimplified.StartTrayNow=立即启动 NetX 托盘
-chinesesimplified.EnableAutostart=开机时自动启动 NetX 托盘
-chinesesimplified.EnableAutoUpdate=启用每日静默自动更新（以后需要联网）
-chinesesimplified.InstallService=安装为 Windows 服务（使用已捆绑的 WinSW，可离线）
+chinesesimplified.StartTrayNow=立即启动 NetX
+chinesesimplified.RunModeGroup=运行方式：
+chinesesimplified.RunModeTray=桌面托盘（推荐）— 在任务栏通知区域控制 NetX
+chinesesimplified.EnableAutostart=登录 Windows 时自动启动
+chinesesimplified.RunModeService=Windows 服务 — 开机即运行，无需登录（适合服务器）
+chinesesimplified.MaintenanceGroup=维护：
+chinesesimplified.EnableAutoUpdate=每天自动安装更新（需要联网）
+chinesesimplified.ServiceInstallFailed=NetX 已安装，但 Windows 服务注册失败（退出码 %1）。%n%n仍可从开始菜单启动 NetX。日志：%2
+chinesesimplified.IconStart=启动 NetX
+chinesesimplified.IconStop=停止 NetX
+chinesesimplified.IconUpdate=检查更新
 chinesesimplified.UninstallDeleteData=是否同时删除 NetX 数据（%ProgramData%\NetX）？%n%n是 = 删除数据库、配置和密钥%n否 = 保留数据以便以后重装
 chinesesimplified.DbPageCaption=数据库
 chinesesimplified.DbPageDescription=选择内置或外置 PostgreSQL。可选粘贴已有 NETX_CREDENTIAL_SECRET_KEY；留空则自动生成。
@@ -121,6 +145,12 @@ chinesesimplified.ModeUpdateHint=仅替换程序文件，保留 ProgramData\.env
 chinesesimplified.ModeReinstallHint=再次显示数据库页。不会删除 ProgramData（除非卸载时选择删除）。
 
 [Tasks]
+; Run mode is exclusive: tray + service together would race for the same port.
+; On upgrades CurPageChanged pre-selects whatever is actually installed.
+Name: "runtray"; Description: "{cm:RunModeTray}"; GroupDescription: "{cm:RunModeGroup}"; Flags: exclusive
+Name: "runtray\autostart"; Description: "{cm:EnableAutostart}"
+Name: "runservice"; Description: "{cm:RunModeService}"; GroupDescription: "{cm:RunModeGroup}"; Flags: exclusive unchecked
+Name: "autoupdate"; Description: "{cm:EnableAutoUpdate}"; GroupDescription: "{cm:MaintenanceGroup}"; Flags: unchecked
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: checkedonce
 
 [Files]
@@ -163,26 +193,30 @@ Type: filesandordirs; Name: "{app}\.venv"
 Type: files; Name: "{commondesktop}\NetX Start.lnk"
 Type: files; Name: "{commondesktop}\NetX First-time setup.lnk"
 Type: files; Name: "{commondesktop}\首次配置（内置或外置数据库）.lnk"
+; Start Menu entries from <= 0.4.16 (English-only names; toggles moved into the tray / Tasks page).
+Type: files; Name: "{group}\NetX Tray.lnk"
+Type: files; Name: "{group}\Start NetX.lnk"
+Type: files; Name: "{group}\Stop NetX.lnk"
+Type: files; Name: "{group}\Check for updates.lnk"
+Type: files; Name: "{group}\Open NetX UI.url"
+Type: files; Name: "{group}\Install Windows Service (admin).lnk"
+Type: files; Name: "{group}\Enable silent auto-update (daily).lnk"
+Type: files; Name: "{group}\Enable start at logon.lnk"
 
 [Icons]
 ; Prefer .cmd targets so Server 2012 / classic Start Menu shows normal program entries.
-Name: "{group}\NetX Tray"; Filename: "{app}\NetX-Tray.cmd"; WorkingDir: "{app}"; IconFilename: "{app}\packaging\assets\netx.ico"
-Name: "{group}\Start NetX"; Filename: "{app}\NetX-Start.cmd"; WorkingDir: "{app}"; IconFilename: "{app}\packaging\assets\netx.ico"
-Name: "{group}\Stop NetX"; Filename: "{app}\NetX-Stop.cmd"; WorkingDir: "{app}"; IconFilename: "{app}\packaging\assets\netx.ico"
-Name: "{group}\Check for updates"; Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\packaging\launch_shortcut.ps1"" -Action update -ProgramRoot ""{app}"" -DataRoot ""{commonappdata}\NetX"""; WorkingDir: "{app}"; IconFilename: "{app}\packaging\assets\netx.ico"
-Name: "{group}\Open NetX UI"; Filename: "http://127.0.0.1:8890/"; IconFilename: "{app}\packaging\assets\netx.ico"
+; Autostart / auto-update / service toggles live in the tray Settings menu and the Tasks page.
+Name: "{group}\NetX"; Filename: "{app}\NetX-Tray.cmd"; WorkingDir: "{app}"; IconFilename: "{app}\packaging\assets\netx.ico"
+Name: "{group}\{cm:IconStart}"; Filename: "{app}\NetX-Start.cmd"; WorkingDir: "{app}"; IconFilename: "{app}\packaging\assets\netx.ico"
+Name: "{group}\{cm:IconStop}"; Filename: "{app}\NetX-Stop.cmd"; WorkingDir: "{app}"; IconFilename: "{app}\packaging\assets\netx.ico"
+Name: "{group}\{cm:IconUpdate}"; Filename: "powershell.exe"; Parameters: "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ""{app}\packaging\launch_shortcut.ps1"" -Action update -ProgramRoot ""{app}"" -DataRoot ""{commonappdata}\NetX"""; WorkingDir: "{app}"; IconFilename: "{app}\packaging\assets\netx.ico"
 Name: "{group}\{cm:ReconfigureDb}"; Filename: "{app}\NetX-FirstRun.cmd"; WorkingDir: "{app}"; IconFilename: "{app}\packaging\assets\netx.ico"
-Name: "{group}\Install Windows Service (admin)"; Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\packaging\install_service.ps1"" -ProgramRoot ""{app}"" -DataRoot ""{commonappdata}\NetX"" -Start"; WorkingDir: "{app}"; IconFilename: "{app}\packaging\assets\netx.ico"
-Name: "{group}\Enable silent auto-update (daily)"; Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\packaging\install_update_task.ps1"" -ProgramRoot ""{app}"" -DataRoot ""{commonappdata}\NetX"""; WorkingDir: "{app}"; IconFilename: "{app}\packaging\assets\netx.ico"
-Name: "{group}\Enable start at logon"; Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\packaging\install_autostart.ps1"" -ProgramRoot ""{app}"""; WorkingDir: "{app}"; IconFilename: "{app}\packaging\assets\netx.ico"
-; One desktop shortcut only (tray = start + tray UI). Start Menu keeps Start/Stop entries.
+; One desktop shortcut only (tray = start + tray UI).
 Name: "{commondesktop}\NetX"; Filename: "{app}\NetX-Tray.cmd"; WorkingDir: "{app}"; IconFilename: "{app}\packaging\assets\netx.ico"; Tasks: desktopicon
 
 [Run]
+; Autostart / service / auto-update are applied from the Tasks page in CurStepChanged.
 Filename: "powershell.exe"; Parameters: "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ""{app}\packaging\netx_tray.ps1"" -ProgramRoot ""{app}"" -DataRoot ""{commonappdata}\NetX"" -StartOnLaunch"; WorkingDir: "{app}"; Description: "{cm:StartTrayNow}"; Flags: postinstall runhidden nowait skipifsilent; Check: NetxShouldStartTray
-Filename: "powershell.exe"; Parameters: "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ""{app}\packaging\install_autostart.ps1"" -ProgramRoot ""{app}"""; WorkingDir: "{app}"; Description: "{cm:EnableAutostart}"; Flags: postinstall runhidden skipifsilent unchecked
-Filename: "powershell.exe"; Parameters: "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ""{app}\packaging\install_update_task.ps1"" -ProgramRoot ""{app}"" -DataRoot ""{commonappdata}\NetX"""; WorkingDir: "{app}"; Description: "{cm:EnableAutoUpdate}"; Flags: postinstall runhidden skipifsilent unchecked
-Filename: "powershell.exe"; Parameters: "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ""{app}\packaging\install_service.ps1"" -ProgramRoot ""{app}"" -DataRoot ""{commonappdata}\NetX"" -Start"; WorkingDir: "{app}"; Description: "{cm:InstallService}"; Flags: postinstall runhidden skipifsilent unchecked
 
 ; Stop runtime BEFORE files are deleted. Do not also Exec prepare from
 ; InitializeUninstall (that previously raced/killed unins000 or hung the UI).
@@ -232,6 +266,7 @@ var
   GPgToolsReady: Boolean;
   GDbConnOk: Boolean;
   GNextBtnCaption: String;
+  GTasksSynced: Boolean;
 
 function EnvHasDbMode(): Boolean;
 var
@@ -822,6 +857,7 @@ begin
   EdCredKey.Left := ScaleX(120);
   EdCredKey.Width := DbPage.SurfaceWidth - ScaleX(120);
   EdCredKey.Text := '';
+  EdCredKey.PasswordChar := '*';
 
   TopPos := TopPos + ScaleY(24);
   LblCredHint := TNewStaticText.Create(DbPage);
@@ -1120,6 +1156,106 @@ begin
   Exec('powershell.exe', Params, ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;
 
+function NetxTaskExists(const Name: String): Boolean;
+var
+  RC: Integer;
+begin
+  Result := Exec(ExpandConstant('{sys}\schtasks.exe'), '/Query /TN "\NetX\' + Name + '"', '',
+    SW_HIDE, ewWaitUntilTerminated, RC) and (RC = 0);
+end;
+
+function NetxServiceExists(): Boolean;
+var
+  RC: Integer;
+begin
+  Result := Exec(ExpandConstant('{sys}\sc.exe'), 'query NetX', '', SW_HIDE, ewWaitUntilTerminated, RC) and (RC = 0);
+end;
+
+procedure CurPageChanged(CurPageID: Integer);
+begin
+  { Existing install: show the run mode / toggles that are really in place
+    (older versions set them from Finish-page checkboxes Inno never recorded). }
+  if (CurPageID = wpSelectTasks) and (not GTasksSynced) then
+  begin
+    GTasksSynced := True;
+    if FileExists(ExpandConstant('{app}\packaging\netx_tray.ps1')) then
+    begin
+      if NetxServiceExists() then
+        WizardSelectTasks('runservice')
+      else
+        WizardSelectTasks('runtray');
+      if NetxTaskExists('NetXTray') then
+        WizardSelectTasks('runtray\autostart')
+      else
+        WizardSelectTasks('!runtray\autostart');
+      if NetxTaskExists('NetXUpdate') then
+        WizardSelectTasks('autoupdate')
+      else
+        WizardSelectTasks('!autoupdate');
+    end;
+  end;
+end;
+
+function RunNetxScript(const Script, Extra: String): Integer;
+var
+  Params: String;
+begin
+  Params :=
+    '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + ExpandConstant('{app}\packaging\' + Script) + '"' +
+    ' -ProgramRoot "' + ExpandConstant('{app}') + '"' +
+    ' -DataRoot "' + ExpandConstant('{commonappdata}\NetX') + '"' + Extra;
+  if not Exec('powershell.exe', Params, ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, Result) then
+    Result := -1;
+end;
+
+function TasksGivenOnCommandLine(): Boolean;
+var
+  i: Integer;
+  P: String;
+begin
+  Result := False;
+  for i := 1 to ParamCount do
+  begin
+    P := Uppercase(ParamStr(i));
+    if (Pos('/TASKS=', P) = 1) or (Pos('/MERGETASKS=', P) = 1) then
+    begin
+      Result := True;
+      Exit;
+    end;
+  end;
+end;
+
+procedure ApplyRunModeTasks();
+var
+  Code: Integer;
+begin
+  { Silent auto-updates keep whatever is installed unless /TASKS is passed. }
+  if WizardSilent and (not TasksGivenOnCommandLine()) then
+    Exit;
+  if not FileExists(ExpandConstant('{commonappdata}\NetX\.env')) then
+    Exit;
+
+  if WizardIsTaskSelected('runservice') then
+  begin
+    Code := RunNetxScript('install_service.ps1', ' -Start');
+    if Code <> 0 then
+      SuppressibleMsgBox(FmtMessage(ExpandConstant('{cm:ServiceInstallFailed}'), [IntToStr(Code),
+        ExpandConstant('{commonappdata}\NetX\data\runtime')]), mbError, MB_OK, IDOK);
+  end
+  else if NetxServiceExists() then
+    RunNetxScript('install_service.ps1', ' -Uninstall');
+
+  if WizardIsTaskSelected('runtray\autostart') then
+    RunNetxScript('install_autostart.ps1', '')
+  else
+    RunNetxScript('install_autostart.ps1', ' -Remove');
+
+  if WizardIsTaskSelected('autoupdate') then
+    RunNetxScript('install_update_task.ps1', '')
+  else if NetxTaskExists('NetXUpdate') then
+    RunNetxScript('install_update_task.ps1', ' -Remove');
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   UninstallKey: String;
@@ -1138,6 +1274,7 @@ begin
     UninstallKey :=
       'Software\Microsoft\Windows\CurrentVersion\Uninstall\{A7E3C2D1-9F40-4B8E-9C1A-NETXWIN64001}_is1';
     RegDeleteValue(HKLM, UninstallKey, 'QuietUninstallString');
+    ApplyRunModeTasks();
     ResumeNetxServiceAfterInstall();
   end;
 end;
