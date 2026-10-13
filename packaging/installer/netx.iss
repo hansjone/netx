@@ -170,6 +170,8 @@ Source: "{#StageDir}\postgres\pgsql\bin\liblz4.dll"; Flags: dontcopy
 Source: "{#StageDir}\postgres\pgsql\bin\libzstd.dll"; Flags: dontcopy
 Source: "{#StageDir}\postgres\pgsql\bin\libxml2.dll"; Flags: dontcopy
 Source: "{#StageDir}\postgres\pgsql\bin\libxslt.dll"; Flags: dontcopy
+; VC++ runtime deployed app-local by build_release.ps1 (clean PCs lack the redistributable).
+Source: "{#StageDir}\postgres\pgsql\bin\vcruntime140.dll"; Flags: dontcopy
 ; These helpers are extracted for PrepareToInstall, before the new program tree is copied.
 Source: "{#StageDir}\packaging\_common.ps1"; Flags: dontcopy
 Source: "{#StageDir}\packaging\service_lifecycle.ps1"; Flags: dontcopy
@@ -492,6 +494,7 @@ begin
     ExtractTemporaryFile('libzstd.dll');
     ExtractTemporaryFile('libxml2.dll');
     ExtractTemporaryFile('libxslt.dll');
+    ExtractTemporaryFile('vcruntime140.dll');
     Result := FileExists(ExpandConstant('{tmp}\psql.exe')) and
       FileExists(ExpandConstant('{tmp}\test_pg_conn.ps1'));
     GPgToolsReady := Result;

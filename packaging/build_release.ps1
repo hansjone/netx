@@ -168,6 +168,15 @@ if (Test-Path (Join-Path $pgsql "bin\pg_ctl.exe")) {
     Remove-Item -Recurse -Force (Join-Path $pgStage "lib\pgxs") -ErrorAction SilentlyContinue
     Get-ChildItem (Join-Path $pgStage "share\locale") -Directory -ErrorAction SilentlyContinue |
         Where-Object { $_.Name -notlike "zh_CN*" } | Remove-Item -Recurse -Force
+    # The EDB binaries link the VC++ 2015-2022 runtime (vcruntime140, msvcp140 via ICU), which a
+    # clean Windows install does not have. Deploy it app-local (allowed by the VC++ redist terms)
+    # so the bundled PostgreSQL starts on fresh / offline machines without the redistributable.
+    $sys32 = Join-Path $env:SystemRoot "System32"
+    foreach ($dll in @("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll", "msvcp140_1.dll", "msvcp140_2.dll")) {
+        $src = Join-Path $sys32 $dll
+        if (-not (Test-Path -LiteralPath $src)) { throw "vc_runtime_missing_on_build_machine: $src (install the VC++ 2015-2022 x64 redistributable)" }
+        Copy-Item -LiteralPath $src -Destination (Join-Path $pgStage "bin\$dll") -Force
+    }
     Get-ChildItem -Path $pgsql -File -ErrorAction SilentlyContinue | ForEach-Object {
         Copy-Item -Path $_.FullName -Destination (Join-Path $pgStage $_.Name) -Force
     }
