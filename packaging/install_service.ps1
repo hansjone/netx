@@ -11,7 +11,7 @@ param(
 
 # Install NetX as a Windows Service (WinSW) or as a SYSTEM startup Scheduled Task.
 # Requires elevation for winsw / task modes that run as SYSTEM.
-# WinSW binary is bundled at packaging\winsw\WinSW-x64.exe by build_release.ps1 — no network needed.
+# WinSW binary is bundled at packaging\winsw\WinSW.exe by build_release.ps1 — no network needed.
 
 $ErrorActionPreference = "Stop"
 . "$PSScriptRoot\_common.ps1"
@@ -40,8 +40,10 @@ function Ensure-WinSW {
     if (-not (Test-Path $cacheDir)) {
         New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null
     }
-    $bundled = Join-Path $PSScriptRoot "winsw\WinSW-x64.exe"
-    $dl = Join-Path $cacheDir "WinSW-x64.exe"
+    # WinSW.exe = .NET Framework build (current); WinSW-x64.exe = older self-contained bundles.
+    $bundled = Join-Path $PSScriptRoot "winsw\WinSW.exe"
+    if (-not (Test-Path $bundled)) { $bundled = Join-Path $PSScriptRoot "winsw\WinSW-x64.exe" }
+    $dl = Join-Path $cacheDir "WinSW.NET461.exe"
     $src = $null
     if (Test-Path $bundled) {
         $src = $bundled
@@ -50,7 +52,7 @@ function Ensure-WinSW {
         $src = $dl
         Write-Host "==> Using cached WinSW: $dl"
     } elseif ($AllowDownload) {
-        $url = "https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW-x64.exe"
+        $url = "https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW.NET461.exe"
         Write-Host "==> Downloading WinSW: $url"
         Invoke-WebRequest -Uri $url -OutFile $dl -UseBasicParsing
         $src = $dl

@@ -68,11 +68,13 @@ if (-not $SkipPostgresDownload) {
 }
 
 # Bundle WinSW so offline installs can register a Windows Service without GitHub.
-$winswCache = Join-Path $PSScriptRoot "cache\WinSW-x64.exe"
-$winswShip = Join-Path $PSScriptRoot "winsw\WinSW-x64.exe"
+# .NET Framework 4.6.1 build (~0.6MB; in-box on Win10 1607+ / Server 2016+) instead of
+# the self-contained x64 build (~18MB).
+$winswCache = Join-Path $PSScriptRoot "cache\WinSW.NET461.exe"
+$winswShip = Join-Path $PSScriptRoot "winsw\WinSW.exe"
 if (-not (Test-Path $winswShip)) {
     if (-not (Test-Path $winswCache)) {
-        $winswUrl = "https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW-x64.exe"
+        $winswUrl = "https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW.NET461.exe"
         Write-Host "==> Downloading WinSW for offline bundle: $winswUrl"
         New-Item -ItemType Directory -Path (Split-Path $winswCache -Parent) -Force | Out-Null
         Invoke-WebRequest -Uri $winswUrl -OutFile $winswCache -UseBasicParsing
@@ -137,7 +139,7 @@ if (Test-Path $assetsSrc) {
 $winswOut = Join-Path $packOut "winsw"
 New-Item -ItemType Directory -Path $winswOut -Force | Out-Null
 if (Test-Path $winswShip) {
-    Copy-Item -Path $winswShip -Destination (Join-Path $winswOut "WinSW-x64.exe") -Force
+    Copy-Item -Path $winswShip -Destination (Join-Path $winswOut "WinSW.exe") -Force
     Write-Host "==> Bundled WinSW for offline service install"
 } else {
     Write-Host "[WARN] WinSW missing - offline service install will fail" -ForegroundColor Yellow
@@ -155,6 +157,17 @@ if (Test-Path (Join-Path $pgsql "bin\pg_ctl.exe")) {
             Copy-Item -Path $srcSub -Destination (Join-Path $pgStage $sub) -Recurse -Force
         }
     }
+    # Runtime-only subset: NetX uses postgres/pg_ctl/initdb/psql/pg_dump (+ restore/isready
+    # for manual ops). Drop StackBuilder (wx GUI), dev/test tools, static libs, pgxs and
+    # non-Chinese message catalogs.
+    $pgBinKeep = @("postgres", "pg_ctl", "initdb", "psql", "pg_dump", "pg_dumpall", "pg_restore", "pg_isready")
+    Get-ChildItem (Join-Path $pgStage "bin") -File | Where-Object {
+        ($_.Extension -eq ".exe" -and $pgBinKeep -notcontains $_.BaseName) -or $_.Name -like "wx*.dll"
+    } | Remove-Item -Force
+    Get-ChildItem (Join-Path $pgStage "lib") -File -Filter *.lib | Remove-Item -Force
+    Remove-Item -Recurse -Force (Join-Path $pgStage "lib\pgxs") -ErrorAction SilentlyContinue
+    Get-ChildItem (Join-Path $pgStage "share\locale") -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -notlike "zh_CN*" } | Remove-Item -Recurse -Force
     Get-ChildItem -Path $pgsql -File -ErrorAction SilentlyContinue | ForEach-Object {
         Copy-Item -Path $_.FullName -Destination (Join-Path $pgStage $_.Name) -Force
     }
