@@ -76,6 +76,11 @@ def user_public(user: AppUser) -> dict[str, Any]:
     }
 
 
+def user_prefs(user: AppUser) -> dict[str, Any]:
+    raw = getattr(user, "prefs", None)
+    return dict(raw) if isinstance(raw, dict) else {}
+
+
 def sanitize_detail(detail: Any) -> Any:
     """Recursively drop secret-looking keys from audit detail payloads."""
     if isinstance(detail, dict):
@@ -431,6 +436,7 @@ def login_issue_token(
         "expires_in": ttl,
         "refresh_expires_in": refresh_ttl,
         "user": user_public(user),
+        "prefs": user_prefs(user),
     }
 
 

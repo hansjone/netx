@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import re
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Query, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from .auth_cookies import clear_auth_cookies, read_refresh_cookie, set_auth_cookies
 from .auth_deps import AuthContext, require_admin, require_user
@@ -36,6 +38,7 @@ from .auth_service import (
     revoke_auth_sessions,
     update_api_token,
     update_user,
+    user_prefs,
     user_public,
     write_audit,
 )
@@ -46,14 +49,47 @@ from .auth_rate_limit import (
 )
 from .client_ip import resolve_client_ip
 from .db import get_db
+from .models import AppUser
 
 router = APIRouter(tags=["auth"])
+
+_PREF_KEYS = frozenset({"workbench"})
+_PREF_ID_RE = re.compile(r"^[a-z0-9-]{1,64}$")
+_PREF_LIST_MAX = 64
 
 
 def _client_meta(request: Request) -> tuple[str, str]:
     ip = resolve_client_ip(request)
     ua = str(request.headers.get("user-agent") or "")[:512]
     return ip, ua
+
+
+def _validate_id_list(value: Any, *, field: str) -> list[str]:
+    if not isinstance(value, list):
+        raise HTTPException(status_code=422, detail=f"invalid_{field}")
+    if len(value) > _PREF_LIST_MAX:
+        raise HTTPException(status_code=422, detail=f"{field}_too_long")
+    out: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not _PREF_ID_RE.fullmatch(item):
+            raise HTTPException(status_code=422, detail=f"invalid_{field}_item")
+        out.append(item)
+    return out
+
+
+def _validate_workbench_prefs(value: Any) -> dict[str, list[str]]:
+    if not isinstance(value, dict):
+        raise HTTPException(status_code=422, detail="invalid_workbench_prefs")
+    return {
+        "order": _validate_id_list(value.get("order", []), field="order"),
+        "hidden": _validate_id_list(value.get("hidden", []), field="hidden"),
+    }
+
+
+def _validate_pref_value(key: str, value: Any) -> Any:
+    if key == "workbench":
+        return _validate_workbench_prefs(value)
+    raise HTTPException(status_code=404, detail="unknown_pref_key")
 
 
 def _token_response(response: Response, request: Request, out: dict[str, Any]) -> dict[str, Any]:
@@ -269,7 +305,37 @@ def api_me(ctx: Annotated[AuthContext, Depends(require_user)]) -> dict[str, Any]
         "auth_via": ctx.auth_via,
         "scopes": sorted(ctx.scopes),
         "all_scopes": sorted(ALL_SCOPES),
+        "prefs": user_prefs(ctx.user),
     }
+
+
+@router.get("/v1/auth/me/prefs")
+def api_get_prefs(ctx: Annotated[AuthContext, Depends(require_user)]) -> dict[str, Any]:
+    return {"prefs": user_prefs(ctx.user)}
+
+
+@router.put("/v1/auth/me/prefs/{key}")
+def api_put_pref(
+    key: str,
+    body: dict[str, Any],
+    ctx: Annotated[AuthContext, Depends(require_user)],
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    if key not in _PREF_KEYS:
+        raise HTTPException(status_code=404, detail="unknown_pref_key")
+    validated = _validate_pref_value(key, body)
+    # Reload in this session: ctx.user may be the middleware's detached copy, or the
+    # synthetic "system" user when auth is disabled (no row — never insert it).
+    user = db.get(AppUser, ctx.user.id)
+    if user is None:
+        raise HTTPException(status_code=409, detail="prefs_unavailable")
+    prefs = user_prefs(user)
+    prefs[key] = validated
+    user.prefs = prefs
+    flag_modified(user, "prefs")
+    db.commit()
+    db.refresh(user)
+    return {"prefs": user_prefs(user)}
 
 
 @router.post("/v1/auth/change-password")

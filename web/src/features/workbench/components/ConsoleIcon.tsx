@@ -1,4 +1,4 @@
-type Props = { kind: "arrow" | "search" | "refresh" | "activity" | "check" | "close" };
+type Props = { kind: "arrow" | "search" | "refresh" | "activity" | "check" | "close" | "settings" };
 
 export function ConsoleIcon({ kind }: Props) {
   return (
@@ -9,6 +9,12 @@ export function ConsoleIcon({ kind }: Props) {
       {kind === "activity" && <path d="M3 12h4l3-7 4 14 3-7h4" />}
       {kind === "check" && <><circle cx="12" cy="12" r="9" /><path d="m8 12 3 3 5-6" /></>}
       {kind === "close" && <path d="m6 6 12 12M6 18 18 6" />}
+      {kind === "settings" && (
+        <>
+          <circle cx="12" cy="12" r="3" />
+          <path d="M12 2.5v2.2M12 19.3v2.2M2.5 12h2.2M19.3 12h2.2M5.05 5.05l1.56 1.56M17.39 17.39l1.56 1.56M5.05 18.95l1.56-1.56M17.39 6.61l1.56-1.56" />
+        </>
+      )}
     </svg>
   );
 }

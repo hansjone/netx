@@ -108,6 +108,7 @@ def apply_auth_schema_patches(conn: Connection) -> None:
         "ALTER TABLE app_user ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN DEFAULT FALSE",
     )
     _run_sql(conn, "ALTER TABLE app_user ADD COLUMN IF NOT EXISTS scopes JSON DEFAULT '[]'")
+    _run_sql(conn, "ALTER TABLE app_user ADD COLUMN IF NOT EXISTS prefs JSON DEFAULT '{}'")
     _run_sql(conn, "ALTER TABLE api_token ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP")
     _run_sql(conn, "ALTER TABLE api_token ADD COLUMN IF NOT EXISTS scopes JSON DEFAULT '[]'")
     _run_sql(
@@ -354,6 +355,7 @@ def apply_domain_schema_patches(conn: Connection) -> None:
         "CREATE INDEX IF NOT EXISTS ix_ume_alarms_history_host_name ON ume_alarms_history (host_name)",
         "ALTER TABLE api_token ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP",
         "ALTER TABLE app_user ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN DEFAULT FALSE",
+        "ALTER TABLE app_user ADD COLUMN IF NOT EXISTS prefs JSON DEFAULT '{}'",
         "ALTER TABLE managed_ne ADD COLUMN IF NOT EXISTS hop_enabled BOOLEAN DEFAULT FALSE",
         "ALTER TABLE managed_ne ADD COLUMN IF NOT EXISTS hop_vendor VARCHAR(32) DEFAULT 'zte'",
         "ALTER TABLE managed_ne ADD COLUMN IF NOT EXISTS hop_host VARCHAR(128) DEFAULT ''",

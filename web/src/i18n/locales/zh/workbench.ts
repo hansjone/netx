@@ -149,6 +149,12 @@ const workbench = {
     apiKeys: "API Key",
     sessions: "登录会话",
   },
+  customize: "自定义功能区",
+  customizeDone: "完成",
+  customizeReset: "恢复默认",
+  customizeAvailable: "可添加",
+  customizeEmpty: "添加功能",
+  customizeSaveFailed: "保存失败",
 };
 
 export default workbench;

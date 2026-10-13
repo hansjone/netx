@@ -21,11 +21,15 @@ export type AuthUser = {
   updated_at?: string | null;
 };
 
+export type UserPrefs = Record<string, unknown>;
+
 type AuthState = {
   ready: boolean;
   token: string | null;
   user: AuthUser | null;
   scopes: string[];
+  prefs: UserPrefs;
+  setPrefs: (prefs: UserPrefs) => void;
   login: (username: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   refreshMe: () => Promise<void>;
@@ -35,24 +39,33 @@ type AuthState = {
 
 const AuthContext = createContext<AuthState | null>(null);
 
+function asPrefs(value: unknown): UserPrefs {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as UserPrefs) : {};
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(false);
   // token is opaque for UI; cookie session means we only care about user presence.
   const [token, setToken] = useState<string | null>(null);
   const [user, setUser] = useState<AuthUser | null>(null);
   const [scopes, setScopes] = useState<string[]>([]);
+  const [prefs, setPrefs] = useState<UserPrefs>({});
 
   const refreshMe = useCallback(async () => {
     clearAuthToken(); // drop any legacy localStorage tokens
     try {
-      const data = await apiGet<{ user: AuthUser; scopes?: string[] }>("/v1/auth/me");
+      const data = await apiGet<{ user: AuthUser; scopes?: string[]; prefs?: UserPrefs }>(
+        "/v1/auth/me",
+      );
       setToken("cookie");
       setUser(data.user);
       setScopes(data.scopes || data.user.scopes || []);
+      setPrefs(asPrefs(data.prefs));
     } catch {
       setToken(null);
       setUser(null);
       setScopes([]);
+      setPrefs({});
     }
   }, []);
 
@@ -64,7 +77,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [refreshMe]);
 
   const login = useCallback(async (username: string, password: string) => {
-    const data = await apiPost<{ user: AuthUser }>("/v1/auth/login", {
+    const data = await apiPost<{ user: AuthUser; prefs?: UserPrefs }>("/v1/auth/login", {
       username,
       password,
     });
@@ -72,6 +85,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setToken("cookie");
     setUser(data.user);
     setScopes(data.user.scopes || []);
+    setPrefs(asPrefs(data.prefs));
   }, []);
 
   const logout = useCallback(async () => {
@@ -84,6 +98,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setToken(null);
     setUser(null);
     setScopes([]);
+    setPrefs({});
   }, []);
 
   const value = useMemo<AuthState>(
@@ -92,13 +107,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       token,
       user,
       scopes,
+      prefs,
+      setPrefs,
       login,
       logout,
       refreshMe,
       isAdmin: user?.role === "admin",
       hasScope: (scope: string) => scopes.includes(scope) || user?.role === "admin",
     }),
-    [ready, token, user, scopes, login, logout, refreshMe],
+    [ready, token, user, scopes, prefs, login, logout, refreshMe],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

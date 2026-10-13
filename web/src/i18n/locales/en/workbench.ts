@@ -149,6 +149,12 @@ const workbench = {
     apiKeys: "API Keys",
     sessions: "Login sessions",
   },
+  customize: "Customize modules",
+  customizeDone: "Done",
+  customizeReset: "Reset",
+  customizeAvailable: "Available",
+  customizeEmpty: "Add modules",
+  customizeSaveFailed: "Save failed",
 };
 
 export default workbench;

@@ -2,7 +2,7 @@ import { useMemo, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@heroui/react";
 import { useI18n } from "../../i18n";
-import { WorkbenchModules, type DisplaySection } from "./components/WorkbenchModules";
+import { WorkbenchModules } from "./components/WorkbenchModules";
 import { ConsoleIcon } from "./components/ConsoleIcon";
 import { modulesInSection, type ModuleDefinition, type WorkbenchSection } from "../../config/modules";
 import { openOrFocusModule } from "../../utils/moduleWindows";
@@ -331,15 +331,11 @@ export function WorkbenchPage() {
     ) as Record<WorkbenchSection, ModuleDefinition[]>;
   }, [isAdmin, hasScope]);
 
-  const displaySections = useMemo((): DisplaySection[] => {
-    const ops = [...visibleBySection.monitoring, ...visibleBySection.operations];
-    const system = visibleBySection.system;
-    const sections: DisplaySection[] = [
-      { key: "operations", mods: ops },
-      { key: "system", mods: system },
-    ];
-    return sections.filter((s) => s.mods.length > 0);
-  }, [visibleBySection]);
+  const opsCandidates = useMemo(
+    () => [...visibleBySection.monitoring, ...visibleBySection.operations],
+    [visibleBySection],
+  );
+  const systemMods = visibleBySection.system;
 
   const railTasks = useMemo(() => {
     const items = opsQuery.data?.items ?? [];
@@ -501,7 +497,7 @@ export function WorkbenchPage() {
         <div className="wb-runtime__foot"><span>{t("workbench.kpi.uptime")}</span><strong>{metrics ? formatAgeSec(metrics.uptime_sec) : metricsPlaceholder}</strong></div>
       </section>
       <div className="wb-body">
-        <WorkbenchModules sections={displaySections} />
+        <WorkbenchModules opsCandidates={opsCandidates} systemMods={systemMods} />
         <aside className="wb-side" aria-label={t("workbench.sidePanel")}>
         <section className="wb-rail wb-panel wb-rail--tasks">
           <div className="wb-rail__head">

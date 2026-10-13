@@ -28,6 +28,8 @@ export type ModuleDefinition = {
   adminOnly?: boolean;
   /** Hide from workbench launcher; still used for module window registration. */
   workbenchHidden?: boolean;
+  /** When true and not listed in the user's order, start in the "available" tray. */
+  defaultHidden?: boolean;
 };
 
 export const MODULES: readonly ModuleDefinition[] = [
@@ -157,6 +159,13 @@ export function getPageTitleKey(pathname: string): string {
 
 export function modulesInSection(section: WorkbenchSection): ModuleDefinition[] {
   return MODULES.filter((m) => m.section === section);
+}
+
+/** Operations-area tiles users can show/hide/reorder (monitoring folded into ops). */
+export function customizableModules(): ModuleDefinition[] {
+  return MODULES.filter(
+    (m) => (m.section === "operations" || m.section === "monitoring") && !m.workbenchHidden,
+  );
 }
 
 export function isWorkbenchPath(pathname: string): boolean {

@@ -21,6 +21,8 @@ class AppUser(Base):
     role: Mapped[str] = mapped_column(String(32), default="user", index=True)  # admin | user
     # Optional capability override; empty => role defaults (see auth_scopes).
     scopes: Mapped[list] = mapped_column(_JsonType, default=list)
+    # Per-user UI preferences (e.g. workbench card layout). Pure client prefs; not audited.
+    prefs: Mapped[dict] = mapped_column(_JsonType, default=dict)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     must_change_password: Mapped[bool] = mapped_column(Boolean, default=False)
     created_by: Mapped[str] = mapped_column(String(64), default="")
