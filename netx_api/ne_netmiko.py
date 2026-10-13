@@ -47,6 +47,9 @@ def paging_disable_commands(*, vendor: str = "", device_type: str = "") -> list[
     dt = str(device_type or "").strip().lower()
     v = str(vendor or "").strip().lower()
     blob = f"{dt} {v}"
+    # RouterOS has no pager; Cisco's command leaves an extra error/prompt redraw.
+    if "mikrotik" in blob or "routeros" in blob or "switchos" in blob:
+        return []
     if "huawei" in blob or "华为" in v:
         return ["screen-length 0 temporary"]
     if "hp_comware" in blob or "h3c" in blob or "comware" in blob:
@@ -134,6 +137,23 @@ def drain_read_channel(
 
 
 def _send_command_expect_prompt(conn: Any, cmd: str, *, read_timeout: int) -> str:
+    device_type = getattr(conn, "device_type", "")
+    if isinstance(device_type, str) and device_type.lower().startswith("mikrotik"):
+        # find_prompt sends an extra Enter *after* our channel drain. RouterOS
+        # can repaint that old prompt after send_command starts, ending the read
+        # before the command's output arrives. Use its complete prompt directly.
+        # Keep echo verification off: long RouterOS scripts wrap at PTY width.
+        prompt_pattern = r"(?m)^\[[^\r\n\]]+\](?:[ \t]+/[^\r\n>]*)?[ \t]*>[ \t]*$"
+        return str(
+            conn.send_command(
+                command_string=cmd,
+                read_timeout=read_timeout,
+                auto_find_prompt=False,
+                expect_string=prompt_pattern,
+                cmd_verify=False,
+            )
+            or ""
+        )
     try:
         return str(
             conn.send_command(

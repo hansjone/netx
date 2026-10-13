@@ -9,6 +9,12 @@ from netx_api.ne_netmiko import disable_target_paging, paging_disable_commands
 
 
 class PagingDisableTests(unittest.TestCase):
+    def test_routeros_does_not_send_cisco_paging_command(self) -> None:
+        conn = MagicMock()
+        self.assertEqual(disable_target_paging(conn, device_type="mikrotik_routeros"), "")
+        conn.send_command_timing.assert_not_called()
+        conn.write_channel.assert_not_called()
+
     def test_commands_by_vendor(self) -> None:
         self.assertEqual(
             paging_disable_commands(vendor="Huawei", device_type="huawei"),
