@@ -216,7 +216,12 @@ if ($CreateVenv) {
     $spEx = Join-Path $prefix "Lib\site-packages"
     $robocopy = Join-Path $env:SystemRoot "System32\robocopy.exe"
     if (-not (Test-Path -LiteralPath $robocopy)) { throw "robocopy_not_found" }
-    & $robocopy $prefix $rtDir /E /XD $spEx __pycache__ /XF *.pyc /NFL /NDL /NJH /NJS /nc /ns /np | Out-Null
+    # Headless server: drop docs, the stdlib test suite and Tk/IDLE (~100MB unpacked).
+    # Keep ensurepip - venv creation needs it. Same result on CI and local builds.
+    $xdRuntime = @("Doc", "tcl", "Tools", "Lib\test", "Lib\idlelib", "Lib\tkinter", "Lib\turtledemo") |
+        ForEach-Object { Join-Path $prefix $_ }
+    $xfRuntime = @("_tkinter.pyd", "tcl86t.dll", "tk86t.dll", "*.pyc")
+    & $robocopy $prefix $rtDir /E /XD $spEx __pycache__ @xdRuntime /XF @xfRuntime /NFL /NDL /NJH /NJS /nc /ns /np | Out-Null
     if ($LASTEXITCODE -ge 8) { throw "robocopy_python_runtime_failed: exit $LASTEXITCODE" }
 
     $rtPy = Join-Path $rtDir "python.exe"
