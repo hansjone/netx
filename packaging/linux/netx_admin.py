@@ -318,6 +318,8 @@ def _release_to_candidate(rel: dict, source: str, arch: str, api_url: str = "") 
     return {
         "source": source,
         "latest": tag.lstrip("vV"),
+        # Forgejo serves /attachments/<uuid>: the URL does not carry the file name.
+        "name": str(pkg["name"]),
         "url": url_of(pkg),
         "sha256_url": url_of(sha) if sha else "",
         "sha256": "",
@@ -581,7 +583,7 @@ def cmd_fetch_update(a: argparse.Namespace) -> None:
     if work.exists():
         shutil.rmtree(work)
     work.mkdir(parents=True)
-    name = Path(urllib.parse.urlparse(info["url"]).path).name or "netx-update.tar.gz"
+    name = str(info.get("name") or "") or Path(urllib.parse.urlparse(info["url"]).path).name
     if not asset_name_re(a.arch).match(name):
         die("unexpected_asset_name", name)
     pkg = work / name
