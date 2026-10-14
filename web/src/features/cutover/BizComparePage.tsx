@@ -1,5 +1,5 @@
 import { Button, Input, Modal } from "@heroui/react";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import {
   parseTemplateImport, parseIfaceNormText, formatIfaceNormText, parseValueMapText, formatValueMapText,
@@ -639,16 +639,13 @@ const FILTER_OPS = [
 
 /** Value-map editor for one field: text is parsed on blur so half-typed lines never clobber the rule. */
 function ValueMapCell({
-  field, value, scope, onScope, onCommit, rank, onRank, showRank, t,
+  field, value, scope, onScope, onCommit, t,
 }: {
   field: string;
   value: Record<string, string>;
   scope: Side;
   onScope: (s: Side) => void;
   onCommit: (map: Record<string, string>) => void;
-  rank: string[];
-  onRank: (rank: string[]) => void;
-  showRank: boolean;
   t: (k: string, vars?: Record<string, string | number>) => string;
 }) {
   const external = formatValueMapText(value);
@@ -660,14 +657,6 @@ function ValueMapCell({
   }, [external, scope]);
   return (
     <div className="ct-valuemap">
-      {showRank ? (
-        <Input
-          aria-label={`${field} ${t("bizCompare.rankLabel")}`}
-          placeholder={t("bizCompare.rankPlaceholder")}
-          value={rank.join(",")}
-          onChange={(e) => onRank(e.target.value.split(",").map((x) => x.trim()).filter(Boolean))}
-        />
-      ) : null}
       <select
         className="mt-select"
         aria-label={`${field} ${t("bizCompare.valueMapScope")}`}
@@ -682,8 +671,9 @@ function ValueMapCell({
         className={`bs-cmp-mapping__editor ct-valuemap__text${error ? " is-invalid" : ""}`}
         aria-label={`${field} ${t("bizCompare.valueMap")}`}
         placeholder={t("bizCompare.valueMapPlaceholder")}
-        rows={2}
+        rows={3}
         spellCheck={false}
+        autoFocus
         value={text}
         onChange={(e) => setText(e.target.value)}
         onBlur={() => {
@@ -899,6 +889,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
   const [tplSheets, setTplSheets] = useState<MetricSheet[]>([]);
   const [tplSheetIdx, setTplSheetIdx] = useState(0);
   const [valueMapScope, setValueMapScope] = useState<Record<string, Side>>({});
+  const [vmOpen, setVmOpen] = useState<string | null>(null);
   const [tplPaneTab, setTplPaneTab] = useState<"fields" | "filters">("fields");
   const [showMetricPicker, setShowMetricPicker] = useState(true);
 
@@ -1618,6 +1609,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     setTplSheetIdx(0);
     setTplPaneTab("fields");
     setValueMapScope({});
+    setVmOpen(null);
     setShowMetricPicker(true);
     setTplOpen(true);
   };
@@ -1633,6 +1625,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     setTplSheetIdx(0);
     setTplPaneTab("fields");
     setValueMapScope({});
+    setVmOpen(null);
     setShowMetricPicker(!sheets.length);
     setTplOpen(true);
   };
@@ -2909,6 +2902,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                         className={`ct-editor__nav-item${tplSheetIdx === i ? " is-active" : ""}`}
                         onClick={() => {
                           setTplSheetIdx(i);
+                          setVmOpen(null);
                           setTplPaneTab("fields");
                         }}
                       >
@@ -2998,21 +2992,21 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                     </button>
                   </div>
 
-                  <FieldSelect label={t("bizCompare.portPolicy")} value={activeTplSheet.ignore_port_changes == null ? "auto" : activeTplSheet.ignore_port_changes ? "ignore" : "strict"} onChange={(e) => updateActiveSheet({ignore_port_changes: e.target.value === "auto" ? null : e.target.value === "ignore"})} hint={t("bizCompare.portPolicyHint")}>
-                    <option value="auto">{t("bizCompare.portPolicyAuto")}</option><option value="strict">{t("bizCompare.portPolicyStrict")}</option><option value="ignore">{t("bizCompare.portPolicyIgnore")}</option>
-                  </FieldSelect>
                   <div className="ct-sheet-options">
-                    <FieldSelect label={t("bizCompare.unmappedPortPolicy")} value={activeTplSheet.unmapped_port_policy || "by_name"} hint={t("bizCompare.unmappedPortPolicyHint")}
+                    <FieldSelect label={t("bizCompare.portPolicy")} title={t("bizCompare.portPolicyHint")} value={activeTplSheet.ignore_port_changes == null ? "auto" : activeTplSheet.ignore_port_changes ? "ignore" : "strict"} onChange={(e) => updateActiveSheet({ignore_port_changes: e.target.value === "auto" ? null : e.target.value === "ignore"})}>
+                      <option value="auto">{t("bizCompare.portPolicyAuto")}</option><option value="strict">{t("bizCompare.portPolicyStrict")}</option><option value="ignore">{t("bizCompare.portPolicyIgnore")}</option>
+                    </FieldSelect>
+                    <FieldSelect label={t("bizCompare.unmappedPortPolicy")} title={t("bizCompare.unmappedPortPolicyHint")} value={activeTplSheet.unmapped_port_policy || "by_name"}
                       onChange={(e) => updateActiveSheet({ unmapped_port_policy: e.target.value as "by_name" | "ignore_port" })}>
                       <option value="by_name">{t("bizCompare.unmappedByName")}</option>
                       <option value="ignore_port">{t("bizCompare.unmappedIgnorePort")}</option>
                     </FieldSelect>
-                    <FieldSelect label={t("bizCompare.duplicatePairing")} value={activeTplSheet.duplicate_pairing || "sorted"} hint={t("bizCompare.duplicatePairingHint")}
+                    <FieldSelect label={t("bizCompare.duplicatePairing")} title={t("bizCompare.duplicatePairingHint")} value={activeTplSheet.duplicate_pairing || "sorted"}
                       onChange={(e) => updateActiveSheet({ duplicate_pairing: e.target.value as "sorted" | "ordered" })}>
                       <option value="sorted">{t("bizCompare.pairSorted")}</option>
                       <option value="ordered">{t("bizCompare.pairOrdered")}</option>
                     </FieldSelect>
-                    <label className="ct-sheet-options__check">
+                    <label className="ct-sheet-options__check" title={t("bizCompare.builtinVendorCanonicalHint")}>
                       <input type="checkbox" checked={activeTplSheet.builtin_vendor_canonical !== false}
                         onChange={(e) => updateActiveSheet({ builtin_vendor_canonical: e.target.checked ? undefined : false })} />
                       <span>{t("bizCompare.builtinVendorCanonical")}</span>
@@ -3027,7 +3021,6 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                     />
                   )) : (
                     <>
-                      <p className="muted ct-field-hint">{t("bizCompare.fieldsHintShort")}</p>
                       <div className="pt-list-table-wrap ct-field-table-wrap">
                         <table className="data-table pt-list-table ct-field-table">
                           <thead>
@@ -3035,7 +3028,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                               <th>{t("bizCompare.field")}</th>
                               <th title={t("bizCompare.keyFields")}>{t("bizCompare.keyFields")}</th>
                               <th title={t("bizCompare.ifaceFields")}>{t("bizCompare.ifaceFields")}</th>
-                              <th title={t("bizCompare.compareFields")}>{t("bizCompare.compareFields")}</th>
+                              <th title={t("bizCompare.fieldsHintShort")}>{t("bizCompare.compareFields")}</th>
                               <th>{t("bizCompare.compareMode")}</th>
                               <th>{t("bizCompare.tolerance")}</th>
                               <th>{t("bizCompare.displayField")}</th>
@@ -3056,8 +3049,11 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                             const norm = rawNorm === "strip" ? "none" : rawNorm;
                             const needsTol = ["numeric", "percent", "numeric_min", "numeric_max"].includes(cmpMode);
                             const vmScope = valueMapScope[f.name] || "both";
+                            const vmCount = (["both", "before", "after"] as Side[]).reduce((n, sc) => n + Object.keys(valueMapFor(activeTplSheet, f.name, sc)).length, 0);
+                            const vmExpanded = vmOpen === f.name;
                             return (
-                              <tr key={f.name}>
+                              <Fragment key={f.name}>
+                              <tr className={`${isKey ? "is-key" : isCompare ? "is-compare" : ""}${vmExpanded ? " is-expanded" : ""}`}>
                                 <td>
                                   <code className="ct-field-name">{f.name}</code>
                                 </td>
@@ -3111,11 +3107,11 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                                   />
                                 </td>
                                 <td>
+                                  {!isCompare ? <span className="ct-na">—</span> : (
                                   <select
                                     className="mt-select"
                                     value={cmpMode === "ignore" ? "eq" : cmpMode}
                                     aria-label={`${f.name} ${t("bizCompare.compareMode")}`}
-                                    disabled={!isCompare}
                                     onChange={(e) => {
                                       const mode = e.target.value;
                                       updateActiveSheet({
@@ -3134,8 +3130,18 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                                     <option value="numeric_min">{t("bizCompare.modeNumericMin")}</option>
                                     <option value="numeric_max">{t("bizCompare.modeNumericMax")}</option>
                                   </select>
+                                  )}
                                 </td>
                                 <td>
+                                  {isCompare && cmpMode === "not_worse" ? (
+                                    <Input
+                                      aria-label={`${f.name} ${t("bizCompare.rankLabel")}`}
+                                      placeholder={t("bizCompare.rankPlaceholder")}
+                                      title={t("bizCompare.rankLabel")}
+                                      value={(rule.rank || []).join(",")}
+                                      onChange={(e) => updateActiveSheet({ field_rules: upsertFieldRule(activeTplSheet, f.name, { compare: "not_worse", rank: e.target.value.split(",").map((x) => x.trim()).filter(Boolean) }) })}
+                                    />
+                                  ) : !isCompare || !needsTol ? <span className="ct-na">—</span> : (
                                   <Input
                                     type="number"
                                     min={0}
@@ -3149,7 +3155,6 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                                         : ""
                                     }
                                     placeholder={["percent", "numeric_min", "numeric_max"].includes(cmpMode) ? "%" : ""}
-                                    disabled={!isCompare || !needsTol}
                                     onChange={(e) => {
                                       const raw = e.target.value.trim();
                                       const tol = raw === "" ? undefined : Number(raw);
@@ -3163,6 +3168,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                                       });
                                     }}
                                   />
+                                  )}
                                 </td>
                                 <td>
                                   <input
@@ -3182,11 +3188,11 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                                   />
                                 </td>
                                 <td>
+                                  {!isCompare && !isKey ? <span className="ct-na">—</span> : (
                                   <select
                                     className="mt-select"
                                     value={norm}
                                     aria-label={`${f.name} ${t("bizCompare.normalizeField")}`}
-                                    disabled={!isCompare && !isKey}
                                     onChange={(e) =>
                                       updateActiveSheet({
                                         field_rules: upsertFieldRule(activeTplSheet, f.name, {
@@ -3203,21 +3209,35 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                                       {t("bizCompare.normalizeEmpty")}
                                     </option>
                                   </select>
+                                  )}
                                 </td>
                                 <td>
-                                  <ValueMapCell
-                                    field={f.name}
-                                    t={t}
-                                    scope={vmScope}
-                                    onScope={(sc) => setValueMapScope((prev) => ({ ...prev, [f.name]: sc }))}
-                                    value={valueMapFor(activeTplSheet, f.name, vmScope)}
-                                    onCommit={(map) => updateActiveSheet({ field_rules: setValueMapFor(activeTplSheet, f.name, vmScope, map) })}
-                                    showRank={cmpMode === "not_worse"}
-                                    rank={rule.rank || []}
-                                    onRank={(rank) => updateActiveSheet({ field_rules: upsertFieldRule(activeTplSheet, f.name, { compare: "not_worse", rank }) })}
-                                  />
+                                  <button
+                                    type="button"
+                                    className={`ct-vm-toggle${vmCount ? " has-value" : ""}`}
+                                    aria-expanded={vmExpanded}
+                                    aria-label={`${f.name} ${t("bizCompare.valueMapEdit")}`}
+                                    onClick={() => setVmOpen(vmExpanded ? null : f.name)}
+                                  >
+                                    {vmCount ? t("bizCompare.valueMapCount", { n: String(vmCount) }) : "+"}
+                                  </button>
                                 </td>
                               </tr>
+                              {vmExpanded ? (
+                                <tr className="ct-field-table__detail">
+                                  <td colSpan={9}>
+                                    <ValueMapCell
+                                      field={f.name}
+                                      t={t}
+                                      scope={vmScope}
+                                      onScope={(sc) => setValueMapScope((prev) => ({ ...prev, [f.name]: sc }))}
+                                      value={valueMapFor(activeTplSheet, f.name, vmScope)}
+                                      onCommit={(map) => updateActiveSheet({ field_rules: setValueMapFor(activeTplSheet, f.name, vmScope, map) })}
+                                    />
+                                  </td>
+                                </tr>
+                              ) : null}
+                              </Fragment>
                             );
                           })}
                             {!activeTplFields.length ? (

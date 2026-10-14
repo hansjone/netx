@@ -139,6 +139,8 @@ const bizCompare = {
   valueMap: "Value map",
   valueMapScope: "value map scope",
   valueMapPlaceholder: "One per line: source,canonical\nestab,established",
+  valueMapEdit: "edit value map",
+  valueMapCount: "{{n}} rules",
   rankLabel: "best→worst",
   rankPlaceholder: "up,down (earlier is better)",
   modeNotWorse: "Not worse",
@@ -153,7 +155,8 @@ const bizCompare = {
   pairSorted: "Pair by sorted value (recommended)",
   pairOrdered: "Pair by collection order (legacy)",
   duplicatePairingHint: "When one key has several rows (ECMP, multipath), CLI ordering changes must not create false differences.",
-  builtinVendorCanonical: "Built-in per-vendor interface names (GigabitEthernet↔GE …)",
+  builtinVendorCanonical: "Built-in vendor interface names",
+  builtinVendorCanonicalHint: "Unify vendor interface names (GigabitEthernet↔GE …)",
   mappingNeedBatches: "Pick the before and after batches first",
   preflight: {
     "run": "Validate mapping",

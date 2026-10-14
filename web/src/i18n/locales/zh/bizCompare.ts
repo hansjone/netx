@@ -138,6 +138,8 @@ const bizCompare = {
   valueMap: "值映射",
   valueMapScope: "值映射范围",
   valueMapPlaceholder: "每行：原值,规范值\nestab,established",
+  valueMapEdit: "编辑值映射",
+  valueMapCount: "{{n}} 条",
   rankLabel: "好→坏顺序",
   rankPlaceholder: "up,down（靠前更好）",
   modeNotWorse: "不劣于",
@@ -152,7 +154,8 @@ const bizCompare = {
   pairSorted: "按取值排序后配对（推荐）",
   pairOrdered: "按采集顺序配对（旧行为）",
   duplicatePairingHint: "ECMP、多路径等同一个键出现多行时，CLI 输出顺序变化不应产生假差异。",
-  builtinVendorCanonical: "启用内置厂商接口名称统一（GigabitEthernet↔GE 等）",
+  builtinVendorCanonical: "内置厂商接口名称统一",
+  builtinVendorCanonicalHint: "GigabitEthernet↔GE 等厂商接口名自动统一",
   mappingNeedBatches: "请先选择前后批次",
   preflight: {
     "run": "校验映射",

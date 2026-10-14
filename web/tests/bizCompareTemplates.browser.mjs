@@ -161,6 +161,7 @@ try {
   await stateRow.locator('input[type="checkbox"]').nth(2).check();
   await editor().getByLabel("state 方式", { exact: true }).selectOption("not_worse");
   await editor().getByLabel("state 好→坏顺序", { exact: true }).fill("up,down");
+  await editor().getByRole("button", { name: "state 编辑值映射", exact: true }).click();
   await editor().getByLabel("state 值映射", { exact: true }).fill("estab,established\n*down,down");
   await editor().getByLabel("state 值映射", { exact: true }).blur();
   await editor().getByLabel("state 值映射范围", { exact: true }).selectOption("before");
@@ -185,6 +186,8 @@ try {
   // ... and come back unchanged when the template is opened again.
   await openEditor();
   await editor().getByRole("tab", { name: /^字段规则/ }).click();
+  assert.equal(await editor().getByRole("button", { name: "state 编辑值映射", exact: true }).textContent(), "3 条");
+  await editor().getByRole("button", { name: "state 编辑值映射", exact: true }).click();
   assert.equal(await editor().getByLabel("state 值映射", { exact: true }).inputValue(), "estab,established\n*down,down");
   assert.equal(await editor().getByLabel("未映射端口", { exact: true }).inputValue(), "ignore_port");
   await page.keyboard.press("Escape");
