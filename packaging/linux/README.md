@@ -26,6 +26,20 @@ sudo ./install.sh
 sudo ./install.sh --prefix /data/netx --data /data/netx-data
 ```
 
+**目录在 `/root` 下面时**：NetX 服务以系统用户 `netx` 运行（内置 PostgreSQL 不允许用 root 运行），而 `/root` 默认不允许其他用户进入。安装程序会检测到这种情况：交互安装时询问是否授权；非交互安装加 `--grant-access` 自动授权。授权只给 `netx` 开放上级目录的"进入"权限（不能查看目录内容）：优先用 `setfacl -m u:netx:x`，系统没有 ACL 工具时用 `chmod o+x`。
+
+```bash
+sudo ./install.sh --prefix /root/service/netx/programfile --data /root/service/netx/userdata --grant-access
+```
+
+已经装在 `/root` 下、启动失败且日志为空的，手动授权后直接 `sudo netxctl start` 即可，不用重装：
+
+```bash
+setfacl -m u:netx:x /root /root/service /root/service/netx
+```
+
+卸载时不会撤销这些授权；需要的话用 `setfacl -x u:netx <目录>` 撤销。
+
 全部安装参数见 `./install.sh --help`。
 
 交互式安装会依次询问：监听地址（默认 `0.0.0.0`）、**Web/API 端口**（默认 8890，被占用会提示重新输入）、数据库（内置 / 外置）、**内置 PostgreSQL 端口**（默认 15432，只监听 127.0.0.1）。
@@ -39,7 +53,19 @@ sudo ./install.sh --yes --db external --db-url 'postgresql+psycopg://netx:密码
 
 装好后访问 `http://<服务器IP>:<端口>/`，初始账号 `admin`，密码在安装结束时显示（随机生成，也可用 `--admin-password` 指定；同时保存在 `/var/lib/netx/.env` 的 `NETX_BOOTSTRAP_ADMIN_PASSWORD`），首次登录必须改密码。
 
-> 对外监听（非 127.0.0.1）时 NetX 自身要求：管理员初始密码不能是 admin123，并且开启 UME 的 TLS 校验。安装程序会自动设置 `NETX_UME_VERIFY_TLS=true`；如果 UME 用的是自签名证书，需要配置证书，或者改成只监听本机再通过反向代理访问。
+> 对外监听（非 127.0.0.1）时 NetX 自身要求：管理员初始密码不能是 admin123，并且开启 UME 的 TLS 校验，否则拒绝启动（api.log 末尾是 `security_bootstrap.py ... SystemExit: 2`）。安装程序会自动生成随机管理员密码，并设置 `NETX_UME_VERIFY_TLS=true`。
+>
+> **对接 UME（通常是自签名证书）**：在 `/var/lib/netx/.env` 中加入下面几行，然后 `sudo netxctl restart`：
+>
+> ```
+> NETX_UME_BASE_URL=https://<UME地址>:<端口>
+> NETX_UME_USERNAME=...
+> NETX_UME_PASSWORD=...
+> NETX_UME_VERIFY_TLS=false
+> NETX_ALLOW_INSECURE_DEFAULTS=1
+> ```
+>
+> `NETX_ALLOW_INSECURE_DEFAULTS=1` 会跳过上面这组启动检查。由于管理员密码和 JWT 密钥在安装时已经单独生成，实际放开的只有"访问 UME 时不校验证书"这一项（与 Windows 版默认行为相同）。
 
 | 路径 | 内容 |
 |---|---|

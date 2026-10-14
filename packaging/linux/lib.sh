@@ -81,6 +81,97 @@ client_host() {
   esac
 }
 
+# The service runs as ${NETX_USER}: it must be able to enter the program and data
+# dirs. Typical failure: paths under /root (mode 550/700) -> systemd 203/EXEC and
+# empty logs, because netxctl never runs.
+netx_can_enter() { as_netx /bin/sh -c 'cd "$1"' sh "$1" 2>/dev/null; }
+
+# Let NETX_USER traverse one directory: ACL for that user only, else o+x.
+grant_traverse() {
+  local p="$1"
+  if command -v setfacl >/dev/null 2>&1 && setfacl -m "u:${NETX_USER}:x" "${p}" 2>/dev/null; then
+    info "setfacl -m u:${NETX_USER}:x ${p}"
+  else
+    chmod o+x "${p}" && info "chmod o+x ${p}"
+  fi
+}
+
+# Can NETX_USER pass through this dir judging by mode bits alone? (Used only to
+# name the blocking dirs below an already blocked one, which cannot be probed.)
+others_can_traverse() {
+  local m
+  m="$(stat -c %A "$1" 2>/dev/null)" || return 1
+  [[ "${m:9:1}" == "x" || "${m:9:1}" == "t" ]]
+}
+
+# check_netx_access DIR... — every dir must be enterable by NETX_USER.
+# Blocked parents (typically /root) are granted traverse-only access when
+# GRANT_ACCESS=1 or the interactive user agrees; otherwise abort with the commands.
+# (Plain strings, not arrays: empty arrays trip `set -u` on bash 4.2 / CentOS 7.)
+check_netx_access() {
+  local d p rest comp ans blocked="" seen_block
+  for d in "$@"; do
+    mkdir -p "${d}"
+    netx_can_enter "${d}" && continue
+    p=""
+    seen_block=0
+    rest="${d#/}"
+    while [[ -n "${rest}" ]]; do
+      comp="${rest%%/*}"
+      if [[ "${rest}" == */* ]]; then rest="${rest#*/}"; else rest=""; fi
+      [[ -n "${comp}" ]] || continue
+      p="${p}/${comp}"
+      if [[ "${GRANT_ACCESS:-0}" == "1" ]]; then
+        if ! netx_can_enter "${p}"; then
+          grant_traverse "${p}"
+          blocked="${blocked} ${p}"
+        fi
+      elif [[ "${seen_block}" == "0" ]]; then
+        if ! netx_can_enter "${p}"; then
+          seen_block=1
+          [[ " ${blocked} " == *" ${p} "* ]] || blocked="${blocked} ${p}"
+        fi
+      elif ! others_can_traverse "${p}" && [[ " ${blocked} " != *" ${p} "* ]]; then
+        blocked="${blocked} ${p}"
+      fi
+    done
+  done
+  blocked="${blocked# }"
+  [[ -n "${blocked}" ]] || return 0
+  if [[ "${GRANT_ACCESS:-0}" != "1" ]]; then
+    warn "$(t "服务用户 ${NETX_USER} 无法进入以下目录（常见于 /root 下面）" "service user ${NETX_USER} cannot enter these directories (typically under /root)"): ${blocked}"
+    if [[ "${INTERACTIVE:-0}" == "1" ]]; then
+      read -r -p "$(t "只给 ${NETX_USER} 开放这些目录的“进入”权限（不能查看内容）？[Y/n] " "Grant ${NETX_USER} traverse-only access to them? [Y/n] ")" ans || true
+      if [[ ! "${ans}" =~ ^[Nn] ]]; then
+        GRANT_ACCESS=1
+        check_netx_access "$@"
+        return
+      fi
+    fi
+    die "$(t "请加 --grant-access 自动授权，或手动执行：setfacl -m u:${NETX_USER}:x ${blocked}（没有 setfacl 时用 chmod o+x），或换到 /root 以外的目录" "re-run with --grant-access, or run: setfacl -m u:${NETX_USER}:x ${blocked} (chmod o+x without setfacl), or use a path outside /root")"
+  fi
+  for d in "$@"; do
+    netx_can_enter "${d}" || die "$(t "授权后 ${NETX_USER} 仍无法进入" "still not enterable by ${NETX_USER} after granting"): ${d}"
+  done
+  ok "$(t "已授权 ${NETX_USER} 进入程序/数据目录" "granted ${NETX_USER} access to the program/data directories")"
+}
+
+# Show why NetX did not come up: app log first, else supervisor log, else systemd.
+show_start_failure() {
+  local data="$1" f
+  for f in "${data}/logs/api.log" "${data}/logs/netxctl.log"; do
+    if [[ -s "${f}" ]]; then
+      echo "--- ${f}" >&2
+      tail -n 30 "${f}" >&2
+      return 0
+    fi
+  done
+  if svc_unit_installed; then
+    echo "--- journalctl -u netx" >&2
+    journalctl -u netx.service -n 30 --no-pager >&2 2>/dev/null || systemctl status netx.service --no-pager >&2 || true
+  fi
+}
+
 is_loopback() { case "$1" in 127.0.0.1|localhost|::1) return 0 ;; *) return 1 ;; esac; }
 
 primary_ip() {

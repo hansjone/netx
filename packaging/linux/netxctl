@@ -72,7 +72,7 @@ wait_healthy() {
     return 0
   fi
   err "$(t "NetX 未在 ${timeout} 秒内就绪" "NetX not healthy after ${timeout}s"): $(health_url)"
-  tail -n 30 "${NETX_LOG_DIR}/api.log" 2>/dev/null >&2 || true
+  show_start_failure "${NETX_DATA}"
   return 1
 }
 

@@ -33,6 +33,7 @@ NO_SERVICE=0
 AUTO_UPDATE=0
 OPEN_FIREWALL=0
 NO_BACKUP=0
+GRANT_ACCESS=0
 YES=0
 
 usage() {
@@ -55,6 +56,7 @@ $(t "用法" "Usage"): sudo ./install.sh [options]
   --auto-update         $(t "开启每日自动更新" "enable daily automatic updates")
   --open-firewall       $(t "自动放行防火墙端口（firewalld/ufw）" "open the port in firewalld/ufw")
   --no-backup           $(t "更新前不备份数据库" "skip the pre-update database dump")
+  --grant-access        $(t "目录在 /root 等受限目录下时，自动给服务用户 netx 开放上级目录的“进入”权限" "if a parent dir (e.g. /root) blocks the netx service user, grant it traverse-only access")
   -y, --yes             $(t "非交互，使用默认值" "non-interactive, accept defaults")
 EOF
 }
@@ -81,6 +83,7 @@ while [[ $# -gt 0 ]]; do
     --auto-update) AUTO_UPDATE=1; shift ;;
     --open-firewall) OPEN_FIREWALL=1; shift ;;
     --no-backup) NO_BACKUP=1; shift ;;
+    --grant-access) GRANT_ACCESS=1; shift ;;
     -y|--yes) YES=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) err "unknown option: $1"; usage; exit 2 ;;
@@ -524,6 +527,7 @@ summary() {
 
 do_install() { # install or reinstall
   ensure_user
+  check_netx_access "${PREFIX}" "${DATA}"
   mkdir -p "${DATA}"
   ensure_data_dirs "${DATA}"
   if [[ -x "${PREFIX}/current/packaging/linux/netxctl" ]]; then
@@ -539,7 +543,7 @@ do_install() { # install or reinstall
   if [[ "${AUTO_UPDATE}" == "1" ]]; then "${PREFIX}/current/packaging/linux/netxctl" auto-update on || true; fi
   if ! start_and_wait; then
     err "$(t "NetX 启动失败，日志" "NetX failed to start; logs"): ${DATA}/logs/"
-    tail -n 30 "${DATA}/logs/api.log" >&2 2>/dev/null || true
+    show_start_failure "${DATA}"
     exit 1
   fi
   prune_releases ""
@@ -549,6 +553,7 @@ do_install() { # install or reinstall
 do_update() {
   [[ -f "${ENV_FILE}" ]] || die "$(t "未找到已有安装（${ENV_FILE}），请用 --mode install" "no existing install (${ENV_FILE}); use --mode install")"
   ensure_user
+  check_netx_access "${PREFIX}" "${DATA}"
   ensure_data_dirs "${DATA}"
   local old_ver=""
   if [[ -f "${PREFIX}/current/version.json" ]]; then
@@ -585,7 +590,7 @@ do_update() {
     return 0
   fi
   err "$(t "新版本启动失败" "new version failed to start")"
-  tail -n 30 "${DATA}/logs/api.log" >&2 2>/dev/null || true
+  show_start_failure "${DATA}"
   svc_stop "${PREFIX}" "${DATA}"
   local back=""
   if [[ -n "${old_ver}" && "${old_ver}" != "${VERSION}" && -d "${PREFIX}/releases/${old_ver}" ]]; then
