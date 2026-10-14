@@ -1,0 +1,522 @@
+#!/usr/bin/env bash
+# NetX Linux control command. Installed as /usr/bin/netxctl
+#   -> <prefix>/current/packaging/linux/netxctl
+set -euo pipefail
+
+SELF="$(readlink -f "${BASH_SOURCE[0]}")"
+HERE="$(dirname "${SELF}")"
+# shellcheck source=lib.sh
+. "${HERE}/lib.sh"
+
+REL_DIR="$(cd "${HERE}/../.." && pwd)"
+if [[ "$(basename "$(dirname "${REL_DIR}")")" == "releases" ]]; then
+  PREFIX="$(dirname "$(dirname "${REL_DIR}")")"
+else
+  PREFIX="${NETX_PREFIX:-/opt/netx}"
+fi
+CUR="${PREFIX}/current"
+NETX_DATA="/var/lib/netx"
+if [[ -f "${PREFIX}/netx.conf" ]]; then
+  _d="$(sed -n 's/^NETX_DATA=//p' "${PREFIX}/netx.conf" | tail -n1)"
+  [[ -n "${_d}" ]] && NETX_DATA="${_d}"
+fi
+NETX_DATA="${NETX_DATA_OVERRIDE:-${NETX_DATA}}"
+ENV_FILE="${NETX_DATA}/.env"
+NETX_LOG_DIR="${NETX_DATA}/logs"
+NETX_PY="${CUR}/python/bin/python3"
+NETX_ADMIN_PY="${CUR}/packaging/linux/netx_admin.py"
+PGBIN="${CUR}/pgsql/bin"
+PGDATA_DIR="${NETX_DATA}/pgdata"
+ARCH="x86_64"
+
+usage() {
+  cat <<EOF
+$(t "用法" "Usage"): netxctl <command> [options]
+
+  start | stop | restart | status
+  logs [api|worker|biz0|pg|netxctl] [-f] [-n N]
+  set-port <port>         $(t "修改 Web/API 端口" "change the Web/API port")
+  set-bind <host>         $(t "修改监听地址（0.0.0.0 = 所有网卡）" "change the listen address (0.0.0.0 = all)")
+  set-pg-port <port>      $(t "修改内置 PostgreSQL 端口" "change the bundled PostgreSQL port")
+  reconfigure-db          $(t "重新配置数据库（内置/外置）" "reconfigure the database (bundled/external)")
+  check-update            $(t "检查新版本" "check for a newer release")
+  update [--yes] [--file <netx-x.y.z-linux-x86_64.tar.gz>] [--force]
+  auto-update on|off      $(t "每日自动更新" "daily automatic update")
+  backup [<file.tar.gz>]  $(t "备份数据库与密钥" "back up database + secrets")
+  uninstall [--purge] [--yes]
+  version
+  run                     $(t "前台运行（systemd 使用）" "foreground supervisor (used by systemd)")
+EOF
+}
+
+need_root() { is_root || die "$(t "需要 root 权限：sudo netxctl $*" "root required: sudo netxctl $*")"; }
+need_install() {
+  [[ -x "${NETX_PY}" ]] || die "$(t "未找到 NetX 安装" "NetX installation not found"): ${CUR}"
+  if [[ ! -r "${ENV_FILE}" ]]; then
+    is_root || [[ "$(id -un)" == "${NETX_USER}" ]] || die "$(t "需要 root 权限：sudo netxctl" "root required: sudo netxctl")"
+    die "$(t "未找到配置文件" "config not found"): ${ENV_FILE}"
+  fi
+}
+
+cfg() { env_get "${ENV_FILE}" "$1"; }
+db_mode() { local m; m="$(cfg NETX_DB_MODE | tr 'A-Z' 'a-z')"; [[ "${m}" == "bundled" ]] && echo bundled || echo external; }
+api_port() { local p; p="$(cfg NETX_PORT)"; echo "${p:-8890}"; }
+api_bind() { local h; h="$(cfg NETX_HOST)"; echo "${h:-0.0.0.0}"; }
+pg_port() { local p; p="$(cfg NETX_BUNDLED_PG_PORT)"; echo "${p:-15432}"; }
+health_url() { echo "http://$(client_host "$(api_bind)"):$(api_port)/health"; }
+cur_version() { netx_admin json-get "${CUR}/version.json" version 2>/dev/null || echo "?"; }
+
+wait_healthy() {
+  local timeout="${1:-120}"
+  if netx_admin wait-health "$(health_url)" --timeout "${timeout}"; then
+    return 0
+  fi
+  err "$(t "NetX 未在 ${timeout} 秒内就绪" "NetX not healthy after ${timeout}s"): $(health_url)"
+  tail -n 30 "${NETX_LOG_DIR}/api.log" 2>/dev/null >&2 || true
+  return 1
+}
+
+# ------------------------------------------------------------------ run (foreground)
+
+CHILD_PIDS=()
+CHILD_NAMES=()
+STOPPING=0
+PG_OWNED=0
+
+spawn() {
+  local name="$1"
+  shift
+  "$@" >>"${NETX_LOG_DIR}/${name}.log" 2>&1 &
+  CHILD_PIDS+=("$!")
+  CHILD_NAMES+=("${name}")
+  echo "$(date '+%F %T') started ${name} pid=$!"
+}
+
+stop_children() {
+  local pid i alive
+  for pid in "${CHILD_PIDS[@]}"; do kill -TERM "${pid}" 2>/dev/null || true; done
+  for ((i = 0; i < 60; i++)); do
+    alive=0
+    for pid in "${CHILD_PIDS[@]}"; do kill -0 "${pid}" 2>/dev/null && alive=1; done
+    [[ "${alive}" == "0" ]] && break
+    sleep 0.5
+  done
+  for pid in "${CHILD_PIDS[@]}"; do kill -KILL "${pid}" 2>/dev/null || true; done
+  if [[ "${PG_OWNED}" == "1" ]]; then
+    echo "$(date '+%F %T') stopping bundled PostgreSQL"
+    pg_stop
+  fi
+}
+
+cmd_run() {
+  if is_root; then
+    exec "${NETX_PY}" -I "${NETX_ADMIN_PY}" run-as "${NETX_USER}" "${SELF}" run
+  fi
+  need_install
+  mkdir -p "${NETX_LOG_DIR}"
+  load_env_file "${ENV_FILE}"
+  local kv
+  while IFS= read -r kv; do export "${kv%%=*}=${kv#*=}"; done < <(data_env_pairs "${NETX_DATA}")
+  export NETX_UI_DIST_DIR="${CUR}/web/dist"
+  export NETX_RUN_INLINE_SCHEDULERS=false
+  export PYTHONPATH="${CUR}"
+  export PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+  cd "${CUR}"
+
+  if [[ "$(db_mode)" == "bundled" ]]; then
+    local want have
+    want="$(netx_admin json-get "${CUR}/version.json" pg_major 2>/dev/null || echo "")"
+    have="$(pg_data_major || true)"
+    [[ -n "${have}" ]] || die "bundled_pg_not_initialised: ${PGDATA_DIR}"
+    if [[ -n "${want}" && "${have}" != "${want}" ]]; then
+      die "pg_major_mismatch: data=${have} bundled=${want}"
+    fi
+    if ! pg_is_running; then
+      if ! netx_admin port-free "$(pg_port)" --host 127.0.0.1; then
+        die "port_in_use: 127.0.0.1:$(pg_port) (bundled PostgreSQL) — $(t "可用 netxctl set-pg-port 换端口" "use netxctl set-pg-port")"
+      fi
+      echo "$(date '+%F %T') starting bundled PostgreSQL on 127.0.0.1:$(pg_port)"
+      pg_start || die "pg_start_failed (see ${NETX_LOG_DIR}/pg.log)"
+      PG_OWNED=1
+    fi
+  fi
+
+  trap 'STOPPING=1' TERM INT
+  spawn api "${NETX_PY}" -m netx_api.main
+  spawn worker "${NETX_PY}" -m netx_api.worker
+  local n="${NETX_BIZ_STATE_WORKER_REPLICAS:-2}" i
+  [[ "${n}" =~ ^[0-9]+$ ]] || n=2
+  ((n >= 1)) || n=1
+  for ((i = 0; i < n; i++)); do
+    spawn "biz${i}" "${NETX_PY}" -m netx_api.biz_state_worker
+  done
+
+  local rc=0 sleeper
+  while [[ "${STOPPING}" == "0" ]]; do
+    for i in "${!CHILD_PIDS[@]}"; do
+      if ! kill -0 "${CHILD_PIDS[$i]}" 2>/dev/null; then
+        wait "${CHILD_PIDS[$i]}" 2>/dev/null && rc=$? || rc=$?
+        echo "$(date '+%F %T') ${CHILD_NAMES[$i]} exited (rc=${rc}); stopping the rest" >&2
+        rc=1
+        STOPPING=1
+        break
+      fi
+    done
+    [[ "${STOPPING}" == "0" ]] || break
+    sleep 2 &
+    sleeper=$!
+    wait "${sleeper}" 2>/dev/null || kill "${sleeper}" 2>/dev/null || true
+  done
+  echo "$(date '+%F %T') shutting down"
+  stop_children
+  exit "${rc}"
+}
+
+# ------------------------------------------------------------------ lifecycle
+
+cmd_start() {
+  need_root start; need_install
+  if svc_running "${PREFIX}" "${NETX_DATA}" && netx_admin health "$(health_url)"; then
+    ok "$(t "NetX 已在运行" "NetX already running"): http://$(primary_ip):$(api_port)/"
+    return 0
+  fi
+  info "$(t "启动 NetX" "Starting NetX")"
+  svc_start "${PREFIX}" "${NETX_DATA}"
+  wait_healthy 120
+  ok "$(t "已启动" "Started"): http://$(primary_ip):$(api_port)/"
+}
+
+cmd_stop() {
+  need_root stop; need_install
+  info "$(t "停止 NetX" "Stopping NetX")"
+  svc_stop "${PREFIX}" "${NETX_DATA}"
+  ok "$(t "已停止" "Stopped")"
+}
+
+cmd_restart() { need_root restart; cmd_stop; cmd_start; }
+
+cmd_status() {
+  need_install
+  local state="stopped" svc="nohup"
+  svc_unit_installed && svc="systemd"
+  if svc_running "${PREFIX}" "${NETX_DATA}"; then state="running"; fi
+  local health="down"
+  netx_admin health "$(health_url)" && health="ok"
+  echo "version     : $(cur_version)"
+  echo "service     : ${svc} (${state})"
+  echo "health      : ${health}  $(health_url)"
+  echo "listen      : $(api_bind):$(api_port)"
+  echo "db mode     : $(db_mode)$( [[ "$(db_mode)" == bundled ]] && echo "  (127.0.0.1:$(pg_port))")"
+  echo "prefix      : ${PREFIX}"
+  echo "data        : ${NETX_DATA}"
+  if have_systemd && systemctl list-unit-files netx-update.timer >/dev/null 2>&1 && systemctl is-enabled --quiet netx-update.timer 2>/dev/null; then
+    echo "auto-update : on"
+  elif [[ -f /etc/cron.d/netx-update ]]; then
+    echo "auto-update : on (cron)"
+  else
+    echo "auto-update : off"
+  fi
+  [[ "${health}" == "ok" ]]
+}
+
+cmd_logs() {
+  local name="api" follow=0 lines=200
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -f|--follow) follow=1; shift ;;
+      -n) lines="${2:-200}"; shift 2 ;;
+      *) name="$1"; shift ;;
+    esac
+  done
+  local f="${NETX_LOG_DIR}/${name}.log"
+  [[ -f "${f}" ]] || die "log_not_found: ${f}"
+  if [[ "${follow}" == "1" ]]; then tail -n "${lines}" -F "${f}"; else tail -n "${lines}" "${f}"; fi
+}
+
+cmd_version() { cur_version; }
+
+# ------------------------------------------------------------------ ports
+
+# apply_env_change <description> KEY=VAL... ; restarts if running, rolls back on failure.
+apply_env_change() {
+  local what="$1"
+  shift
+  local was=0
+  svc_running "${PREFIX}" "${NETX_DATA}" && was=1
+  cp -p "${ENV_FILE}" "${ENV_FILE}.bak"
+  [[ "${was}" == "1" ]] && svc_stop "${PREFIX}" "${NETX_DATA}"
+  if [[ -n "${PG_CONF_CHANGE:-}" ]]; then
+    cp -p "${PGDATA_DIR}/postgresql.conf" "${PGDATA_DIR}/postgresql.conf.bak"
+    netx_admin pg-conf "${PGDATA_DIR}/postgresql.conf" --set "${PG_CONF_CHANGE}"
+  fi
+  netx_admin env-set "${ENV_FILE}" "$@"
+  if [[ "${was}" == "1" ]]; then
+    svc_start "${PREFIX}" "${NETX_DATA}"
+    if ! wait_healthy 120; then
+      warn "$(t "启动失败，恢复原配置" "start failed; restoring previous settings")"
+      svc_stop "${PREFIX}" "${NETX_DATA}"
+      mv -f "${ENV_FILE}.bak" "${ENV_FILE}"
+      [[ -n "${PG_CONF_CHANGE:-}" ]] && mv -f "${PGDATA_DIR}/postgresql.conf.bak" "${PGDATA_DIR}/postgresql.conf"
+      svc_start "${PREFIX}" "${NETX_DATA}"
+      die "${what}_failed"
+    fi
+  fi
+  rm -f "${ENV_FILE}.bak" "${PGDATA_DIR}/postgresql.conf.bak"
+  return 0
+}
+
+firewall_hint() {
+  local p="$1"
+  if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
+    echo "  $(t "防火墙放行" "open firewall"): firewall-cmd --permanent --add-port=${p}/tcp && firewall-cmd --reload"
+  elif command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
+    echo "  $(t "防火墙放行" "open firewall"): ufw allow ${p}/tcp"
+  fi
+}
+
+cmd_set_port() {
+  need_root set-port; need_install
+  local p
+  p="$(netx_admin valid-port "${1:-}")" || exit 1
+  [[ "${p}" == "$(api_port)" ]] && { ok "$(t "端口未变" "port unchanged"): ${p}"; return 0; }
+  netx_admin port-free "${p}" --host "$(api_bind)" || die "port_in_use: ${p}"
+  apply_env_change set_port "NETX_PORT=${p}"
+  ok "$(t "Web/API 端口已改为" "Web/API port is now") ${p}: http://$(primary_ip):${p}/"
+  firewall_hint "${p}"
+}
+
+cmd_set_bind() {
+  need_root set-bind; need_install
+  local h="${1:-}"
+  [[ -n "${h}" ]] || die "usage: netxctl set-bind <0.0.0.0|127.0.0.1|ip>"
+  local pairs=("NETX_HOST=${h}")
+  # Same prerequisites NetX enforces for a non-loopback bind (security_bootstrap.py).
+  if ! is_loopback "${h}"; then
+    [[ -n "$(cfg NETX_BOOTSTRAP_ADMIN_PASSWORD)" && "$(cfg NETX_BOOTSTRAP_ADMIN_PASSWORD)" != "admin123" ]] ||
+      pairs+=("NETX_BOOTSTRAP_ADMIN_PASSWORD=$(netx_admin gen-secret password)")
+    [[ -n "$(cfg NETX_UME_VERIFY_TLS)" ]] || pairs+=("NETX_UME_VERIFY_TLS=true")
+  fi
+  apply_env_change set_bind "${pairs[@]}"
+  ok "$(t "监听地址已改为" "listen address is now") ${h}:$(api_port)"
+}
+
+cmd_set_pg_port() {
+  need_root set-pg-port; need_install
+  [[ "$(db_mode)" == "bundled" ]] || die "$(t "当前是外置数据库，请用 netxctl reconfigure-db" "external database in use; run netxctl reconfigure-db")"
+  local p old url
+  p="$(netx_admin valid-port "${1:-}")" || exit 1
+  old="$(pg_port)"
+  [[ "${p}" == "${old}" ]] && { ok "$(t "端口未变" "port unchanged"): ${p}"; return 0; }
+  netx_admin port-free "${p}" --host 127.0.0.1 || die "port_in_use: 127.0.0.1:${p}"
+  url="$(netx_admin url-port "$(cfg NETX_DATABASE_URL)" "${p}")"
+  PG_CONF_CHANGE="port=${p}" apply_env_change set_pg_port "NETX_BUNDLED_PG_PORT=${p}" "NETX_DATABASE_URL=${url}"
+  ok "$(t "内置 PostgreSQL 端口已改为" "bundled PostgreSQL port is now") 127.0.0.1:${p}"
+}
+
+cmd_reconfigure_db() {
+  need_root reconfigure-db; need_install
+  exec "${CUR}/install.sh" --mode reinstall --prefix "${PREFIX}" --data "${NETX_DATA}" "$@"
+}
+
+# ------------------------------------------------------------------ update
+
+cmd_check_update() {
+  need_install
+  local out
+  out="$(netx_admin check-update --env "${ENV_FILE}" --prefix "${PREFIX}" --arch "${ARCH}")" || exit $?
+  local f="${NETX_DATA}/updates/latest.json"
+  mkdir -p "${NETX_DATA}/updates"
+  printf '%s\n' "${out}" >"${f}"
+  local latest avail src
+  latest="$(netx_admin json-get "${f}" latest)"
+  avail="$(netx_admin json-get "${f}" update_available)"
+  src="$(netx_admin json-get "${f}" source)"
+  echo "$(t "当前版本" "current"): $(cur_version)"
+  echo "$(t "最新版本" "latest") : ${latest} (${src})"
+  if [[ "${avail}" == "True" ]]; then
+    ok "$(t "有新版本，执行 sudo netxctl update 升级" "update available: sudo netxctl update")"
+    return 0
+  fi
+  ok "$(t "已是最新版本" "already up to date")"
+}
+
+cmd_update() {
+  need_root update; need_install
+  local yes=0 file="" force=0 quiet=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -y|--yes) yes=1; shift ;;
+      --file) file="${2:-}"; shift 2 ;;
+      --force) force=1; shift ;;
+      --quiet) quiet=1; shift ;;
+      *) die "unknown option: $1" ;;
+    esac
+  done
+  local work="${NETX_DATA}/updates/work" pkg
+  if [[ -n "${file}" ]]; then
+    pkg="$(netx_admin extract "$(readlink -f "${file}")" --workdir "${work}" --arch "${ARCH}")" || exit 1
+  else
+    local f="${NETX_DATA}/updates/latest.json" out
+    mkdir -p "${NETX_DATA}/updates"
+    if [[ "${quiet}" == "1" ]]; then
+      out="$(netx_admin check-update --env "${ENV_FILE}" --prefix "${PREFIX}" --arch "${ARCH}" --quiet)" || exit $?
+    else
+      out="$(netx_admin check-update --env "${ENV_FILE}" --prefix "${PREFIX}" --arch "${ARCH}")" || exit $?
+    fi
+    printf '%s\n' "${out}" >"${f}"
+    if [[ "$(netx_admin json-get "${f}" update_available)" != "True" && "${force}" != "1" ]]; then
+      [[ "${quiet}" == "1" ]] || ok "$(t "已是最新版本" "already up to date") ($(cur_version))"
+      return 0
+    fi
+    local latest
+    latest="$(netx_admin json-get "${f}" latest)"
+    if [[ "${yes}" != "1" ]]; then
+      local ans
+      read -r -p "$(t "升级 $(cur_version) → ${latest}？[y/N] " "Update $(cur_version) -> ${latest}? [y/N] ")" ans
+      [[ "${ans}" =~ ^[Yy] ]] || { echo "$(t "已取消" "cancelled")"; return 1; }
+    fi
+    pkg="$(netx_admin fetch-update --env "${ENV_FILE}" --info "${out}" --workdir "${work}" --arch "${ARCH}")" || exit 1
+  fi
+  local newver cmp
+  newver="$(netx_admin json-get "${pkg}/version.json" version)"
+  cmp="$(netx_admin ver-cmp "${newver}" "$(cur_version)")"
+  if [[ "${cmp}" != "1" && "${force}" != "1" ]]; then
+    rm -rf "${work}"
+    die "$(t "包版本 ${newver} 不高于当前 $(cur_version)；如确需重装加 --force" "package ${newver} is not newer than $(cur_version); use --force to reinstall it")"
+  fi
+  local rc=0
+  "${pkg}/install.sh" --mode update --yes --prefix "${PREFIX}" --data "${NETX_DATA}" || rc=$?
+  rm -rf "${work}"
+  return "${rc}"
+}
+
+cmd_auto_update() {
+  need_root auto-update; need_install
+  case "${1:-}" in
+    on)
+      if have_systemd; then
+        sed -e "s#@PREFIX@#${PREFIX}#g" "${CUR}/packaging/linux/systemd/netx-update.service.in" >/etc/systemd/system/netx-update.service
+        cp "${CUR}/packaging/linux/systemd/netx-update.timer" /etc/systemd/system/netx-update.timer
+        systemctl daemon-reload
+        systemctl enable --now netx-update.timer
+      elif [[ -d /etc/cron.d ]]; then
+        printf '30 3 * * * root %s update --yes --quiet >>%s/logs/update.log 2>&1\n' "${PREFIX}/current/packaging/linux/netxctl" "${NETX_DATA}" >/etc/cron.d/netx-update
+      else
+        die "$(t "系统既没有 systemd 也没有 cron，无法自动更新" "neither systemd nor cron available")"
+      fi
+      ok "$(t "已开启每日自动更新" "daily auto-update enabled")"
+      ;;
+    off)
+      if have_systemd; then
+        systemctl disable --now netx-update.timer 2>/dev/null || true
+        rm -f /etc/systemd/system/netx-update.timer /etc/systemd/system/netx-update.service
+        systemctl daemon-reload
+      fi
+      rm -f /etc/cron.d/netx-update
+      ok "$(t "已关闭自动更新" "auto-update disabled")"
+      ;;
+    *) die "usage: netxctl auto-update on|off" ;;
+  esac
+}
+
+# ------------------------------------------------------------------ backup / uninstall
+
+cmd_backup() {
+  need_root backup; need_install
+  local out="${1:-${NETX_DATA}/backups/netx-backup-$(date +%Y%m%d-%H%M%S).tar.gz}"
+  local tmp started=0
+  tmp="$(mktemp -d)"
+  chmod 0755 "${tmp}"
+  chown "${NETX_USER}:${NETX_USER}" "${tmp}"
+  local url
+  url="$(cfg NETX_DATABASE_URL)"
+  if [[ "$(db_mode)" == "bundled" ]] && ! pg_is_running; then
+    pg_start && started=1
+  fi
+  info "pg_dump → ${out}"
+  if ! as_netx env PGPASSWORD="$(netx_admin url-part "${url}" password)" LC_ALL=C "${PGBIN}/pg_dump" -Fc \
+    -h "$(netx_admin url-part "${url}" host)" -p "$(netx_admin url-part "${url}" port)" \
+    -U "$(netx_admin url-part "${url}" user)" -d "$(netx_admin url-part "${url}" db)" -f "${tmp}/netx.dump"; then
+    [[ "${started}" == "1" ]] && pg_stop
+    rm -rf "${tmp}"
+    die "pg_dump_failed"
+  fi
+  [[ "${started}" == "1" ]] && pg_stop
+  cp -p "${ENV_FILE}" "${tmp}/env"
+  [[ -d "${NETX_DATA}/data/auth" ]] && cp -rp "${NETX_DATA}/data/auth" "${tmp}/auth"
+  netx_admin tar-create "${out}" "${tmp}"
+  rm -rf "${tmp}"
+  ok "$(t "备份完成（含 .env 与密钥，请妥善保管）" "backup written (contains .env and secrets)"): ${out}"
+}
+
+cmd_uninstall() {
+  need_root uninstall
+  local purge=0 yes=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --purge) purge=1; shift ;;
+      -y|--yes) yes=1; shift ;;
+      *) die "unknown option: $1" ;;
+    esac
+  done
+  if [[ "${yes}" != "1" ]]; then
+    local ans
+    if [[ "${purge}" == "1" ]]; then
+      read -r -p "$(t "将删除程序和全部数据（${NETX_DATA}），输入 DELETE 确认: " "This removes NetX AND all data in ${NETX_DATA}. Type DELETE: ")" ans
+      [[ "${ans}" == "DELETE" ]] || { echo "$(t "已取消" "cancelled")"; return 1; }
+    else
+      read -r -p "$(t "卸载程序（保留 ${NETX_DATA}）？[y/N] " "Uninstall NetX (keep ${NETX_DATA})? [y/N] ")" ans
+      [[ "${ans}" =~ ^[Yy] ]] || { echo "$(t "已取消" "cancelled")"; return 1; }
+    fi
+  fi
+  [[ -x "${NETX_PY}" ]] && svc_stop "${PREFIX}" "${NETX_DATA}"
+  if have_systemd; then
+    systemctl disable --now netx-update.timer 2>/dev/null || true
+    systemctl disable netx.service 2>/dev/null || true
+    rm -f /etc/systemd/system/netx.service /etc/systemd/system/netx-update.service /etc/systemd/system/netx-update.timer
+    systemctl daemon-reload || true
+  fi
+  rm -f /etc/cron.d/netx-update /etc/logrotate.d/netx
+  local link
+  for link in /usr/bin/netxctl /usr/local/bin/netxctl; do
+    if [[ -L "${link}" && "$(readlink "${link}")" == "${PREFIX}"/* ]]; then rm -f "${link}"; fi
+  done
+  # Run from a copy-safe place: this script lives under PREFIX.
+  cd /
+  rm -rf "${PREFIX:?}/releases" "${PREFIX:?}/current" "${PREFIX:?}/netx.conf"
+  rmdir "${PREFIX}" 2>/dev/null || true
+  if [[ "${purge}" == "1" ]]; then
+    rm -rf "${NETX_DATA:?}"
+    if id "${NETX_USER}" >/dev/null 2>&1; then
+      userdel "${NETX_USER}" 2>/dev/null || deluser "${NETX_USER}" 2>/dev/null || true
+    fi
+    ok "$(t "已卸载并删除全部数据" "NetX and all data removed")"
+  else
+    ok "$(t "已卸载，数据保留在" "NetX removed; data kept in") ${NETX_DATA}"
+  fi
+}
+
+# ------------------------------------------------------------------ main
+
+cmd="${1:-}"
+[[ $# -gt 0 ]] && shift
+case "${cmd}" in
+  run) cmd_run ;;
+  start) cmd_start ;;
+  stop) cmd_stop ;;
+  restart) cmd_restart ;;
+  status) cmd_status ;;
+  logs) cmd_logs "$@" ;;
+  set-port) cmd_set_port "$@" ;;
+  set-bind) cmd_set_bind "$@" ;;
+  set-pg-port) cmd_set_pg_port "$@" ;;
+  reconfigure-db) cmd_reconfigure_db "$@" ;;
+  check-update) cmd_check_update ;;
+  update) cmd_update "$@" ;;
+  auto-update) cmd_auto_update "$@" ;;
+  backup) cmd_backup "$@" ;;
+  uninstall) cmd_uninstall "$@" ;;
+  version|--version|-V) cmd_version ;;
+  ""|-h|--help|help) usage ;;
+  *) err "unknown command: ${cmd}"; usage; exit 2 ;;
+esac

@@ -1,6 +1,6 @@
 ﻿# NetX Windows packaging
 
-**Linux is unchanged:** keep using your own PostgreSQL and `NETX_DATABASE_URL` with `scripts/start_netx.sh`. Nothing under this folder is required on Linux.
+**Linux:** the offline `netx-<ver>-linux-x86_64.tar.gz` package lives in [`linux/`](linux/README.md) (install.sh + netxctl). `scripts/start_netx.sh` stays for running from a source checkout.
 
 This directory builds a Windows deliverable with:
 

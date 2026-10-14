@@ -1,0 +1,10 @@
+@DATA@/logs/*.log {
+    su @USER@ @USER@
+    daily
+    rotate 7
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+}

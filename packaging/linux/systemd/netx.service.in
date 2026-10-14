@@ -1,0 +1,20 @@
+[Unit]
+Description=NetX network operations platform
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@USER@
+Group=@USER@
+ExecStart=@PREFIX@/current/packaging/linux/netxctl run
+# SIGTERM goes to the supervisor, which stops workers and the bundled PostgreSQL.
+KillMode=mixed
+TimeoutStopSec=120
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

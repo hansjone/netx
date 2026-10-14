@@ -1,0 +1,92 @@
+name: Release Linux
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Check tag matches pyproject version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          ver="$(sed -n 's/^[[:space:]]*version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' pyproject.toml | head -n1)"
+          [ "${GITHUB_REF_NAME}" = "v${ver}" ] || { echo "tag ${GITHUB_REF_NAME} != v${ver}"; exit 1; }
+
+      - name: Cache PostgreSQL build + downloads
+        uses: actions/cache@v4
+        with:
+          path: packaging/cache/linux
+          key: linux-x86_64-${{ hashFiles('packaging/linux/versions.env', 'packaging/linux/build_in_container.sh') }}-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            linux-x86_64-${{ hashFiles('packaging/linux/versions.env', 'packaging/linux/build_in_container.sh') }}-
+
+      - name: Build package
+        run: bash packaging/linux/build_linux_release.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: netx-linux-x86_64
+          path: |
+            packaging/release/netx-*-linux-x86_64.tar.gz
+            packaging/release/netx-*-linux-x86_64.tar.gz.sha256
+          retention-days: 7
+
+  smoke:
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - centos:7
+          - rockylinux:9
+          - ubuntu:18.04
+          - ubuntu:24.04
+          - debian:12
+          - opensuse/leap:15
+          - openeuler/openeuler:22.03
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: netx-linux-x86_64
+          path: pkg
+      - name: Offline install smoke (${{ matrix.image }})
+        run: |
+          tarball="$(ls pkg/netx-*-linux-x86_64.tar.gz)"
+          # Minimal images may not ship tar: unpack on the runner and mount both.
+          mkdir -p pkgx && tar xzf "$tarball" -C pkgx
+          docker run --rm --network none \
+            -v "$PWD/pkg:/pkg:ro" -v "$PWD/pkgx:/pkgx:ro" \
+            -v "$PWD/packaging/linux/smoke_test.sh:/smoke.sh:ro" \
+            "${{ matrix.image }}" bash /smoke.sh "/pkg/$(basename "$tarball")" "/pkgx/$(ls pkgx)"
+
+  release:
+    needs: smoke
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: netx-linux-x86_64
+          path: pkg
+      # Release notes come from the Windows workflow; only attach files here.
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            pkg/netx-*-linux-x86_64.tar.gz
+            pkg/netx-*-linux-x86_64.tar.gz.sha256

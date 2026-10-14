@@ -118,7 +118,9 @@ if ($viewCode -eq 0) {
 5. Default login: ``admin`` / ``admin123`` (change after first login)
 
 ### Linux
-Unchanged — use your own PostgreSQL and ``scripts/start_netx.sh``.
+- **netx-$Version-linux-x86_64.tar.gz** — offline package for x86_64 Linux (glibc 2.17+: CentOS 7+, Ubuntu 18.04+, Debian, openEuler, Kylin, UOS…), built and attached by the Linux workflow.
+- ``tar xzf netx-$Version-linux-x86_64.tar.gz && cd netx-$Version-linux-x86_64 && sudo ./install.sh``
+- See [packaging/linux/README.md](https://github.com/hansjone/netx/blob/main/packaging/linux/README.md).
 
 See [packaging/README.md](https://github.com/hansjone/netx/blob/main/packaging/README.md) for details.
 "@

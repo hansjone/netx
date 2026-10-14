@@ -76,6 +76,9 @@ english.UninstallDeleteData=Also delete NetX data (%ProgramData%\NetX)?%n%nYes =
 english.DbPageCaption=Database
 english.DbPageDescription=Choose built-in or external PostgreSQL. Optional credential key: paste from an existing install, or leave empty to auto-generate.
 english.DbBundled=Built-in PostgreSQL (portable, offline)
+english.DbBundledPort=Port
+english.DbBundledPortInvalid=The built-in PostgreSQL port must be a number between 1024 and 65535.
+english.DbBundledPortInUse=Port %1 is already in use on this computer.%n%nChoose another port for the built-in PostgreSQL.
 english.DbExternal=External PostgreSQL (existing server)
 english.DbHost=Host
 english.DbPort=Port
@@ -118,6 +121,9 @@ chinesesimplified.UninstallDeleteData=是否同时删除 NetX 数据（%ProgramD
 chinesesimplified.DbPageCaption=数据库
 chinesesimplified.DbPageDescription=选择内置或外置 PostgreSQL。可选粘贴已有 NETX_CREDENTIAL_SECRET_KEY；留空则自动生成。
 chinesesimplified.DbBundled=内置 PostgreSQL（便携，可离线）
+chinesesimplified.DbBundledPort=端口
+chinesesimplified.DbBundledPortInvalid=内置 PostgreSQL 端口必须是 1024–65535 之间的数字。
+chinesesimplified.DbBundledPortInUse=本机端口 %1 已被占用。%n%n请为内置 PostgreSQL 换一个端口。
 chinesesimplified.DbExternal=外置 PostgreSQL（已有服务器）
 chinesesimplified.DbHost=主机
 chinesesimplified.DbPort=端口
@@ -236,6 +242,9 @@ var
   DbPage: TWizardPage;
   RbBundled: TNewRadioButton;
   RbExternal: TNewRadioButton;
+  LblBundledPort: TNewStaticText;
+  EdBundledPort: TNewEdit;
+  GBundledPort: String;
   LblHost: TNewStaticText;
   LblPort: TNewStaticText;
   LblUser: TNewStaticText;
@@ -291,6 +300,46 @@ begin
       end;
     end;
   end;
+end;
+
+function ReadEnvValue(Key: String): String;
+var
+  Lines: TArrayOfString;
+  i: Integer;
+  Line: String;
+begin
+  Result := '';
+  if not LoadStringsFromFile(ExpandConstant('{commonappdata}\NetX\.env'), Lines) then
+    Exit;
+  for i := 0 to GetArrayLength(Lines) - 1 do
+  begin
+    Line := Trim(Lines[i]);
+    if Pos(Key + '=', Line) = 1 then
+      Result := Trim(Copy(Line, Length(Key) + 2, Length(Line)));
+  end;
+end;
+
+function ValidBundledPort(Port: String; var ErrMsg: String): Boolean;
+var
+  N: Integer;
+begin
+  N := StrToIntDef(Trim(Port), -1);
+  Result := (N >= 1024) and (N <= 65535);
+  if not Result then
+    ErrMsg := ExpandConstant('{cm:DbBundledPortInvalid}');
+end;
+
+{ True when nothing listens on Port (loopback or any address). }
+function TcpPortFree(Port: String): Boolean;
+var
+  ResultCode: Integer;
+begin
+  Result := True;
+  if Exec('powershell.exe',
+    '-NoProfile -ExecutionPolicy Bypass -Command "$p=' + Port +
+    '; foreach ($a in @([Net.IPAddress]::Loopback, [Net.IPAddress]::Any)) { try { $l = New-Object Net.Sockets.TcpListener($a, $p); $l.Start(); $l.Stop() } catch { exit 1 } }; exit 0"',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    Result := (ResultCode = 0);
 end;
 
 function EnvModeIsExternal(): Boolean;
@@ -464,6 +513,8 @@ begin
   EdUser.Enabled := Ext;
   EdPassword.Enabled := Ext;
   EdDbName.Enabled := Ext;
+  LblBundledPort.Enabled := not Ext;
+  EdBundledPort.Enabled := not Ext;
 end;
 
 procedure DbModeClick(Sender: TObject);
@@ -646,6 +697,13 @@ begin
     Mode := 'bundled';
   if Mode = 'bundled' then
   begin
+    GBundledPort := Trim(ExpandConstant('{param:BundledPgPort|}'));
+    if GBundledPort = '' then
+      GBundledPort := ReadEnvValue('NETX_BUNDLED_PG_PORT');
+    if GBundledPort = '' then
+      GBundledPort := '15432';
+    if not ValidBundledPort(GBundledPort, ErrMsg) then
+      Exit;
     GDbMode := 'bundled';
     GDbUrl := '';
     Result := True;
@@ -697,6 +755,9 @@ begin
   GDbPassword := '';
   GDbName := '';
   GCredKey := '';
+  GBundledPort := ReadEnvValue('NETX_BUNDLED_PG_PORT');
+  if GBundledPort = '' then
+    GBundledPort := '15432';
   GDbConfigured := False;
   GPgToolsReady := False;
   GDbConnOk := False;
@@ -765,8 +826,22 @@ begin
   RbBundled.Checked := True;
   RbBundled.Top := ScaleY(8);
   RbBundled.Left := ScaleX(0);
-  RbBundled.Width := DbPage.SurfaceWidth;
+  RbBundled.Width := DbPage.SurfaceWidth - ScaleX(150);
   RbBundled.OnClick := @DbModeClick;
+
+  { Bundled PostgreSQL port (127.0.0.1 only), on the same row as its radio button. }
+  LblBundledPort := TNewStaticText.Create(DbPage);
+  LblBundledPort.Parent := DbPage.Surface;
+  LblBundledPort.Caption := ExpandConstant('{cm:DbBundledPort}');
+  LblBundledPort.Top := RbBundled.Top + ScaleY(2);
+  LblBundledPort.Left := DbPage.SurfaceWidth - ScaleX(140);
+
+  EdBundledPort := TNewEdit.Create(DbPage);
+  EdBundledPort.Parent := DbPage.Surface;
+  EdBundledPort.Top := RbBundled.Top - ScaleY(2);
+  EdBundledPort.Left := DbPage.SurfaceWidth - ScaleX(80);
+  EdBundledPort.Width := ScaleX(80);
+  EdBundledPort.Text := GBundledPort;
 
   RbExternal := TNewRadioButton.Create(DbPage);
   RbExternal.Parent := DbPage.Surface;
@@ -922,6 +997,20 @@ begin
   CaptureCredKeyFromControls();
   if RbBundled.Checked then
   begin
+    GBundledPort := Trim(EdBundledPort.Text);
+    if not ValidBundledPort(GBundledPort, ErrMsg) then
+    begin
+      MsgBox(ErrMsg, mbError, MB_OK);
+      Result := False;
+      Exit;
+    end;
+    { The current install's own PG may hold its port; only probe a changed port. }
+    if (GBundledPort <> ReadEnvValue('NETX_BUNDLED_PG_PORT')) and (not TcpPortFree(GBundledPort)) then
+    begin
+      MsgBox(FmtMessage(ExpandConstant('{cm:DbBundledPortInUse}'), [GBundledPort]), mbError, MB_OK);
+      Result := False;
+      Exit;
+    end;
     GDbMode := 'bundled';
     GDbUrl := '';
     GDbConnOk := True;
@@ -1020,6 +1109,9 @@ begin
     ' -ProgramRoot ''' + ExpandConstant('{app}') + '''' +
     ' -DataRoot ''' + ExpandConstant('{commonappdata}\NetX') + '''' +
     ' -NonInteractive -DbMode ' + GDbMode;
+
+  if (GDbMode = 'bundled') and (GBundledPort <> '') then
+    WrapBody := WrapBody + ' -BundledPort ' + GBundledPort;
 
   if GDbMode = 'external' then
   begin

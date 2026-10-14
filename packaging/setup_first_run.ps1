@@ -113,6 +113,21 @@ if ($DbMode -eq "bundled") {
             }
         }
     }
+    # Keep the configured port on reconfigure unless the caller passes -BundledPort.
+    if (-not $PSBoundParameters.ContainsKey("BundledPort")) {
+        $keepPort = 0
+        if ($existing.ContainsKey("NETX_BUNDLED_PG_PORT")) {
+            try { $keepPort = [int]$existing["NETX_BUNDLED_PG_PORT"] } catch { $keepPort = 0 }
+        }
+        if ($keepPort -ge 1024 -and $keepPort -le 65535) { $BundledPort = $keepPort }
+        if (-not $NonInteractive) {
+            $entered = (Read-Host (T "Bundled PostgreSQL port [$BundledPort]" "内置 PostgreSQL 端口 [$BundledPort]")).Trim()
+            if ($entered) { $BundledPort = [int]$entered }
+        }
+    }
+    if ($BundledPort -lt 1024 -or $BundledPort -gt 65535) {
+        throw "invalid_bundled_port: $BundledPort (1024-65535)"
+    }
     $pgData = Join-Path $data "pgdata"
     $values["NETX_BUNDLED_PG_PORT"] = "$BundledPort"
     $values["NETX_BUNDLED_PG_DATA_DIR"] = (ConvertTo-NetxFsPath $pgData)
@@ -147,7 +162,9 @@ if ($DbMode -eq "bundled") {
             } else {
                 $confText = $confText -replace "(?m)^\s*listen_addresses\s*=\s*'[^']*'", "listen_addresses = '127.0.0.1'"
             }
-            Set-Content -Path $conf -Value $confText -Encoding utf8
+            # No BOM: PowerShell 5.1 `Set-Content -Encoding utf8` adds one and postgres then
+            # rejects postgresql.conf (syntax error at line 1) and will not start.
+            [IO.File]::WriteAllText($conf, $confText, (New-Object System.Text.UTF8Encoding($false)))
         }
     }
     if (Test-Path $hba) {

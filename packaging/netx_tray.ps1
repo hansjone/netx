@@ -214,6 +214,7 @@ try {
 $runtimePs1 = Join-Path $PSScriptRoot "runtime_ctl.ps1"
 $checkPs1 = Join-Path $PSScriptRoot "check_update.ps1"
 $setupPs1 = Join-Path $PSScriptRoot "setup_first_run.ps1"
+$pgPortPs1 = Join-Path $PSScriptRoot "set_pg_port.ps1"
 $autostartPs1 = Join-Path $PSScriptRoot "install_autostart.ps1"
 $updateTaskPs1 = Join-Path $PSScriptRoot "install_update_task.ps1"
 
@@ -631,6 +632,7 @@ $miSource = New-NetxMenuItem -Text (T "Update source" "更新源") -Glyph "updat
 $miSourceGithub = New-NetxMenuItem -Text (T "GitHub (default)" "GitHub（默认）") -Glyph "check"
 $miSourceForgejo = New-NetxMenuItem -Text "git.avelo.top" -Glyph "check"
 $miReconfig = New-NetxMenuItem -Text (T "Reconfigure database…" "重新配置数据库…") -Glyph "repair"
+$miPgPort = New-NetxMenuItem -Text (T "Built-in database port…" "内置数据库端口…") -Glyph "settings"
 $miLogs = New-NetxMenuItem -Text (T "Open log folder" "打开日志目录") -Glyph "log"
 $miData = New-NetxMenuItem -Text (T "Open data folder" "打开数据目录") -Glyph "folder"
 $miUpdate = New-NetxMenuItem -Text (T "Check for updates…" "检查更新…") -Glyph "update"
@@ -640,7 +642,7 @@ $miStopExit = New-NetxMenuItem -Text (T "Stop NetX and exit" "停止 NetX 并退
 [void]$miSource.DropDownItems.AddRange(@($miSourceGithub, $miSourceForgejo))
 [void]$miSettings.DropDownItems.AddRange(@(
         $miAutostart, $miAutoUpdate, $miSource, (New-NetxMenuSeparator),
-        $miReconfig, $miLogs, $miData
+        $miReconfig, $miPgPort, $miLogs, $miData
     ))
 [void]$menu.Items.AddRange(@(
         $miHeader, $miStatus, (New-NetxMenuSeparator),
@@ -840,6 +842,30 @@ $miReconfig.add_Click({
                 Invoke-NetxRuntime -Action stop -Then { param($c) Start-NetxReconfigWizard }
             } else {
                 Start-NetxReconfigWizard
+            }
+        }
+    })
+
+$miPgPort.add_Click({
+        Invoke-NetxTrayDeferred {
+            if ($script:dbModeLabel -ne (T "Built-in DB" "内置库")) {
+                Show-NetxDialog (T "NetX uses an external database; use Reconfigure database instead." "当前使用外置数据库，请改用“重新配置数据库”。") "Information" | Out-Null
+                return
+            }
+            try {
+                $p = Start-NetxChild -File $pgPortPs1 -WindowStyle Normal
+            } catch {
+                Show-NetxDialog ((T "Could not change the port: " "无法修改端口：") + $_.Exception.Message) "Error" | Out-Null
+                return
+            }
+            Watch-NetxProcess $p {
+                param($sp)
+                $code = Get-NetxExitCode $sp
+                if ($null -ne $code -and $code -ne 0) {
+                    Show-NetxDialog ((T "Changing the port failed (exit $code)." "修改端口失败（退出码 $code）。")) "Error" | Out-Null
+                    return
+                }
+                Read-NetxTrayConfig
             }
         }
     })

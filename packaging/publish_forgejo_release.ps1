@@ -7,7 +7,7 @@
     [string]$ReleaseDir = ""
 )
 
-# Publish Windows Setup.exe to Forgejo/Gitea (mirror sync does NOT copy GitHub Release files).
+# Publish Windows Setup.exe (+ the Linux tar.gz when present in the release dir) to Forgejo/Gitea (mirror sync does NOT copy GitHub Release files).
 # Requires a Forgejo token with repo write (Settings → Applications → Generate New Token).
 # Default: https://git.avelo.top (public domain). LAN IP only when explicitly reachable.
 #
@@ -29,6 +29,9 @@ $tag = "v$Version"
 $relDir = if ($ReleaseDir) { $ReleaseDir } else { Join-Path $PSScriptRoot "release" }
 $setup = Join-Path $relDir "NetX-Setup-$Version.exe"
 $checksum = "$setup.sha256"
+# Linux package from CI (gh release download vX -p 'netx-*-linux-*' -D packaging\release) or a local build.
+$linuxPkg = Join-Path $relDir "netx-$Version-linux-x86_64.tar.gz"
+$linuxSum = "$linuxPkg.sha256"
 
 if (-not $Token) {
     $Token = $env:NETX_FORGEJO_TOKEN
@@ -84,10 +87,15 @@ try {
 }
 
 $notes = @"
-NetX $Version Windows installer (published from GitHub release build).
+NetX $Version (published from GitHub release build).
 
-- NetX-Setup-$Version.exe
+- NetX-Setup-$Version.exe — Windows installer
 "@
+if (Test-Path $linuxPkg) {
+    $notes += "`n- netx-$Version-linux-x86_64.tar.gz — Linux x86_64 offline package (``sudo ./install.sh``)"
+} else {
+    Write-Host "[WARN] Linux package not found ($linuxPkg); publishing Windows only" -ForegroundColor Yellow
+}
 
 if ($existing -and $existing.id) {
     Write-Host "==> Release $tag already exists (id=$($existing.id)); deleting old release to re-upload assets"
@@ -127,6 +135,14 @@ function Upload-ForgejoAsset {
 
 Upload-ForgejoAsset -Path $setup
 Upload-ForgejoAsset -Path $checksum
+if (Test-Path $linuxPkg) {
+    if (-not (Test-Path $linuxSum)) {
+        $lh = (Get-FileHash -LiteralPath $linuxPkg -Algorithm SHA256).Hash.ToLowerInvariant()
+        Set-Content -LiteralPath $linuxSum -Value "$lh  $(Split-Path -Leaf $linuxPkg)" -Encoding ascii -NoNewline
+    }
+    Upload-ForgejoAsset -Path $linuxPkg
+    Upload-ForgejoAsset -Path $linuxSum
+}
 
 $releaseUrl = "$ForgejoBase/$Owner/$Repo/releases/tag/$tag"
 Write-Host ""

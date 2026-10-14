@@ -1,0 +1,8 @@
+[Unit]
+Description=NetX automatic update
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=@PREFIX@/current/packaging/linux/netxctl update --yes --quiet

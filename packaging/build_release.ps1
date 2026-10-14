@@ -121,7 +121,7 @@ foreach ($name in @(
         "download_postgres.ps1", "setup_first_run.ps1", "start_netx_app.ps1",
         "stop_netx_app.ps1", "update_netx.ps1", "check_update.ps1",
         "launch_shortcut.ps1", "netx_tray.ps1", "install_autostart.ps1", "install_service.ps1",
-        "service_run.ps1", "service_lifecycle.ps1", "install_update_task.ps1", "repair_venv.ps1", "runtime_ctl.ps1", "uninstall_prepare.ps1", "uninstall_delete_data.ps1", "sign_release.ps1",
+        "service_run.ps1", "service_lifecycle.ps1", "install_update_task.ps1", "repair_venv.ps1", "runtime_ctl.ps1", "set_pg_port.ps1", "uninstall_prepare.ps1", "uninstall_delete_data.ps1", "sign_release.ps1",
         "build_release.ps1", "publish_release.ps1", "publish_forgejo_release.ps1", "README.md", "manifest.example.json"
     )) {
     $src = Join-Path $PSScriptRoot $name
