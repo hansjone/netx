@@ -63,6 +63,11 @@ $values = @{}
 $values["NETX_DB_MODE"] = $DbMode
 $values["NETX_HOST"] = "127.0.0.1"
 $values["NETX_PORT"] = "8890"
+# Internal networks: UME uses self-signed certificates. Keep TLS verification off and
+# waive that startup check explicitly, so switching NETX_HOST to 0.0.0.0 later does
+# not stop NetX (same defaults as the Linux installer). Existing values are kept.
+if (-not $existing.ContainsKey("NETX_UME_VERIFY_TLS")) { $values["NETX_UME_VERIFY_TLS"] = "false" }
+if (-not $existing.ContainsKey("NETX_ALLOW_INSECURE_DEFAULTS")) { $values["NETX_ALLOW_INSECURE_DEFAULTS"] = "1" }
 # Absolute UI path when present; else relative for source trees.
 $distAbs = Join-Path $prog "web\dist"
 if (Test-Path (Join-Path $distAbs "index.html")) {

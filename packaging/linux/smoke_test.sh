@@ -56,6 +56,8 @@ listening "${PG1}" || fail "PG not on ${PG1}"
 token="$(login "${PORT1}")" || fail "login"
 [[ -n "${token}" ]] || fail "empty token"
 netxctl status || fail "status"
+netxctl admin-password | grep "$(grep '^NETX_BOOTSTRAP_ADMIN_PASSWORD=' /var/lib/netx/.env | cut -d= -f2-)" >/dev/null || fail "admin-password (initial)"
+grep -q '^NETX_ALLOW_INSECURE_DEFAULTS=1' /var/lib/netx/.env || fail "UME/insecure defaults not set"
 
 step "marker row survives update"
 PGPASSWORD="$(grep '^NETX_DATABASE_URL=' /var/lib/netx/.env | sed 's#.*://netx:\([^@]*\)@.*#\1#')" \

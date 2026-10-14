@@ -611,6 +611,37 @@ def cmd_tar_list(a: argparse.Namespace) -> None:
             print(name)
 
 
+def cmd_admin_status(a: argparse.Namespace) -> None:
+    """Does the bootstrap admin still use the initial password from .env?
+
+    Prints `state` (initial | changed | none | unknown), `username`, `password`
+    as KEY=VALUE lines. `changed` also covers an admin that already existed in a
+    reused database: NetX only applies the bootstrap password to an empty app_user.
+    """
+    env = read_env(Path(a.env))
+    user = (env.get("NETX_BOOTSTRAP_ADMIN_USERNAME") or "admin").strip() or "admin"
+    pw = (env.get("NETX_BOOTSTRAP_ADMIN_PASSWORD") or "admin123").strip() or "admin123"
+    state = "unknown"
+    try:
+        import bcrypt  # type: ignore
+        import psycopg  # type: ignore
+
+        p = url_parts(env.get("NETX_DATABASE_URL", ""))
+        with psycopg.connect(host=p["host"], port=int(p["port"]), user=p["user"], password=p["password"],
+                             dbname=p["db"], connect_timeout=8) as conn:
+            row = conn.execute("SELECT password_hash FROM app_user WHERE username = %s", (user,)).fetchone()
+        if row is None:
+            state = "none"
+        else:
+            ok = bcrypt.checkpw(pw.encode("utf-8"), str(row[0] or "").encode("ascii"))
+            state = "initial" if ok else "changed"
+    except Exception as exc:  # table missing before first start, DB down, ...
+        state = "none" if "app_user" in str(exc) and "does not exist" in str(exc) else "unknown"
+    print(f"state={state}")
+    print(f"username={user}")
+    print(f"password={pw}")
+
+
 def cmd_check_update(a: argparse.Namespace) -> None:
     cfg = Cfg(read_env(Path(a.env)))
     cur = current_version(Path(a.prefix))
@@ -710,6 +741,7 @@ def main(argv: list[str] | None = None) -> None:
     s = sub.add_parser("extract"); s.add_argument("file"); s.add_argument("--workdir", required=True)
     s.add_argument("--arch", default="x86_64"); s.set_defaults(fn=cmd_extract)
 
+    s = sub.add_parser("admin-status"); s.add_argument("--env", required=True); s.set_defaults(fn=cmd_admin_status)
     s = sub.add_parser("run-as"); s.add_argument("user"); s.add_argument("argv", nargs=argparse.REMAINDER)
     s.set_defaults(fn=cmd_run_as)
     s = sub.add_parser("spawn"); s.add_argument("log"); s.add_argument("pidfile")

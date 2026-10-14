@@ -172,6 +172,29 @@ show_start_failure() {
   fi
 }
 
+# print_admin_login ENV_FILE — tell the truth about the admin login: the generated
+# initial password only applies when NetX created the admin itself.
+print_admin_login() {
+  local out state user pw
+  out="$(netx_admin admin-status --env "$1" 2>/dev/null)" || return 0
+  state="$(printf '%s
+' "${out}" | sed -n 's/^state=//p')"
+  user="$(printf '%s
+' "${out}" | sed -n 's/^username=//p')"
+  pw="$(printf '%s
+' "${out}" | sed -n 's/^password=//p')"
+  case "${state}" in
+    initial)
+      echo "  $(t "登录账号" "login")     : ${user} / ${pw}  ($(t "初始密码，首次登录后必须修改" "initial password; change it at first login"))" ;;
+    changed)
+      echo "  $(t "登录账号" "login")     : ${user} $(t "已有自己的密码（改过密码，或沿用了旧数据库里的账号），请用原来的密码登录" "already has its own password (changed, or reused from an existing database): use that one")" ;;
+    none)
+      echo "  $(t "登录账号" "login")     : ${user} / ${pw}  ($(t "首次启动建表后生效，首次登录后必须修改" "takes effect at first start; change it at first login"))" ;;
+    *)
+      echo "  $(t "登录账号" "login")     : $(t "暂时无法读取数据库，稍后执行 sudo netxctl admin-password 查看" "database not readable right now; run sudo netxctl admin-password later")" ;;
+  esac
+}
+
 is_loopback() { case "$1" in 127.0.0.1|localhost|::1) return 0 ;; *) return 1 ;; esac; }
 
 primary_ip() {

@@ -43,6 +43,7 @@ $(t "用法" "Usage"): netxctl <command> [options]
   update [--yes] [--file <netx-x.y.z-linux-x86_64.tar.gz>] [--force]
   auto-update on|off      $(t "每日自动更新" "daily automatic update")
   backup [<file.tar.gz>]  $(t "备份数据库与密钥" "back up database + secrets")
+  admin-password          $(t "查看管理员登录密码情况" "show the admin login (initial password or not)")
   uninstall [--purge] [--yes]
   version
   run                     $(t "前台运行（systemd 使用）" "foreground supervisor (used by systemd)")
@@ -235,6 +236,11 @@ cmd_logs() {
 
 cmd_version() { cur_version; }
 
+cmd_admin_password() {
+  need_root admin-password; need_install
+  print_admin_login "${ENV_FILE}"
+}
+
 # ------------------------------------------------------------------ ports
 
 # apply_env_change <description> KEY=VAL... ; restarts if running, rolls back on failure.
@@ -295,7 +301,8 @@ cmd_set_bind() {
   if ! is_loopback "${h}"; then
     [[ -n "$(cfg NETX_BOOTSTRAP_ADMIN_PASSWORD)" && "$(cfg NETX_BOOTSTRAP_ADMIN_PASSWORD)" != "admin123" ]] ||
       pairs+=("NETX_BOOTSTRAP_ADMIN_PASSWORD=$(netx_admin gen-secret password)")
-    [[ -n "$(cfg NETX_UME_VERIFY_TLS)" ]] || pairs+=("NETX_UME_VERIFY_TLS=true")
+    [[ -n "$(cfg NETX_UME_VERIFY_TLS)" ]] || pairs+=("NETX_UME_VERIFY_TLS=false")
+    [[ -n "$(cfg NETX_ALLOW_INSECURE_DEFAULTS)" ]] || pairs+=("NETX_ALLOW_INSECURE_DEFAULTS=1")
   fi
   apply_env_change set_bind "${pairs[@]}"
   ok "$(t "监听地址已改为" "listen address is now") ${h}:$(api_port)"
@@ -518,6 +525,7 @@ case "${cmd}" in
   backup) cmd_backup "$@" ;;
   uninstall) cmd_uninstall "$@" ;;
   version|--version|-V) cmd_version ;;
+  admin-password) cmd_admin_password ;;
   ""|-h|--help|help) usage ;;
   *) err "unknown command: ${cmd}"; usage; exit 2 ;;
 esac

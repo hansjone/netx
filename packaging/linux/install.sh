@@ -361,9 +361,12 @@ write_env() {
     ADMIN_PW_GENERATED=1
     pairs+=("NETX_BOOTSTRAP_ADMIN_PASSWORD=${ADMIN_PASSWORD}")
   fi
-  if ! is_loopback "${BIND}" && [[ -z "$(env_get "${ENV_FILE}" NETX_UME_VERIFY_TLS)" ]]; then
-    pairs+=("NETX_UME_VERIFY_TLS=true")
-  fi
+  # Deployments are on internal networks where UME uses self-signed certificates:
+  # TLS verification is off by default and that check is waived explicitly
+  # (admin password and JWT secret are already unique per install). Written for
+  # every bind address so a later `netxctl set-bind` cannot trip the check.
+  [[ -n "$(env_get "${ENV_FILE}" NETX_UME_VERIFY_TLS)" ]] || pairs+=("NETX_UME_VERIFY_TLS=false")
+  [[ -n "$(env_get "${ENV_FILE}" NETX_ALLOW_INSECURE_DEFAULTS)" ]] || pairs+=("NETX_ALLOW_INSECURE_DEFAULTS=1")
   if [[ -n "${CRED_KEY}" ]]; then
     pairs+=("NETX_CREDENTIAL_SECRET_KEY=${CRED_KEY}")
   elif [[ -z "$(env_get "${ENV_FILE}" NETX_CREDENTIAL_SECRET_KEY)" ]]; then
@@ -507,10 +510,7 @@ summary() {
   echo
   ok "NetX ${VERSION} $(t "已就绪" "is up")"
   echo "  $(t "访问地址" "URL")      : http://${host}:${port}/"
-  if [[ "${MODE}" == "install" && -n "${ADMIN_PASSWORD}" ]]; then
-    echo "  $(t "初始账号" "first login"): admin / ${ADMIN_PASSWORD}  ($(t "首次登录后必须修改密码" "you must change it at first login"))"
-    [[ "${ADMIN_PW_GENERATED}" == "1" ]] && echo "  $(t "（随机生成，只显示这一次；也保存在" "(generated; shown once, also kept in") ${ENV_FILE} NETX_BOOTSTRAP_ADMIN_PASSWORD)"
-  fi
+  [[ "${MODE}" == "update" ]] || print_admin_login "${ENV_FILE}"
   echo "  $(t "程序目录" "program")  : ${PREFIX}/current -> releases/${VERSION}"
   echo "  $(t "数据目录" "data")     : ${DATA}"
   echo "  $(t "管理命令" "manage")   : sudo netxctl status | stop | start | set-port | set-pg-port | update"
@@ -543,6 +543,7 @@ do_install() { # install or reinstall
   if [[ "${AUTO_UPDATE}" == "1" ]]; then "${PREFIX}/current/packaging/linux/netxctl" auto-update on || true; fi
   if ! start_and_wait; then
     err "$(t "NetX 启动失败，日志" "NetX failed to start; logs"): ${DATA}/logs/"
+    echo "  $(t "排除问题后执行 sudo netxctl start；登录密码用 sudo netxctl admin-password 查看" "after fixing it: sudo netxctl start; login password: sudo netxctl admin-password")" >&2
     show_start_failure "${DATA}"
     exit 1
   fi
@@ -578,6 +579,9 @@ do_update() {
   # Re-assert keys newer releases rely on; never touches ports or DB settings.
   local pairs=("NETX_UI_DIST_DIR=${PREFIX}/current/web/dist" "NETX_RUN_INLINE_SCHEDULERS=false") kv
   while IFS= read -r kv; do pairs+=("${kv}"); done < <(data_env_pairs "${DATA}")
+  # Defaults added after the first Linux release; existing values are kept.
+  [[ -n "$(env_get "${ENV_FILE}" NETX_UME_VERIFY_TLS)" ]] || pairs+=("NETX_UME_VERIFY_TLS=false")
+  [[ -n "$(env_get "${ENV_FILE}" NETX_ALLOW_INSECURE_DEFAULTS)" ]] || pairs+=("NETX_ALLOW_INSECURE_DEFAULTS=1")
   netx_admin env-set "${ENV_FILE}" "${pairs[@]}"
   chown "${NETX_USER}:${NETX_USER}" "${ENV_FILE}"
   switch_current "${VERSION}"

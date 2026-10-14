@@ -53,19 +53,19 @@ sudo ./install.sh --yes --db external --db-url 'postgresql+psycopg://netx:密码
 
 装好后访问 `http://<服务器IP>:<端口>/`，初始账号 `admin`，密码在安装结束时显示（随机生成，也可用 `--admin-password` 指定；同时保存在 `/var/lib/netx/.env` 的 `NETX_BOOTSTRAP_ADMIN_PASSWORD`），首次登录必须改密码。
 
-> 对外监听（非 127.0.0.1）时 NetX 自身要求：管理员初始密码不能是 admin123，并且开启 UME 的 TLS 校验，否则拒绝启动（api.log 末尾是 `security_bootstrap.py ... SystemExit: 2`）。安装程序会自动生成随机管理员密码，并设置 `NETX_UME_VERIFY_TLS=true`。
->
-> **对接 UME（通常是自签名证书）**：在 `/var/lib/netx/.env` 中加入下面几行，然后 `sudo netxctl restart`：
->
-> ```
-> NETX_UME_BASE_URL=https://<UME地址>:<端口>
-> NETX_UME_USERNAME=...
-> NETX_UME_PASSWORD=...
-> NETX_UME_VERIFY_TLS=false
-> NETX_ALLOW_INSECURE_DEFAULTS=1
-> ```
->
-> `NETX_ALLOW_INSECURE_DEFAULTS=1` 会跳过上面这组启动检查。由于管理员密码和 JWT 密钥在安装时已经单独生成，实际放开的只有"访问 UME 时不校验证书"这一项（与 Windows 版默认行为相同）。
+**登录密码**：安装结束时会显示登录信息，之后也可以随时用 `sudo netxctl admin-password` 查看。
+- 新数据库：NetX 首次启动时用随机生成的初始密码创建 `admin`（保存在 `.env` 的 `NETX_BOOTSTRAP_ADMIN_PASSWORD`），首次登录必须修改。
+- 沿用已有数据库（例如外置库里已有以前部署的数据）：库里已经有账号，初始密码不会生效，请用原来的密码登录；`admin-password` 会明确提示这种情况。
+
+**对接 UME**：在 `/var/lib/netx/.env` 中加入下面几行，然后 `sudo netxctl restart`：
+
+```
+NETX_UME_BASE_URL=https://<UME地址>:<端口>
+NETX_UME_USERNAME=...
+NETX_UME_PASSWORD=...
+```
+
+> UME 一般使用自签名证书，所以安装程序默认设置 `NETX_UME_VERIFY_TLS=false` 和 `NETX_ALLOW_INSECURE_DEFAULTS=1`。后者用来放行 NetX 的启动安全检查（对外监听时，该检查要求开启 UME 证书校验、管理员初始密码不是 admin123；否则 api.log 末尾是 `security_bootstrap.py ... SystemExit: 2`）。管理员密码和 JWT 密钥在安装时已经单独生成，所以实际放开的只有"访问 UME 时不校验证书"这一项，与 Windows 版默认行为相同。如果 UME 证书可信，可以改成 `NETX_UME_VERIFY_TLS=true` 并删掉 `NETX_ALLOW_INSECURE_DEFAULTS`。
 
 | 路径 | 内容 |
 |---|---|
