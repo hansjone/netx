@@ -175,6 +175,8 @@ export function LoginStarfield() {
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
       const w = window.innerWidth;
       const h = window.innerHeight;
+      // Hidden/zero-size viewport: gradients would get NaN coords and throw. Wait for a resize.
+      if (!(w >= 1 && h >= 1 && Number.isFinite(w) && Number.isFinite(h))) return;
       sky.width = Math.round(w * dpr);
       sky.height = Math.round(h * dpr);
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
