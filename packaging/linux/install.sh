@@ -156,9 +156,12 @@ pick_port() { # pick_port <label> <value> <default> <host> <allow_current>
       [[ "${INTERACTIVE}" == "1" ]] || die "${p}"
       err "${p}"; val=""; continue
     fi
-    if [[ "${p}" == "${allow}" ]] || netx_admin port-free "${p}" --host "${host}"; then
+    local rc=0
+    [[ "${p}" == "${allow}" ]] || netx_admin port-free "${p}" --host "${host}" || rc=$?
+    if [[ "${rc}" == "0" ]]; then
       echo "${p}"; return 0
     fi
+    [[ "${rc}" == "3" ]] && die "$(t "监听地址无效" "invalid listen address"): ${host}"
     local msg
     msg="$(t "端口 ${p} 已被占用" "port ${p} is in use")"
     [[ "${INTERACTIVE}" == "1" ]] || die "port_in_use: ${p} — ${msg}"
@@ -176,13 +179,23 @@ configure() {
 
   echo
   info "$(t "配置 NetX" "Configure NetX")"
-  if [[ -z "${BIND}" ]]; then
-    if [[ "${INTERACTIVE}" == "1" ]]; then
-      BIND="$(ask "$(t "监听地址（0.0.0.0=所有网卡，127.0.0.1=仅本机）" "Listen address (0.0.0.0 = all, 127.0.0.1 = local only)")" "${old_bind:-0.0.0.0}")"
-    else
-      BIND="${old_bind:-0.0.0.0}"
+  local b
+  while :; do
+    if [[ -z "${BIND}" ]]; then
+      if [[ "${INTERACTIVE}" == "1" ]]; then
+        BIND="$(ask "$(t "监听地址（回车或 0.0.0.0 = 所有网卡；127.0.0.1 = 仅本机；或本机某个 IP）" "Listen address (Enter/0.0.0.0 = all interfaces, 127.0.0.1 = local only, or one of this server's IPs)")" "${old_bind:-0.0.0.0}")"
+      else
+        BIND="${old_bind:-0.0.0.0}"
+      fi
     fi
-  fi
+    if b="$(netx_admin norm-bind -- "${BIND}" 2>&1)"; then
+      BIND="${b}"
+      break
+    fi
+    [[ "${INTERACTIVE}" == "1" ]] || die "${b}"
+    err "${b}"
+    BIND=""
+  done
   API_PORT="$(pick_port "$(t "Web/API 端口" "Web/API port")" "${API_PORT}" "${old_port:-8890}" "${BIND}" "${old_port}")"
 
   if [[ -z "${DB_MODE}" ]]; then

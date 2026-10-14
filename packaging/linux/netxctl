@@ -287,8 +287,9 @@ cmd_set_port() {
 
 cmd_set_bind() {
   need_root set-bind; need_install
-  local h="${1:-}"
-  [[ -n "${h}" ]] || die "usage: netxctl set-bind <0.0.0.0|127.0.0.1|ip>"
+  local h
+  [[ -n "${1:-}" ]] || die "usage: netxctl set-bind <0.0.0.0|127.0.0.1|ip>"
+  h="$(netx_admin norm-bind -- "$1")" || exit 1
   local pairs=("NETX_HOST=${h}")
   # Same prerequisites NetX enforces for a non-loopback bind (security_bootstrap.py).
   if ! is_loopback "${h}"; then

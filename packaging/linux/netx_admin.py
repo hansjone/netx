@@ -102,15 +102,50 @@ def write_env(path: Path, values: dict[str, str], unset: list[str] | None = None
 # --------------------------------------------------------------------------- net
 
 
+_BIND_ALIASES = {"": "0.0.0.0", "all": "0.0.0.0", "any": "0.0.0.0", "*": "0.0.0.0",
+                 "local": "127.0.0.1", "localhost": "127.0.0.1", "loopback": "127.0.0.1"}
+
+
+def norm_bind(value: str) -> str:
+    """Listen address as NetX needs it: an IPv4 literal present on this host.
+
+    Accepts aliases (all/*, local/localhost). Raises ValueError with a reason.
+    """
+    v = _BIND_ALIASES.get(value.strip().lower(), value.strip())
+    try:
+        socket.inet_aton(v)
+        if v.count(".") != 3:
+            raise OSError
+    except OSError:
+        raise ValueError(f"not an IPv4 address: {value!r} (use 0.0.0.0 for all interfaces)")
+    if v != "0.0.0.0":
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            s.bind((v, 0))
+        except OSError:
+            raise ValueError(f"{v} is not an address of this server")
+        finally:
+            s.close()
+    return v
+
+
 def port_free(port: int, host: str = "0.0.0.0") -> bool:
-    """True when nothing listens on `port` (checks the wildcard and loopback)."""
+    """True when nothing listens on `port` (checks the wildcard and loopback).
+
+    Only EADDRINUSE/EACCES mean "taken"; any other bind error is a bad address
+    and must not be reported as a busy port.
+    """
+    import errno
+
     for h in {host, "0.0.0.0", "127.0.0.1"}:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             s.bind((h, port))
-        except OSError:
-            return False
+        except OSError as exc:
+            if exc.errno in (errno.EADDRINUSE, errno.EACCES):
+                return False
+            raise ValueError(f"cannot bind {h}:{port}: {exc}")
         finally:
             s.close()
     # Also catch a listener bound only to a specific address we did not test.
@@ -449,7 +484,19 @@ def cmd_env_export(a: argparse.Namespace) -> None:
 
 
 def cmd_port_free(a: argparse.Namespace) -> None:
-    sys.exit(0 if port_free(valid_port(a.port), a.host) else 1)
+    """exit 0 = free, 1 = in use, 3 = bad listen address."""
+    try:
+        free = port_free(valid_port(a.port), a.host)
+    except ValueError as exc:
+        die("bad_listen_address", str(exc), rc=3)
+    sys.exit(0 if free else 1)
+
+
+def cmd_norm_bind(a: argparse.Namespace) -> None:
+    try:
+        print(norm_bind(a.value))
+    except ValueError as exc:
+        die("bad_listen_address", str(exc))
 
 
 def cmd_valid_port(a: argparse.Namespace) -> None:
@@ -636,6 +683,7 @@ def main(argv: list[str] | None = None) -> None:
     s = sub.add_parser("env-export"); s.add_argument("file"); s.set_defaults(fn=cmd_env_export)
     s = sub.add_parser("port-free"); s.add_argument("port"); s.add_argument("--host", default="0.0.0.0")
     s.set_defaults(fn=cmd_port_free)
+    s = sub.add_parser("norm-bind"); s.add_argument("value"); s.set_defaults(fn=cmd_norm_bind)
     s = sub.add_parser("valid-port"); s.add_argument("port"); s.set_defaults(fn=cmd_valid_port)
     s = sub.add_parser("gen-secret"); s.add_argument("kind", choices=["fernet", "password"]); s.set_defaults(fn=cmd_gen_secret)
     s = sub.add_parser("build-url")
