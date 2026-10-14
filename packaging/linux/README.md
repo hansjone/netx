@@ -6,7 +6,9 @@
 
 x86_64、glibc ≥ 2.17：CentOS 7/8/Stream 9、RHEL 7–9、Rocky/Alma 8–9、Oracle Linux、Fedora、Ubuntu 18.04+、Debian 9+、openSUSE Leap / SLES 12+、openEuler 20.03+、麒麟 V10、统信 UOS 20、Anolis 等。
 
-不支持：Alpine（musl）、32 位、ARM、CentOS 6。
+**实际测试过**（每次发版 CI 都会在这些系统上断网完整测试一遍安装、改端口、更新、卸载）：CentOS 7、Rocky Linux 9、Ubuntu 18.04、Ubuntu 24.04、Debian 12、openSUSE Leap 15、openEuler 22.03。上面列出的其他系统使用相同的 glibc 运行环境，理论上兼容，但没有逐一实测。
+
+不支持：Alpine（musl）、32 位、ARM（鲲鹏/飞腾）、CentOS 6（glibc 太旧）。
 
 ## 安装
 
