@@ -30,3 +30,6 @@ packaging/winsw/
 
 # Claude Code personal overrides
 .claude/settings.local.json
+
+# Claude Code local MCP config (machine paths + API token)
+.mcp.json
