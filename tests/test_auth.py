@@ -190,10 +190,11 @@ class AuthApiTests(unittest.TestCase):
         reuse = self.client.post("/v1/auth/refresh", json={"refresh_token": refresh})
         self.assertEqual(reuse.status_code, 401)
 
+    @patch("netx_api.auth_service.settings.auth_single_session", True)
     def test_single_session_login_revokes_others(self) -> None:
         token = self._login()
         token2 = self._login()
-        # Default auth_single_session=True: first login is kicked.
+        # Single-session mode: first login is kicked.
         self.assertEqual(
             self.client.get("/v1/probe", headers={"Authorization": f"Bearer {token}"}).status_code,
             401,

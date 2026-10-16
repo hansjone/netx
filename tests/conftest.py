@@ -12,6 +12,18 @@ _TEST_STATE = TemporaryDirectory(prefix="netx-tests-", ignore_cleanup_errors=Tru
 _TEST_DATABASE_URL = f"sqlite:///{(Path(_TEST_STATE.name) / 'netx.sqlite').as_posix()}"
 os.environ["NETX_DATABASE_URL"] = _TEST_DATABASE_URL
 os.environ["NETX_CREDENTIAL_SECRET_FILE"] = str(Path(_TEST_STATE.name) / "credential_secret")
+# Login bootstraps the MCP token file; relative defaults would land in the
+# real data/ directory and break the running API's MCP token.
+for _key, _rel in {
+    "NETX_AUTH_SECRET_FILE": "auth/jwt_secret",
+    "NETX_AUTH_MCP_TOKEN_FILE": "auth/mcp_token",
+    "NETX_NE_COLLECTION_DATA_DIR": "ne_collections",
+    "NETX_BIZ_STATE_SPOOL_DIR": "biz_state_spool",
+    "NETX_NE_EXEC_JOB_DIR": "ne_exec_jobs",
+    "NETX_WEBCRT_DATA_DIR": "webcrt",
+    "NETX_SCHEDULER_HEARTBEAT_PATH": "runtime/scheduler_heartbeat.json",
+}.items():
+    os.environ[_key] = str(Path(_TEST_STATE.name) / _rel)
 
 
 def pytest_sessionstart(session):
