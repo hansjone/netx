@@ -116,6 +116,7 @@ def test_resources_list_and_read_via_http():
             "group": "ops",
             "skill": "netx-ops",
             "entry": True,
+            "unavailableTools": [],
         }
         ref = next(r for r in resources if r["uri"].endswith("/reference.md"))
         assert "description" not in ref or not ref.get("description")
@@ -471,3 +472,32 @@ def test_mcp_tcp_resources_list(live_skills_port: int):
     uris = {x["uri"] for x in data["result"]["resources"]}
     assert "netx://skills/ops/netx-ops/SKILL.md" in uris
     assert all("biz-state" not in u for u in uris)
+
+
+def test_skill_lists_tools_the_token_cannot_call():
+    from netx_api.mcp_remote.skills import (
+        call_get_netx_skill,
+        prompt_skill_md_text,
+        resource_dict,
+        unavailable_tools,
+    )
+
+    limited = frozenset({"ne:read"})
+    missing = unavailable_tools("ops", limited)
+    assert "execManagedNe" in missing
+    assert "listManagedNe" not in missing
+    assert unavailable_tools("ops", None) == []
+
+    out = call_get_netx_skill({"name": "netx-ops"}, limited)
+    text = out["content"][0]["text"]
+    assert out["isError"] is False
+    assert "当前 token 无权使用以下工具" in text and "execManagedNe" in text
+
+    assert "execManagedNe" in (prompt_skill_md_text("netx-ops", limited) or "")
+
+    entry = next(f for f in list_visible_skill_files(limited) if f.skill == "netx-ops" and f.entry)
+    meta = resource_dict(entry, scopes=limited)["_meta"]["netx"]
+    assert "execManagedNe" in meta["unavailableTools"]
+
+    full = call_get_netx_skill({"name": "netx-ops"}, None)["content"][0]["text"]
+    assert "当前 token 无权使用以下工具" not in full

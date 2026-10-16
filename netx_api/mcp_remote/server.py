@@ -131,7 +131,7 @@ async def _on_list_resources(
     scopes, groups = _scopes_and_groups()
     resources: list[Resource] = []
     for sf in list_visible_skill_files(scopes, groups):
-        d = resource_dict(sf)
+        d = resource_dict(sf, scopes=scopes)
         resources.append(
             Resource(
                 uri=d["uri"],

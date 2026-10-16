@@ -69,7 +69,9 @@ http://127.0.0.1:8890/mcp?groups=ops
 | `prompts/list` · `prompts/get` | 每个可见 skill 一个 prompt（名=skill 名）；Claude Code 显示为 `/mcp__netx__<skill名>` |
 | `initialize.instructions` | 在原有说明后追加当前可见 skill 目录，并提示先调 `getNetxSkill` |
 
-可见规则：该组下当前 token 至少有一个可见工具，且遵守 `?groups=`。改 skill 文件后无需重启 netx（每次请求读盘）。
+可见规则：该组下当前 token 至少有一个可见工具，且遵守 `?groups=`。改 skill 文件后无需重启 netx（每次请求读盘，description 按文件修改时间缓存）。
+
+skill 原文不随 token 改写。当 token 只有该组部分工具的权限时：`getNetxSkill` 和 prompts 会在末尾附上"当前 token 无权使用以下工具"清单；`resources/list` 里 SKILL.md 条目的 `_meta.netx.unavailableTools` 也给出同一份清单（DSH 插件据此在 skill 末尾追加"不可用工具"提示）。
 
 ### Cursor / Claude Code 怎么读
 

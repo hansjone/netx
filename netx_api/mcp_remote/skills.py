@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .registry import (
+    ALL_TOOLS,
     GROUP_BIZ,
     GROUP_OPS,
     GROUP_TOPOLOGY,
@@ -72,6 +73,26 @@ def skills_root() -> Path:
 
 def _is_text_file(path: Path) -> bool:
     return path.is_file() and path.suffix.lower() in _TEXT_SUFFIXES
+
+
+# abs_path -> (mtime_ns, size, description); SKILL.md is re-parsed only when it changes.
+_DESC_CACHE: dict[Path, tuple[int, int, str]] = {}
+
+
+def _cached_description(skill_file: "SkillFile") -> str:
+    try:
+        st = skill_file.abs_path.stat()
+    except OSError:
+        return ""
+    hit = _DESC_CACHE.get(skill_file.abs_path)
+    if hit and hit[0] == st.st_mtime_ns and hit[1] == st.st_size:
+        return hit[2]
+    try:
+        desc = _parse_description(read_skill_text(skill_file))
+    except OSError:
+        desc = ""
+    _DESC_CACHE[skill_file.abs_path] = (st.st_mtime_ns, st.st_size, desc)
+    return desc
 
 
 def _parse_description(text: str) -> str:
@@ -170,12 +191,7 @@ def list_visible_skills(
         key = (f.group, f.skill)
         if key in by_key and not f.entry:
             continue
-        desc = ""
-        if f.entry:
-            try:
-                desc = _parse_description(read_skill_text(f))
-            except OSError:
-                desc = ""
+        desc = _cached_description(f) if f.entry else ""
         by_key[key] = (f.skill, f.group, desc)
     order = {GROUP_OPS: 0, GROUP_TOPOLOGY: 1, GROUP_BIZ: 2}
     return sorted(by_key.values(), key=lambda x: (order.get(x[1], 9), x[0].lower()))
@@ -219,13 +235,39 @@ def resolve_skill_file(
     return None
 
 
-def resource_dict(skill_file: SkillFile, *, description: str | None = None) -> dict[str, Any]:
+def unavailable_tools(
+    group: str,
+    scopes: frozenset[str] | list[str] | None,
+) -> list[str]:
+    """Tools of ``group`` the skill may mention but this token cannot call."""
+    granted = {str(t["name"]) for t in capability_tools_for_request(scopes, frozenset({group}))}
+    return [
+        str(t["name"])
+        for t in ALL_TOOLS
+        if t.get("_group") == group and str(t["name"]) not in granted
+    ]
+
+
+def unavailable_note(group: str, scopes: frozenset[str] | list[str] | None) -> str:
+    names = unavailable_tools(group, scopes)
+    if not names:
+        return ""
+    return (
+        "\n---\n当前 token 无权使用以下工具，本 skill 中涉及它们的步骤请跳过，不要调用："
+        + ", ".join(names)
+        + "\n"
+    )
+
+
+def resource_dict(
+    skill_file: SkillFile,
+    *,
+    description: str | None = None,
+    scopes: frozenset[str] | list[str] | None = None,
+) -> dict[str, Any]:
     desc = description
     if desc is None and skill_file.entry:
-        try:
-            desc = _parse_description(read_skill_text(skill_file))
-        except OSError:
-            desc = ""
+        desc = _cached_description(skill_file)
     out: dict[str, Any] = {
         "uri": skill_file.uri,
         "name": skill_file.rel_path,
@@ -235,6 +277,11 @@ def resource_dict(skill_file: SkillFile, *, description: str | None = None) -> d
                 "group": skill_file.group,
                 "skill": skill_file.skill,
                 "entry": skill_file.entry,
+                **(
+                    {"unavailableTools": unavailable_tools(skill_file.group, scopes)}
+                    if skill_file.entry
+                    else {}
+                ),
             }
         },
     }
@@ -315,7 +362,7 @@ def should_advertise_get_netx_skill(
     *,
     root: Path | None = None,
 ) -> bool:
-    return bool(list_visible_skills(scopes, groups, root=root))
+    return any(f.entry for f in list_visible_skill_files(scopes, groups, root=root))
 
 
 def available_skill_names(
@@ -371,6 +418,7 @@ def call_get_netx_skill(
             text = text.rstrip() + "\n\n---\n其他文件：\n" + "\n".join(f"- {s}" for s in siblings) + "\n"
         else:
             text = text.rstrip() + "\n\n---\n其他文件：（无）\n"
+        text += unavailable_note(skill_file.group, scopes)
     return {"content": [{"type": "text", "text": text}], "isError": False}
 
 
@@ -388,4 +436,8 @@ def prompt_skill_md_text(
         body = read_skill_text(skill_file)
     except OSError:
         return None
-    return body.rstrip() + "\n\n其他文件用 getNetxSkill 读取。\n"
+    return (
+        body.rstrip()
+        + "\n\n其他文件用 getNetxSkill 读取。\n"
+        + unavailable_note(skill_file.group, scopes)
+    )

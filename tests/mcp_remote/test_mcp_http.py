@@ -463,6 +463,8 @@ def test_http_errors_preserve_status_and_bound_detail(method: str, status: int) 
     client = httpx.Client(transport=transport, base_url="http://example.test")
     with (
         patch("netx_api.mcp_remote.asgi_client.get_app", return_value=None),
+        # Independent of the developer's .env: the fallback path needs an outbound token.
+        patch("netx_api.mcp_remote.asgi_client.api_token", return_value="test-token"),
         patch("netx_api.mcp_remote.asgi_client.httpx.Client", return_value=client),
     ):
         result = http_json("GET", "/v1/ume/alarms") if method == "GET" else http_post_json("/v1/managed-ne/exec", {})
