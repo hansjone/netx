@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextvars
 import json
 import os
 import re
@@ -141,21 +143,43 @@ def _default_timeout() -> float:
         return 120.0
 
 
-def _client(timeout: float) -> httpx.Client:
-    app = get_app()
+_MAIN_LOOP: asyncio.AbstractEventLoop | None = None
+
+
+def bind_main_loop(loop: asyncio.AbstractEventLoop) -> None:
+    """Remember the API loop; tool handlers run in worker threads and submit ASGI calls to it."""
+    global _MAIN_LOOP
+    _MAIN_LOOP = loop
+
+
+def _request(app: Any, method: str, path: str, *, timeout: float, **kwargs: Any) -> httpx.Response:
     if app is None:
         base = (
             os.getenv("NETX_API_URL")
             or os.getenv("OCLAW_NETX_BASE_URL")
             or "http://127.0.0.1:8890"
         ).rstrip("/")
-        return httpx.Client(base_url=base, timeout=timeout, trust_env=False)
-    return httpx.Client(
-        transport=httpx.ASGITransport(app=app),
-        base_url="http://mcp.internal",
-        timeout=timeout,
-        trust_env=False,
-    )
+        with httpx.Client(base_url=base, timeout=timeout, trust_env=False) as client:
+            return client.request(method, path, **kwargs)
+
+    # httpx.ASGITransport is async-only: run the in-process call as a coroutine.
+    async def _go() -> httpx.Response:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://mcp.internal",
+            timeout=timeout,
+            trust_env=False,
+        ) as client:
+            return await client.request(method, path, **kwargs)
+
+    loop = _MAIN_LOOP
+    if loop is not None and loop.is_running():
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run_coroutine_threadsafe(_go(), loop).result(timeout + 5)
+        raise RuntimeError("http_json must not be called on the event loop thread")
+    return asyncio.run(_go())
 
 
 def http_json(
@@ -183,29 +207,30 @@ def http_json(
     if tok:
         headers["authorization"] = f"Bearer {tok}"
     try:
-        with _client(to) as client:
-            resp = client.request(
-                method,
-                path,
-                params=merged or None,
-                json=body,
-                headers=headers,
-            )
-            text = resp.text
-            if not resp.is_success:
-                return {
-                    "ok": False,
-                    "error": f"netx_http_{resp.status_code}",
-                    "detail": text[:800],
-                    "hint": "检查 API 地址、令牌 scope 和资源 ID。",
-                }
-            data = resp.json() if text else {}
-            if isinstance(data, dict):
-                data = localize_payload(data)
-                data = redact(data, tokens=(tok,))
-            else:
-                data = {"raw": data}
-            return {"ok": True, "data": data}
+        resp = _request(
+            get_app(),
+            method,
+            path,
+            timeout=to,
+            params=merged or None,
+            json=body,
+            headers=headers,
+        )
+        text = resp.text
+        if not resp.is_success:
+            return {
+                "ok": False,
+                "error": f"netx_http_{resp.status_code}",
+                "detail": text[:800],
+                "hint": "检查 API 地址、令牌 scope 和资源 ID。",
+            }
+        data = resp.json() if text else {}
+        if isinstance(data, dict):
+            data = localize_payload(data)
+            data = redact(data, tokens=(tok,))
+        else:
+            data = {"raw": data}
+        return {"ok": True, "data": data}
     except Exception as exc:
         return {
             "ok": False,
@@ -257,7 +282,8 @@ def http_json_many(
         return idx, out
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futs = [pool.submit(_one, i, r) for i, r in enumerate(requests)]
+        # Copy the caller's context so each request keeps the caller's token (RBAC).
+        futs = [pool.submit(contextvars.copy_context().run, _one, i, r) for i, r in enumerate(requests)]
         for fut in as_completed(futs):
             idx, out = fut.result()
             results[idx] = out

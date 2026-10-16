@@ -187,3 +187,28 @@ def test_mcp_tcp_httpx_initialize(live_mcp_port: int):
     assert r.status_code == 200, (r.status_code, r.text[:300])
     data = r.json()
     assert data["result"]["serverInfo"]["name"] == "netx"
+
+
+def test_mcp_tcp_tool_call_reaches_api(live_mcp_port: int):
+    """tools/call must run the in-process API request (not just list tools)."""
+    body = {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {"name": "getTopologyTree", "arguments": {}},
+    }
+    r = httpx.post(
+        f"http://127.0.0.1:{live_mcp_port}/mcp",
+        json=body,
+        headers={
+            "Accept": "application/json, text/event-stream",
+            "MCP-Protocol-Version": "2024-11-05",
+        },
+        timeout=60.0,
+        trust_env=False,
+    )
+    assert r.status_code == 200, (r.status_code, r.text[:300])
+    result = r.json()["result"]
+    text = result["content"][0]["text"]
+    assert "netx_request_failed" not in text, text[:300]
+    assert not result.get("isError"), text[:300]

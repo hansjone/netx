@@ -77,8 +77,13 @@ async def _on_call_tool(
     try:
         # Handlers are sync and may nest ASGI calls; run off the event loop thread
         # so BaseHTTPMiddleware on the outer MCP request cannot deadlock.
+        import asyncio
+
         import anyio
 
+        from .asgi_client import bind_main_loop
+
+        bind_main_loop(asyncio.get_running_loop())
         result = await anyio.to_thread.run_sync(call_tool, name, dict(args))
     except Exception as exc:
         result = {
