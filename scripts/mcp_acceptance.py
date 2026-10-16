@@ -1,6 +1,6 @@
-"""通过真实 stdio MCP 留存本地验收证据；不安装插件、不导入 handler。
+"""通过真实远程 HTTP MCP（/mcp Streamable HTTP）留存本地验收证据。
 
-使用已有本机 MCP 配置中的凭据，只在子进程内存中传递，证据自动去敏。
+使用已有本机 MCP 配置中的凭据，只在进程内存中传递，证据自动去敏。
 示例：python scripts/mcp_acceptance.py ops runNmsDiagnostics '{}'
 """
 from __future__ import annotations
@@ -10,18 +10,14 @@ import datetime as dt
 import json
 import os
 from pathlib import Path
-import queue
 import re
-import subprocess
 import sys
-import threading
-import time
 
 ROOT = Path(__file__).resolve().parents[1]
 GROUPS = {
-    "ops": ("netx", "netx_mcp", "netx-mcp"),
-    "topology": ("netx-topology", "netx_topology_mcp", "netx-topology-mcp"),
-    "biz": ("netx-bizmonitor", "netx_bizmonitor_mcp", "netx-bizmonitor-mcp"),
+    "ops": "ops",
+    "topology": "topology",
+    "biz": "bizMonitor",
 }
 SENSITIVE = re.compile(r"password|passwd|secret|token|authorization|cookie|private_key", re.I)
 
@@ -32,7 +28,6 @@ def redact(value):
     if isinstance(value, list):
         return [redact(x) for x in value]
     if isinstance(value, str):
-        # MCP 的 JSON 位于 content.text 内；递归处理，避免只净化外层。
         try:
             decoded = json.loads(value)
         except (ValueError, TypeError):
@@ -53,69 +48,100 @@ def payload(response):
     return result or response.get("error", {})
 
 
-class McpSession:
-    def __init__(self, group, config, evidence, source_root=ROOT):
-        source_root = Path(source_root).resolve()
-        server_id, module, package = GROUPS[group]
-        cfg = json.loads(Path(config).read_text(encoding="utf-8-sig"))
-        settings = cfg["mcpServers"][server_id].get("env", {})
-        env = os.environ.copy()
-        env.update({k: str(v) for k, v in settings.items()})
-        # 只允许本机 netx；不能由配置悄悄指向生产服务。
-        actual_url = (env.get("NETX_API_URL") or env.get("OCLAW_NETX_BASE_URL")
-                      or "http://127.0.0.1:8890").rstrip("/")
-        if actual_url not in (
-            "http://127.0.0.1:8890", "http://localhost:8890",
-            "http://127.0.0.1:8891", "http://localhost:8891"
+def _resolve_base(config: Path) -> tuple[str, str]:
+    cfg = json.loads(Path(config).read_text(encoding="utf-8-sig"))
+    servers = cfg.get("mcpServers") or {}
+    # Prefer first remote URL entry; fall back to env.
+    url = ""
+    token = os.environ.get("NETX_API_TOKEN") or os.environ.get("NETX_MCP_TOKEN") or ""
+    for _name, entry in servers.items():
+        if not isinstance(entry, dict):
+            continue
+        candidate = str(entry.get("url") or "").strip()
+        if candidate.startswith("http"):
+            url = candidate
+            headers = entry.get("headers") or {}
+            auth = str(headers.get("Authorization") or headers.get("authorization") or "")
+            if auth.lower().startswith("bearer "):
+                raw = auth[7:].strip()
+                if raw and not raw.startswith("${"):
+                    token = raw
+            break
+    if not url:
+        url = (os.environ.get("NETX_API_URL") or "http://127.0.0.1:8890").rstrip("/") + "/mcp"
+    # Strip query for base; group applied separately.
+    base = url.split("?", 1)[0].rstrip("/")
+    allowed = {
+        "http://127.0.0.1:8890/mcp",
+        "http://localhost:8890/mcp",
+        "http://127.0.0.1:8891/mcp",
+        "http://localhost:8891/mcp",
+    }
+    if base not in allowed:
+        raise ValueError("验收仅允许本机 8890/8891 的 /mcp")
+    if not token:
+        for p in (
+            Path(os.environ.get("NETX_AUTH_MCP_TOKEN_FILE") or ""),
+            ROOT / "data" / "auth" / "mcp_token",
         ):
-            raise ValueError("验收仅允许本机 8890 API 或隔离样例 8891 API")
-        env["NETX_API_URL"] = actual_url
-        env.pop("OCLAW_NETX_BASE_URL", None)
-        env["PYTHONPATH"] = str(source_root / "packages" / package / "src")
-        env["PYTHONUTF8"] = "1"
-        self.group, self.evidence, self.seq = group, Path(evidence), 0
-        self.stderr = []
-        self.proc = subprocess.Popen(
-            [sys.executable, "-m", module], cwd=source_root, env=env,
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            encoding="utf-8", bufsize=1,
+            if p.is_file():
+                token = p.read_text(encoding="utf-8").strip()
+                if token:
+                    break
+    if not token:
+        raise ValueError("缺少 Bearer token（NETX_API_TOKEN 或 data/auth/mcp_token）")
+    return base, token
+
+
+class McpSession:
+    def __init__(self, group: str, config: str, evidence: str):
+        import httpx
+
+        self.group = GROUPS[group]
+        self.evidence = Path(evidence)
+        self.seq = 0
+        base, token = _resolve_base(Path(config))
+        self.url = f"{base}?groups={self.group}"
+        self._client = httpx.Client(
+            timeout=180.0,
+            trust_env=False,  # Windows system proxy breaks loopback /mcp framing
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json, text/event-stream",
+                "Content-Type": "application/json",
+                "MCP-Protocol-Version": "2024-11-05",
+            },
         )
-        self.lines = queue.Queue()
-        threading.Thread(target=self._read_stdout, daemon=True).start()
-        threading.Thread(target=self._read_stderr, daemon=True).start()
-        self.rpc("initialize", {"protocolVersion": "2024-11-05", "capabilities": {},
-                               "clientInfo": {"name": "netx-mcp-acceptance", "version": "1"}})
-        self.proc.stdin.write(json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n")
-        self.proc.stdin.flush()
+        self.rpc(
+            "initialize",
+            {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "netx-mcp-acceptance", "version": "1"},
+            },
+        )
+        # notifications/initialized — no response expected
+        self._client.post(
+            self.url,
+            json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+        )
 
-    def _read_stdout(self):
-        for line in self.proc.stdout:
-            self.lines.put(line)
+    def rpc(self, method, params=None):
+        import time
 
-    def _read_stderr(self):
-        for line in self.proc.stderr:
-            self.stderr.append(line)
-
-    def rpc(self, method, params=None, timeout=180):
         self.seq += 1
         request = {"jsonrpc": "2.0", "id": self.seq, "method": method, "params": params or {}}
         start = time.monotonic()
-        self.proc.stdin.write(json.dumps(request, ensure_ascii=False) + "\n")
-        self.proc.stdin.flush()
-        deadline = start + timeout
-        while True:
-            try:
-                line = self.lines.get(timeout=max(0.01, deadline - time.monotonic()))
-            except queue.Empty as exc:
-                raise TimeoutError(f"{self.group} {method} 超时；stderr={''.join(self.stderr)[-500:]}") from exc
-            response = json.loads(line)
-            if response.get("id") == self.seq:
-                break
-            if "id" in response:
-                raise RuntimeError("服务器对通知回包或返回了错误的请求 id")
-        record = {"at": dt.datetime.now(dt.timezone(dt.timedelta(hours=8))).isoformat(),
-                  "group": self.group, "request": request, "response": response,
-                  "elapsed_ms": round((time.monotonic() - start) * 1000)}
+        r = self._client.post(self.url, json=request)
+        r.raise_for_status()
+        response = r.json()
+        record = {
+            "at": dt.datetime.now(dt.timezone(dt.timedelta(hours=8))).isoformat(),
+            "group": self.group,
+            "request": request,
+            "response": response,
+            "elapsed_ms": round((time.monotonic() - start) * 1000),
+        }
         self.evidence.parent.mkdir(parents=True, exist_ok=True)
         with self.evidence.open("a", encoding="utf-8") as f:
             f.write(json.dumps(redact(record), ensure_ascii=False) + "\n")
@@ -132,12 +158,7 @@ class McpSession:
         return self.rpc("tools/call", {"name": name, "arguments": args})
 
     def close(self):
-        self.proc.stdin.close()
-        try:
-            self.proc.wait(timeout=8)
-        except subprocess.TimeoutExpired:
-            self.proc.terminate()
-            self.proc.wait(timeout=5)
+        self._client.close()
 
 
 def main():
@@ -146,10 +167,9 @@ def main():
     parser.add_argument("tool", help="工具名，或 tools/list")
     parser.add_argument("arguments", nargs="?", default="{}")
     parser.add_argument("--config", default=str(ROOT / "mcp.all.json"))
-    parser.add_argument("--source-root", default=str(ROOT), help="被验收包所在 worktree 根目录")
     parser.add_argument("--evidence", default=str(ROOT / "artifacts/mcp-evidence.jsonl"))
     opts = parser.parse_args()
-    session = McpSession(opts.group, opts.config, opts.evidence, opts.source_root)
+    session = McpSession(opts.group, opts.config, opts.evidence)
     try:
         if opts.tool == "tools/list":
             response = session.rpc("tools/list")

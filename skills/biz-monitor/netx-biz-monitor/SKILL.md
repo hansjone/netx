@@ -1,7 +1,7 @@
 ---
 name: netx-biz-monitor
 description: >-
-  通过独立 netx-bizmonitor-mcp 或 netxops 分析割接与业务状态。
+  通过 netx 远程 /mcp?groups=bizMonitor 或 netxops 分析割接与业务状态。
   无 ID 先查目录和批次，结合看板、变红项、双侧原始 A/B 键和采集命令原文判断故障。
   只读已有项目与评价结果，不创建模板、触发采集、执行评价或关闭红票。
 ---
@@ -9,7 +9,7 @@ description: >-
 # netx-biz-monitor（割接 / 业务监控只读分析）
 
 人配好监控与任务；AI 当晚做归因。  
-独立 **netx-bizmonitor-mcp** 提供下表裸名；netxops 使用 `netx__` 加同名。两者均访问 netx REST，需 `biz-monitor:read`。安装和三组配置见 [MCP_BIZMONITOR.md](../../../docs/MCP_BIZMONITOR.md)。
+远程 MCP（`/mcp?groups=bizMonitor`）提供下表裸名；netxops 使用 `netx__` 加同名。需 `biz-monitor:read`。配置见 [MCP_BIZMONITOR.md](../../../docs/MCP_BIZMONITOR.md)。
 
 ## 工具（能力组 `bizMonitor`）
 

@@ -1,33 +1,27 @@
 {
   "mcpServers": {
     "netx": {
-      "command": "python",
-      "args": ["-m", "netx_mcp"],
-      "env": {
-        "NETX_API_URL": "http://127.0.0.1:8890",
-        "NETX_LANG": "zh",
-        "PYTHONIOENCODING": "utf-8",
-        "PYTHONUTF8": "1"
+      "url": "http://127.0.0.1:8890/mcp",
+      "headers": {
+        "Authorization": "Bearer ${NETX_API_TOKEN}"
+      }
+    },
+    "netx-ops": {
+      "url": "http://127.0.0.1:8890/mcp?groups=ops",
+      "headers": {
+        "Authorization": "Bearer ${NETX_API_TOKEN}"
       }
     },
     "netx-topology": {
-      "command": "python",
-      "args": ["-m", "netx_topology_mcp"],
-      "env": {
-        "NETX_API_URL": "http://127.0.0.1:8890",
-        "NETX_LANG": "zh",
-        "PYTHONIOENCODING": "utf-8",
-        "PYTHONUTF8": "1"
+      "url": "http://127.0.0.1:8890/mcp?groups=topology",
+      "headers": {
+        "Authorization": "Bearer ${NETX_API_TOKEN}"
       }
     },
     "netx-bizmonitor": {
-      "command": "python",
-      "args": ["-m", "netx_bizmonitor_mcp"],
-      "env": {
-        "NETX_API_URL": "http://127.0.0.1:8890",
-        "NETX_LANG": "zh",
-        "PYTHONIOENCODING": "utf-8",
-        "PYTHONUTF8": "1"
+      "url": "http://127.0.0.1:8890/mcp?groups=bizMonitor",
+      "headers": {
+        "Authorization": "Bearer ${NETX_API_TOKEN}"
       }
     }
   }

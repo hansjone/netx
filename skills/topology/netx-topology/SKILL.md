@@ -11,7 +11,7 @@ description: >-
 
 | Host | Tools |
 |------|--------|
-| **MCP** `netx-topology-mcp` | 裸名（`sinkTopologyDualUnits` …）；安装见 [`docs/MCP_TOPOLOGY.md`](../../../docs/MCP_TOPOLOGY.md) |
+| **MCP** `/mcp?groups=topology` | 裸名（`sinkTopologyDualUnits` …）；见 [`docs/MCP_TOPOLOGY.md`](../../../docs/MCP_TOPOLOGY.md) |
 | **DSH** `dsh-netxops` | `netx__` + 同 stem。整组工具 + skill **`netx-topology`**（能力组 **topology**，默认关）。缺布局引擎能力时用 MCP。 |
 
 Canonical: `netx/skills/topology/netx-topology/`（唯一正文）。
@@ -371,7 +371,7 @@ sinkTopologyDualUnits({
 ## 代码热更
 
 1. 本仓 MCP 用 `PYTHONPATH=…/src`（见用户 `~/.cursor/mcp.json`），改源码后不必为加载而 pip install。
-2. **必须重启** stdio 进程（杀旧 `python -m netx_topology_mcp` 后由 Cursor 拉起；或 MCP 面板禁用/启用）。
+2. **远程 MCP**：改服务端后重启 netx API；客户端重新 `tools/list`（或禁用/启用 MCP 面板）。
 3. `layoutTopologyView(catalog=true)` 核对：`version` / `rev`（`NETX_MCP_REV`）+ action 含 `pull_far_chains` / `compact_bbox`。
 4. 机器上常残留多份旧 MCP 进程 → 精修前 catalog 若仍缺 action，**杀光再启**；勿用旧进程半截交付，勿改走 HTTP/临时 py。
 

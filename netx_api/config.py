@@ -218,6 +218,11 @@ class Settings(BaseSettings):
     bootstrap_admin_password: str = "admin123"
     # Written on first boot for MCP; path relative to cwd / absolute
     auth_mcp_token_file: str = "data/auth/mcp_token"
+    # Comma-separated Host allow-list for MCP DNS-rebinding guard.
+    # Empty (default) = disable DNS-rebinding protection (Bearer auth is the gate;
+    # needed for LAN IP / reverse-proxy Host headers). Example:
+    # NETX_MCP_ALLOWED_HOSTS=localhost,127.0.0.1,netx.example.com,netx.example.com:*
+    mcp_allowed_hosts: str = ""
     # Cap non-revoked API keys (MCP / DSH / scripts). 0 = unlimited.
     auth_api_token_max_count: int = 20
     # Comma-separated peers allowed to supply X-Forwarded-For / X-Real-IP

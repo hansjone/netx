@@ -52,13 +52,17 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     from .app_startup import run_api_startup
     from .app_shutdown import shutdown_runtime
     from .dsh_alarm_hub import bind_event_loop
+    from .mcp_remote.mount import mcp_lifespan_cm
 
-    run_api_startup()
-    bind_event_loop(asyncio.get_running_loop())
-    try:
-        yield
-    finally:
-        shutdown_runtime(reason="api_lifespan")
+    # Pass the live FastAPI app so /mcp ASGI is rebound to a fresh session manager
+    # (TestClient cycles + tests that clear mcp context must not leave a stale app).
+    async with mcp_lifespan_cm(host_app=_app):
+        run_api_startup()
+        bind_event_loop(asyncio.get_running_loop())
+        try:
+            yield
+        finally:
+            shutdown_runtime(reason="api_lifespan")
 
 
 app = FastAPI(
@@ -95,7 +99,10 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+from .mcp_remote.mount import mount_mcp  # noqa: E402
 from .ui_static import mount_ui_if_present  # noqa: E402
+
+mount_mcp(app)
 
 _UI_MOUNTED = mount_ui_if_present(app)
 if not _UI_MOUNTED:
@@ -109,6 +116,7 @@ if not _UI_MOUNTED:
             "frontend_url": settings.frontend_url,
             "api_health": "/health",
             "api_status": "/v1/integrations/status",
+            "mcp": "/mcp",
         }
 
 

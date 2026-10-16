@@ -1,14 +1,13 @@
-"""HTTP auth gate + request audit middleware."""
+"""HTTP auth gate + request audit middleware (pure ASGI — safe with Mount /mcp)."""
 
 from __future__ import annotations
 
 import logging
 import time
-from typing import Callable
 
-from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
+from starlette.responses import JSONResponse
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from .auth_deps import resolve_user_from_token
 from .auth_scopes import has_scope, required_scope_for_request
@@ -35,11 +34,12 @@ _PUBLIC_PREFIXES = (
     "/assets",
 )
 
-# Authenticated API / infra only. Everything else (SPA routes, favicon, …) is public.
+
 def _is_api_auth_path(path: str) -> bool:
     p = str(path or "")
     if p.startswith("/v1/"):
         return True
+    # /mcp has its own Bearer gate (mcp_remote.mount.McpAuthMiddleware).
     if p in ("/metrics", "/metrics/json", "/v1/metrics/json", "/openapi.json"):
         return True
     if p.startswith("/docs") or p.startswith("/redoc"):
@@ -47,7 +47,6 @@ def _is_api_auth_path(path: str) -> bool:
     return False
 
 
-# While must_change_password is true, only these authenticated endpoints are allowed.
 _PASSWORD_CHANGE_ALLOW = frozenset(
     {
         ("GET", "/v1/auth/me"),
@@ -74,10 +73,14 @@ def _is_public(path: str) -> bool:
         return True
     if any(p.startswith(pref) for pref in _PUBLIC_PREFIXES):
         return True
-    # Bundled UI routes (/login, /topology, …) must load without a token.
     if not _is_api_auth_path(p):
         return True
     return False
+
+
+def _is_mcp_path(path: str) -> bool:
+    p = str(path or "")
+    return p == "/mcp" or p.startswith("/mcp/")
 
 
 def _client_ip(request: Request) -> str:
@@ -104,18 +107,37 @@ def _action_for(method: str, path: str) -> str:
     return f"http.{m.lower()}"
 
 
-class AuthAuditMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next: Callable) -> Response:
-        if request.method.upper() == "OPTIONS":
-            return await call_next(request)
+class AuthAuditMiddleware:
+    """Pure ASGI auth + audit. BaseHTTPMiddleware breaks Streamable HTTP under Mount."""
 
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        request = Request(scope, receive)
+        method = request.method.upper()
         path = request.url.path
-        if not bool(settings.auth_enabled) or _is_public(path):
-            return await call_next(request)
 
-        # WebSocket upgrades are authenticated inside the WS endpoint.
+        # MCP is authenticated inside the mounted sub-app; never wrap its body.
+        if _is_mcp_path(path):
+            await self.app(scope, receive, send)
+            return
+
+        if method == "OPTIONS":
+            await self.app(scope, receive, send)
+            return
+
+        if not bool(settings.auth_enabled) or _is_public(path):
+            await self.app(scope, receive, send)
+            return
+
         if path.startswith("/v1/webcrt/") and path.endswith("/ws"):
-            return await call_next(request)
+            await self.app(scope, receive, send)
+            return
 
         token = ""
         auth = str(request.headers.get("authorization") or "").strip()
@@ -125,26 +147,27 @@ class AuthAuditMiddleware(BaseHTTPMiddleware):
             from .auth_cookies import read_access_cookie
 
             token = read_access_cookie(request)
-        # Query-string access_token is no longer accepted (leaks via logs/proxies).
 
         db = SessionLocal()
         try:
             resolved = resolve_user_from_token(db, token) if token else None
             if resolved is None:
-                # Do not audit anonymous 401s — SPA fan-out floods the log.
-                # Intentional auth ops (login/logout/login_failed) are written in auth_router.
-                return JSONResponse(status_code=401, content={"detail": "unauthorized"})
+                await JSONResponse(status_code=401, content={"detail": "unauthorized"})(
+                    scope, receive, send
+                )
+                return
             user, via, scopes, token_id, jti = resolved
             if bool(getattr(user, "must_change_password", False)):
-                allow_key = (request.method.upper(), path.rstrip("/") if len(path) > 1 else path)
+                allow_key = (method, path.rstrip("/") if len(path) > 1 else path)
                 if allow_key not in _PASSWORD_CHANGE_ALLOW:
-                    return JSONResponse(
+                    await JSONResponse(
                         status_code=403,
                         content={"detail": "password_change_required"},
-                    )
-            need = required_scope_for_request(request.method, path)
+                    )(scope, receive, send)
+                    return
+            need = required_scope_for_request(method, path)
             if need and not has_scope(scopes, need):
-                return JSONResponse(
+                await JSONResponse(
                     status_code=403,
                     content={
                         "detail": {
@@ -153,7 +176,8 @@ class AuthAuditMiddleware(BaseHTTPMiddleware):
                             "granted": sorted(scopes),
                         }
                     },
-                )
+                )(scope, receive, send)
+                return
             request.state.auth_user = user
             request.state.auth_via = via
             request.state.auth_scopes = scopes
@@ -164,22 +188,33 @@ class AuthAuditMiddleware(BaseHTTPMiddleware):
             auth_via = via
         except Exception:
             _log.exception("auth middleware failure path=%s", path)
-            return JSONResponse(status_code=500, content={"detail": "auth_middleware_error"})
+            await JSONResponse(status_code=500, content={"detail": "auth_middleware_error"})(
+                scope, receive, send
+            )
+            return
         finally:
             db.close()
 
         started = time.perf_counter()
-        response = await call_next(request)
+        status_code = 0
+
+        async def send_wrapper(message: Message) -> None:
+            nonlocal status_code
+            if message["type"] == "http.response.start":
+                status_code = int(message.get("status") or 0)
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
         try:
             from .audit_async import enqueue_audit
 
             enqueue_audit(
-                action=_action_for(request.method, path),
+                action=_action_for(method, path),
                 actor_user_id=actor_id,
                 actor_username=actor_name,
-                method=request.method,
+                method=method,
                 path=path,
-                status_code=int(response.status_code),
+                status_code=int(status_code or 0),
                 client_ip=_client_ip(request),
                 user_agent=str(request.headers.get("user-agent") or "")[:512],
                 detail={
@@ -189,4 +224,3 @@ class AuthAuditMiddleware(BaseHTTPMiddleware):
             )
         except Exception:
             _log.exception("audit enqueue after request failed path=%s", path)
-        return response

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "netx-ops"
 version = "0.4.19"
-description = "netx operations tool: alarm-centric workflows with REST API and stdio MCP"
+description = "netx operations tool: alarm-centric workflows with REST API and remote MCP"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
@@ -29,12 +29,11 @@ dependencies = [
   "alembic>=1.13.0",
   "psutil>=5.9.0",
   "redis>=5.0.0",
+  "mcp>=1.0.0",
 ]
 
 [project.optional-dependencies]
-mcp = ["netx-mcp @ file:packages/netx-mcp"]
-mcp-topology = ["netx-topology-mcp @ file:packages/netx-topology-mcp"]
-mcp-bizmonitor = ["netx-bizmonitor-mcp @ file:packages/netx-bizmonitor-mcp"]
+# Remote MCP is built into netx_api (/mcp). Optional extras removed.
 
 [tool.setuptools.packages.find]
 where = ["."]

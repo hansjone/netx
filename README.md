@@ -9,7 +9,7 @@ Licensed under the [MIT License](LICENSE). Security reports: [SECURITY.md](SECUR
 - Import ZTE Alarm Monitor Excel
 - Normalize and store alarms into an isolated PostgreSQL
 - Query and aggregate alarms via REST API
-- Expose the same read capabilities through MCP stdio tools
+- Expose the same capabilities through built-in remote MCP (`/mcp`)
 - Quick diagnostics endpoint (`/v1/diagnostics`)
 - AP analysis bridge to oclaw (`/v1/ap/analyze`)
 
@@ -162,31 +162,20 @@ After `npm run build` in `web/`, the API can also serve the UI at `http://127.0.
 
 Fool-proof Windows delivery via `NetX-Setup-*.exe` (bundled or external Postgres, program/data split, offline upgrade over existing installs) lives under [`packaging/`](packaging/README.md). **Linux installs are unchanged** — keep using your own Postgres and `scripts/start_netx.sh`.
 
-### 6) MCP（Cursor / oclaw / Claude）
+### 6) MCP（Cursor / Codex / Claude / DSH）
 
-先启动 netx API（§5），再在 **MCP 宿主同机** 安装轻量客户端并配置。
+先启动 netx API（§5）。MCP 已内置在 API 同端口：`http://127.0.0.1:8890/mcp`（Streamable HTTP）。客户端只需 URL + Bearer token，**不必再装 Python MCP 包**。
 
-**完整说明（安装、配置、更新、排错）见：[docs/MCP.md](docs/MCP.md)**  
-**拓扑画布独立 MCP** 见：[docs/MCP_TOPOLOGY.md](docs/MCP_TOPOLOGY.md)
+**完整说明见：[docs/MCP.md](docs/MCP.md)**（topology / bizMonitor 分组见同目录文档）。配置示例：[mcp.all.json](mcp.all.json)、[mcp.json](mcp.json)。
 
-**割接 / 业务监控独立 MCP** 见：[docs/MCP_BIZMONITOR.md](docs/MCP_BIZMONITOR.md)。三组一起使用时无需 netxops，完整配置为 [mcp.all.json](mcp.all.json)。
+```bash
+# Claude Code
+claude mcp add --transport http netx http://127.0.0.1:8890/mcp \
+  --header "Authorization: Bearer <token>"
 
-速查：
-
-```powershell
-pip install -e ./packages/netx-mcp
-# 拓扑（可选，单独安装）
-pip install -e ./packages/netx-topology-mcp
-pip install -e ./packages/netx-bizmonitor-mcp
-# 三组配置见 mcp.all.json，分别运行：
-python -m netx_mcp
-python -m netx_topology_mcp
-python -m netx_bizmonitor_mcp
+# 只要 ops / topology / bizMonitor 之一：
+# http://127.0.0.1:8890/mcp?groups=ops
 ```
-
-- 客户端配置：[`mcp.json`](mcp.json)（含 `netx` + 可选 `netx-topology`）
-- oclaw payload：[`mcp_install_payload.json`](mcp_install_payload.json) / [`mcp_topology_install_payload.json`](mcp_topology_install_payload.json)
-- 子包：[`packages/netx-mcp`](packages/netx-mcp/README.md)、[`packages/netx-topology-mcp`](packages/netx-topology-mcp/README.md)、[`packages/netx-bizmonitor-mcp`](packages/netx-bizmonitor-mcp/README.md)
 
 ## Useful API endpoints
 
