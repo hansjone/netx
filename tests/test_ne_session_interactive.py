@@ -82,24 +82,29 @@ class CiscoCollectionPrepTests(unittest.TestCase):
         return sess
 
     @patch("netx_api.ne_netmiko.drain_read_channel")
-    def test_setup_only_establishes_hostname_prompt(self, drain: MagicMock):
+    def test_setup_drains_then_disables_paging_on_full_prompt_line(self, drain: MagicMock):
         sess = self.session()
         order: list[str] = []
         drain.side_effect = lambda *_a, **_k: order.append("drain")
         sess.set_base_prompt.side_effect = lambda **kw: order.append("prompt")
+        sess.write_channel.side_effect = lambda data: order.append(f"write:{data}")
+        sess.read_until_pattern.side_effect = lambda **kw: order.append("read")
         sess.session_preparation()
-        self.assertEqual(order, ["prompt", "drain"])
+        self.assertEqual(order, ["prompt", "drain", "write:terminal length 0\r", "read", "drain"])
         sess.set_base_prompt.assert_called_once()
         initial = sess._test_channel_read.call_args.kwargs["pattern"]
         self.assertIsNotNone(re.search(initial, "R2.lab#"))
         self.assertIsNone(re.search(initial, "R2.lab#terminal length 0"))
         channel = SimpleNamespace(read_timeout_override=None, _read_buffer="", read_channel=lambda: "R2.lab#")
         self.assertEqual(BaseConnection.read_until_pattern(channel, pattern=initial), "R2.lab#")
+        prompt_line = sess.read_until_pattern.call_args.kwargs["pattern"]
+        self.assertIsNone(re.search(prompt_line, "R2.lab#terminal length 0\r\n"))
+        self.assertIsNone(re.search(prompt_line, "R2Xlab#"))
+        self.assertIsNotNone(re.search(prompt_line, "R2.lab#terminal length 0\r\nR2.lab#"))
         sess.set_terminal_width.assert_not_called()
         sess.disable_paging.assert_not_called()
-        sess.write_channel.assert_not_called()
         sess.send_command_timing.assert_not_called()
-        drain.assert_called_once()
+        self.assertEqual(drain.call_count, 2)
         self.assertEqual(drain.call_args.kwargs.get("idle_reads"), 8)
 
     @patch("netx_api.ne_netmiko.drain_read_channel")
@@ -113,13 +118,13 @@ class CiscoCollectionPrepTests(unittest.TestCase):
         sess.send_command_timing.assert_not_called()
 
     @patch("netx_api.ne_netmiko.drain_read_channel")
-    def test_setup_never_sends_terminal_commands(self, drain: MagicMock):
+    def test_setup_sends_only_terminal_length_zero(self, drain: MagicMock):
         sess = self.session()
         sess.session_preparation()
-        sess.write_channel.assert_not_called()
+        sess.write_channel.assert_called_once_with("terminal length 0\r")
         sess.set_terminal_width.assert_not_called()
         sess.disable_paging.assert_not_called()
-        drain.assert_called_once_with(sess, idle_reads=8, pause_sec=0.1)
+        drain.assert_called_with(sess, idle_reads=8, pause_sec=0.1)
 
 
 class ZteCollectionPrepTests(unittest.TestCase):

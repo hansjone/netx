@@ -309,17 +309,19 @@ def _cisco_ios_collection_driver_class(base_cls: type) -> type:
     class _CiscoIosCollectionSession(base_cls):  # type: ignore[misc,valid-type]
         def session_preparation(self) -> None:
             # Stock Netmiko width/paging on IOSv+CR races leftover prompts
-            # (``terexit`` / ``terminal lengexit``) or blocks forever waiting for
-            # setup echo once VTY pressure builds. The interactive WebCRT path
-            # skips these commands and still returns complete show output; MCP
-            # show/display bodies are short enough that --More-- is not required.
-            # Keep hostname discovery so send_show_command can use a full-line
-            # prompt expect without auto_find_prompt.
+            # (``terexit`` / ``terminal lengexit``). Drain first, then disable
+            # paging ourselves and wait for a full prompt line: the echo line
+            # ``R2#terminal length 0`` cannot match, so long show output never
+            # stalls on --More--.
             from .ne_netmiko import drain_read_channel
 
             initial_pattern = r"(?m:^[^\r\n#>]+[>#][ \t]*$)"
             self._test_channel_read(pattern=initial_pattern)
             self.set_base_prompt(pattern=initial_pattern)
+            drain_read_channel(self, idle_reads=8, pause_sec=0.1)
+            self.write_channel("terminal length 0" + self.RETURN)
+            prompt_line = rf"(?m:^{re.escape(self.base_prompt)}[>#][ \t]*$)"
+            self.read_until_pattern(pattern=prompt_line, read_timeout=20)
             drain_read_channel(self, idle_reads=8, pause_sec=0.1)
 
     _CiscoIosCollectionSession.__name__ = (
