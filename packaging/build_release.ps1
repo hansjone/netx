@@ -84,7 +84,7 @@ if (-not (Test-Path $winswShip)) {
 }
 
 # Flat layout = same as repo so scripts\start_netx.ps1 works unchanged.
-foreach ($d in @("netx_api", "alembic", "scripts")) {
+foreach ($d in @("netx_api", "alembic", "scripts", "skills")) {
     Copy-Item -Path (Join-Path $repo $d) -Destination (Join-Path $stage $d) -Recurse -Force
 }
 foreach ($f in @("pyproject.toml", "requirements.txt", "alembic.ini", "README.md", "LICENSE", "CONTRIBUTING.md", "SECURITY.md")) {

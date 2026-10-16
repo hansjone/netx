@@ -99,11 +99,11 @@ def parse_groups_param(raw: str | None) -> frozenset[str]:
     return frozenset(p for p in parts if p in VALID_GROUPS)
 
 
-def tools_for_request(
+def capability_tools_for_request(
     scopes: frozenset[str] | list[str] | None,
     groups: frozenset[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Filter by scopes and optional groups. scopes=None advertises all (offline)."""
+    """Filter capability tools by scopes and optional groups. scopes=None → all (offline)."""
     wanted_groups = groups or frozenset()
     if scopes is None:
         scoped = list(ALL_TOOLS)
@@ -120,6 +120,19 @@ def tools_for_request(
     if not wanted_groups:
         return scoped
     return [t for t in scoped if t.get("_group") in wanted_groups]
+
+
+def tools_for_request(
+    scopes: frozenset[str] | list[str] | None,
+    groups: frozenset[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Capability tools plus getNetxSkill when ≥1 skill is visible (ignores ?groups= for meta)."""
+    from .skills import get_netx_skill_tool_dict, should_advertise_get_netx_skill
+
+    scoped = capability_tools_for_request(scopes, groups)
+    if should_advertise_get_netx_skill(scopes, groups):
+        return scoped + [get_netx_skill_tool_dict()]
+    return scoped
 
 
 def to_mcp_tool(tool: dict[str, Any]) -> Tool:
@@ -140,7 +153,16 @@ def to_mcp_tool(tool: dict[str, Any]) -> Tool:
 
 
 def call_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
-    handler = _HANDLERS.get(str(name or "").strip())
+    from .skills import GET_NETX_SKILL_NAME, call_get_netx_skill
+    from .context import get_request_context
+
+    key = str(name or "").strip()
+    if key == GET_NETX_SKILL_NAME:
+        ctx = get_request_context()
+        scopes = None if ctx is None else ctx.scopes
+        groups = frozenset() if ctx is None else ctx.groups
+        return call_get_netx_skill(args, scopes, groups)
+    handler = _HANDLERS.get(key)
     if handler is None:
         raise ValueError(f"unknown tool: {name}")
     return handler(name, args)

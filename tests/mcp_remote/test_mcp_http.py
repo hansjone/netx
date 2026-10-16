@@ -212,11 +212,13 @@ def test_tools_for_scopes_filters_by_granted() -> None:
 
 def test_registry_groups_and_scope_filter() -> None:
     ops = tools_for_request(None, frozenset({"ops"}))
-    assert len(ops) == 15
-    assert all(t["_group"] == "ops" for t in ops)
+    assert len(ops) == 16  # 15 ops + getNetxSkill
+    assert {t["_group"] for t in ops} == {"ops", "meta"}
+    assert "getNetxSkill" in {t["name"] for t in ops}
     limited = tools_for_request(frozenset({"ne:read"}), frozenset({"ops"}))
     names = {t["name"] for t in limited}
     assert "listManagedNe" in names
+    assert "getNetxSkill" in names
     assert "execManagedNe" not in names
     assert "queryNmsAlarms" not in names
 

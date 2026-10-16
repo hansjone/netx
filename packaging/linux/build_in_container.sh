@@ -73,7 +73,7 @@ find "${STAGE}/python" -name '*.pyc' -delete
 
 # ------------------------------------------------------------ app files
 echo "==> app files"
-cp -r /src/netx_api /src/alembic "${STAGE}/"
+cp -r /src/netx_api /src/alembic /src/skills "${STAGE}/"
 for f in pyproject.toml requirements.txt alembic.ini README.md LICENSE SECURITY.md; do
   if [[ -f "/src/${f}" ]]; then cp "/src/${f}" "${STAGE}/"; fi
 done

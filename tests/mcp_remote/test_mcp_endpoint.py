@@ -92,11 +92,12 @@ def test_mcp_http_auth_list_groups_and_rbac():
         )
         assert listed.status_code == 200
         tools = listed.json()["result"]["tools"]
-        assert len(tools) == 39
+        assert len(tools) == 40  # 39 capability + getNetxSkill
         names = {t["name"] for t in tools}
         assert "queryNmsAlarms" in names
         assert "getTopologyTree" in names
         assert "listBizMonitors" in names
+        assert "getNetxSkill" in names
         assert all("_meta" in t and t["_meta"]["netx"]["group"] for t in tools)
 
         ops = client.post(
@@ -106,8 +107,11 @@ def test_mcp_http_auth_list_groups_and_rbac():
         )
         assert ops.status_code == 200
         ops_tools = ops.json()["result"]["tools"]
-        assert len(ops_tools) == 15
-        assert all(t["_meta"]["netx"]["group"] == "ops" for t in ops_tools)
+        assert len(ops_tools) == 16  # 15 ops + getNetxSkill
+        assert {t["name"] for t in ops_tools} >= {"queryNmsAlarms", "getNetxSkill"}
+        assert all(
+            t["_meta"]["netx"]["group"] in ("ops", "meta") for t in ops_tools
+        )
 
         raw_ro = _token(scopes=["ne:read", "alarms:read"])
         headers_ro = {**_HDR, "authorization": f"Bearer {raw_ro}"}

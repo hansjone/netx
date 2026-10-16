@@ -12,10 +12,10 @@ MCP 宿主  →  HTTP  http://127.0.0.1:8890/mcp  →  netx_api.mcp_remote（进
 
 | groups | 工具数 | 说明 |
 |--------|--------|------|
-| `ops` | 15 | 告警 / 网元 / 只读 CLI |
-| `topology` | 16 | 拓扑树 / 画布 / Fabric / 布局 |
-| `bizMonitor` | 8 | 割接与业务状态只读 |
-| （省略） | 39 | 当前 token 有权限的全部工具 |
+| `ops` | 15+1 | 告警 / 网元 / 只读 CLI；另有 meta 工具 `getNetxSkill` |
+| `topology` | 16+1 | 拓扑树 / 画布 / Fabric / 布局；另有 `getNetxSkill` |
+| `bizMonitor` | 8+1 | 割接与业务状态只读；另有 `getNetxSkill` |
+| （省略） | 40 | 39 个能力工具 + `getNetxSkill`（有可见 skill 时） |
 
 示例：`/mcp?groups=ops,bizMonitor`
 
@@ -58,7 +58,27 @@ http://127.0.0.1:8890/mcp?groups=ops
 
 无状态模式下不主动推送 `notifications/tools/list_changed`；客户端应在需要时重新 `tools/list`。
 
+## Skills（运维手册资源）
+
+运维 skill 真源在仓库 `skills/`（`ops` / `topology` / `biz-monitor`；不含开发者用的 `biz-state`）。通过 `/mcp` 与工具同一鉴权、同一 `?groups=` 过滤发布：
+
+| 通道 | 说明 |
+|------|------|
+| `resources/list` · `resources/read` | URI：`netx://skills/<组目录>/<skill名>/<相对路径>`，如 `netx://skills/ops/netx-ops/SKILL.md` |
+| 工具 `getNetxSkill` | 参数 `name`（必填）、`file`（可选，默认 `SKILL.md`）；`_meta.netx.group=meta` |
+| `prompts/list` · `prompts/get` | 每个可见 skill 一个 prompt（名=skill 名）；Claude Code 显示为 `/mcp__netx__<skill名>` |
+| `initialize.instructions` | 在原有说明后追加当前可见 skill 目录，并提示先调 `getNetxSkill` |
+
+可见规则：该组下当前 token 至少有一个可见工具，且遵守 `?groups=`。改 skill 文件后无需重启 netx（每次请求读盘）。
+
+### Cursor / Claude Code 怎么读
+
+1. **Cursor**：在 MCP 资源面板打开 `netx://skills/...`，或让 Agent 调用 `getNetxSkill`。
+2. **Claude Code**：`/mcp__netx__netx-ops` 等 prompt，或对 URI 做 resources/read；也可直接 `getNetxSkill`。
+3. 仅挂某一组时加查询参数，例如 `http://127.0.0.1:8890/mcp?groups=ops`。
+
 ## 相关文档
 
 - [MCP_TOPOLOGY.md](./MCP_TOPOLOGY.md) — topology 组工具说明
 - [MCP_BIZMONITOR.md](./MCP_BIZMONITOR.md) — bizMonitor 组工具说明
+- [`skills/README.md`](../skills/README.md) — skill 真源说明

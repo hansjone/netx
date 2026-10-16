@@ -176,8 +176,8 @@ def test_upstream_failures_are_tool_errors(failure):
 def test_scope_and_group_filter_for_bizmonitor():
     assert tools_for_request(frozenset({"ne:read"}), frozenset({"bizMonitor"})) == []
     tools = tools_for_request(frozenset({"biz-monitor:read"}), frozenset({"bizMonitor"}))
-    assert len(tools) == 8
-    assert all(t["_group"] == "bizMonitor" for t in tools)
+    assert len(tools) == 9  # 8 biz + getNetxSkill
+    assert {t["_group"] for t in tools} == {"bizMonitor", "meta"}
     assert all(t["annotations"]["readOnlyHint"] for t in tools)
 
 
@@ -219,8 +219,9 @@ def test_missing_token_returns_empty_api_token(monkeypatch, tmp_path):
 
 def test_bizmonitor_group_has_eight_tools():
     tools = tools_for_request(None, frozenset({"bizMonitor"}))
-    assert len(tools) == 8
-    assert {t["name"] for t in tools} == {t["name"] for t in HTTP_MCP_TOOLS}
+    assert len(tools) == 9  # 8 biz + getNetxSkill
+    names = {t["name"] for t in tools}
+    assert names == {t["name"] for t in HTTP_MCP_TOOLS} | {"getNetxSkill"}
 
 
 def test_token_priority_env_then_explicit_file_then_cwd(monkeypatch, tmp_path):

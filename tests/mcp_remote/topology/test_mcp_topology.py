@@ -515,7 +515,7 @@ def test_neighborhood_returns_links_not_ports() -> None:
 
 def test_topology_group_lists_sixteen_tools() -> None:
     tools = tools_for_request(None, frozenset({"topology"}))
-    assert len(tools) == 16
+    assert len(tools) == 17  # 16 topology + getNetxSkill
     names = {t["name"] for t in tools}
     assert "suggestSinkHubs" in names
     assert "classifyTopologyFabricNodes" in names
@@ -527,9 +527,11 @@ def test_topology_group_lists_sixteen_tools() -> None:
     assert "layoutTopologyView" in names
     assert "sinkTopologyDualUnits" in names
     assert "copyTopologyViewNodes" in names
+    assert "getNetxSkill" in names
     read_only = tools_for_request(frozenset({"ne:read"}), frozenset({"topology"}))
     read_names = {t["name"] for t in read_only}
     assert "getTopologyView" in read_names
+    assert "getNetxSkill" in read_names
     assert "layoutTopologyView" not in read_names
 
 
