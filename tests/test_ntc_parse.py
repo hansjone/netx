@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from netx_api.ntc_parse import parse_cli, resolve_cli_platform
+from netx_api.ntc_parse import parse_cli, resolve_cli_platform, strip_cli_echo
 from netx_api.port_traffic_parsers import parse_interface_brief, parse_interface_detail
 from netx_api import topology_lldp as lldp
 
@@ -170,6 +170,37 @@ ge-0/0/1.0         ge-0/0/1            00:11:22:33:44:55   ge-0/0/0.0    r1
         self.assertEqual(len(jhits), 1)
         self.assertEqual(jhits[0].remote_name, "r1")
         self.assertEqual(jhits[0].local_port, "ge-0/0/1.0")
+
+
+class CliEchoTests(unittest.TestCase):
+    """ntc-templates 9.x ends states with ``^. -> Error``; echo/prompt must be stripped."""
+
+    def test_strip_edges_only(self) -> None:
+        text = "\nR2#show lldp neighbors\nDevice ID  Local Intf\nr1  Gi0/1\nR2#\n"
+        self.assertEqual(strip_cli_echo(text), "Device ID  Local Intf\nr1  Gi0/1\n")
+        for prompt in ("<HUAWEI>display lldp neighbor", "[~HUAWEI]display lldp neighbor",
+                       "user@r2> show lldp neighbors", "ZXR10#show lldp neighbor brief"):
+            self.assertEqual(strip_cli_echo(prompt + "\nbody\n"), "body\n")
+        self.assertEqual(strip_cli_echo("Device ID  Local Intf\n"), "Device ID  Local Intf\n")
+
+    def test_lldp_with_echo_and_prompt(self) -> None:
+        h3c = """\
+<H3C>display lldp neighbor-information list
+Local Interface Chassis ID      Port ID        System Name
+GE1/0/1         0000-5e00-0101  GE1/0/2        SW-A
+<H3C>
+"""
+        self.assertEqual(len(lldp.parse_h3c_lldp(h3c)), 1)
+        junos = """\
+user@r2> show lldp neighbors
+Local Interface    Parent Interface    Chassis Id          Port info     System Name
+ge-0/0/1.0         ge-0/0/1            00:11:22:33:44:55   ge-0/0/0.0    r1
+
+user@r2>
+"""
+        self.assertEqual(len(lldp.parse_juniper_lldp(junos)), 1)
+        cisco = "R2#show lldp neighbors detail\n" + CISCO_LLDP_DETAIL + "R2#\n"
+        self.assertEqual(len(lldp.parse_cisco_lldp(cisco)), 1)
 
 
 if __name__ == "__main__":

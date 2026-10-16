@@ -95,6 +95,31 @@ def resolve_cli_platform(*, vendor: str = "", device_type: str = "", vendor_key:
     return ""
 
 
+# Device prompt: <HUAWEI>, [~HUAWEI], R2#, user@host>, RP/0/RSP0/CPU0:xr# ...
+_PROMPT = r"(?:<[^<>\s]+>|\[[^\[\]\s]+\]|[\w.\-@:/()~]+[#>])"
+_PROMPT_ECHO_RE = re.compile(rf"^\s*{_PROMPT}\s*\S.*$")
+_PROMPT_ONLY_RE = re.compile(rf"^\s*{_PROMPT}\s*$")
+
+
+def strip_cli_echo(text: str) -> str:
+    """Drop leading ``prompt+command`` echo and trailing bare prompt lines.
+
+    Newer ntc-templates (9.x) end Start/body states with ``^. -> Error``, so an
+    echoed ``R2#show lldp neighbors`` or a trailing ``R2#`` aborts the whole parse.
+    Only the edges are touched; table body lines are left as-is.
+    """
+    lines = str(text or "").splitlines()
+    start = 0
+    while start < len(lines) and not lines[start].strip():
+        start += 1
+    if start < len(lines) and _PROMPT_ECHO_RE.match(lines[start]):
+        start += 1
+    end = len(lines)
+    while end > start and (not lines[end - 1].strip() or _PROMPT_ONLY_RE.match(lines[end - 1])):
+        end -= 1
+    return "\n".join(lines[start:end]) + "\n"
+
+
 def row_get(row: dict[str, Any], *names: str) -> str:
     if not row:
         return ""
@@ -286,6 +311,7 @@ def apply_rule(*, platform: str, rule_key: str, text: str, command: str = "") ->
     wrap_cmd = str(command or "").strip() or key.replace("_", " ")
     if plat:
         raw = apply_cli_wrap(raw, platform=plat, command=wrap_cmd)
+    raw = strip_cli_echo(raw)
 
     entries = _find_entries_for_stem(key)
     if plat:
@@ -350,7 +376,7 @@ def parse_cli(
     """Parse CLI text: wrap-join → custom templates → community ntc-templates."""
     plat = str(platform or "").strip()
     cmd = str(command or "").strip()
-    raw = apply_cli_wrap(str(text or ""), platform=plat, command=cmd)
+    raw = strip_cli_echo(apply_cli_wrap(str(text or ""), platform=plat, command=cmd))
     if not plat or not cmd or not raw.strip():
         return []
 
