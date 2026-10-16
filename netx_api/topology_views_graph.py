@@ -749,6 +749,8 @@ def patch_view_positions(
                 updated += 1
     else:
         from .topology_region_canvas import add_missing_region_placement, is_region_canvas_node_id
+        from .ume_topology_world import is_ume_canvas_view, is_world_flat_view
+        from .ume_topology_world_graph import get_level_view_graph
 
         positions = list(body.positions or [])
         if len(positions) > VIEW_GRAPH_NODE_HARD_CAP:
@@ -769,6 +771,24 @@ def patch_view_positions(
                 .filter(TopoFabricNode.id.in_(check_ids))
                 .all()
             }
+        # UME canvases synthesize their members instead of adding them via /nodes.
+        # Persist placements only for actual members of this canvas; a position
+        # patch must never add unrelated fabric nodes to an ordinary view.
+        ume_member_ids: set[str] = set()
+        if is_ume_canvas_view(view) and any(
+            str(p.fabric_node_id or "").strip() not in existing for p in positions
+        ):
+            if is_world_flat_view(view):
+                ume_member_ids = {
+                    str(row[0])
+                    for row in db.query(TopoFabricNode.id).filter(
+                        TopoFabricNode.id.in_(check_ids),
+                        TopoFabricNode.world_x.isnot(None),
+                        TopoFabricNode.world_y.isnot(None),
+                    ).all()
+                }
+            else:
+                ume_member_ids = {node.fabric_node_id for node in get_level_view_graph(db, view).nodes}
         for p in positions:
             fid = str(p.fabric_node_id or "").strip()
             if not fid:
@@ -777,9 +797,17 @@ def patch_view_positions(
                 raise HTTPException(status_code=400, detail=f"fabric_node_not_found:{fid}")
             row = existing.get(fid)
             if row is None:
+                if fid in ume_member_ids:
+                    row = TopoViewNode(
+                        id=uuid4().hex, view_id=view.id, fabric_node_id=fid,
+                        x=float(p.x), y=float(p.y), label="", locked=False,
+                        created_at=now, updated_at=now,
+                    )
+                    db.add(row)
                 # Child-region icons may be synthesized without a placement row; persist those.
                 # Fabric NEs must not bypass membership caps / freeze (MCP adds via /nodes).
-                row = add_missing_region_placement(db, view, fid, x=p.x, y=p.y)
+                else:
+                    row = add_missing_region_placement(db, view, fid, x=p.x, y=p.y)
                 if row is None:
                     skipped_missing += 1
                     continue

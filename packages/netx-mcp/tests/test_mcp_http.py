@@ -103,18 +103,6 @@ def test_call_find_topology_paths_defaults_summary_detail() -> None:
         assert payload["ok"] is True
 
 
-def test_call_find_topology_paths_accepts_legacy_ume_params() -> None:
-    with patch("netx_mcp.http_tools.http_post_json") as mock_post:
-        mock_post.return_value = {"ok": True, "data": {"path_count": 0, "paths": []}}
-        call_http_tool(
-            "findTopologyPaths",
-            {"from_ume_ne_id": "a", "to_ume_ne_id": "b"},
-        )
-        body = mock_post.call_args[0][1]
-        assert body["from_ume_ne_id"] == "a"
-        assert body["to_ume_ne_id"] == "b"
-
-
 def test_call_exec_managed_ne_defaults_read_timeout() -> None:
     with patch("netx_mcp.http_tools.http_post_json") as mock_post:
         mock_post.return_value = {"ok": True, "data": {"ok": True, "output": "hi"}}
@@ -136,16 +124,6 @@ def test_get_managed_ne_requires_id_with_hint() -> None:
     payload = json.loads(out["content"][0]["text"])
     assert payload["error"] == "ne_id_required"
     assert "hint" in payload
-
-
-def test_get_managed_ne_accepts_managed_ne_id_alias() -> None:
-    with patch("netx_mcp.http_tools.http_json") as mock_http:
-        mock_http.return_value = {"ok": True, "data": {"ne_id": "m1"}}
-        out = call_http_tool("getManagedNe", {"managed_ne_id": "m1"})
-        mock_http.assert_called_once()
-        assert mock_http.call_args[0][1].endswith("/m1")
-        payload = json.loads(out["content"][0]["text"])
-        assert payload["ok"] is True
 
 
 def test_call_get_nms_ne_requires_id() -> None:
@@ -202,7 +180,7 @@ def test_exec_managed_ne_schema_documents_batch() -> None:
     props = tool["inputSchema"]["properties"]
     assert "ne_ids" in props
     assert "nms_ne_ids" in props
-    assert "ume_ne_ids" in props
+    assert "ume_ne_ids" not in props
     assert "targets" in props
     assert "concurrency" in props
     assert "Many NEs" in tool["description"] or "ne_ids" in tool["description"]
@@ -394,3 +372,194 @@ def test_managed_ne_list_drops_disabled_hop_noise() -> None:
         out = call_http_tool("listManagedNe", {"connect_status": "pass"})
     row = json.loads(out["content"][0]["text"])["data"]["items"][0]
     assert row == {"id": "m1", "hop_enabled": False}
+
+
+@pytest.mark.parametrize(("name", "args"), [
+    ("queryNmsAlarms", {"ne_name": "old"}),
+    ("getManagedNe", {"managed_ne_id": "old"}),
+    ("getManagedNe", {"id": "old"}),
+    ("execManagedNe", {"ume_ne_id": "old", "commands": ["show version"]}),
+    ("execManagedNe", {"ume_ne_ids": ["old"], "commands": ["show version"]}),
+    ("execManagedNe", {"targets": [{"ume_ne_id": "old", "commands": ["show version"]}]}),
+    ("findTopologyPaths", {"from_ume_ne_id": "old", "to_nms_ne_id": "b"}),
+    ("findTopologyPaths", {"from_nms_ne_id": "a", "to_ume_ne_id": "old"}),
+    ("listCliTargets", {"source": "ume"}),
+])
+def test_obsolete_aliases_are_rejected_before_http(name: str, args: dict) -> None:
+    with patch("netx_mcp.http_tools.http_json") as get, patch("netx_mcp.http_tools.http_post_json") as post:
+        out = call_http_tool(name, args)
+    get.assert_not_called()
+    post.assert_not_called()
+    assert out["isError"] is True
+    assert json.loads(out["content"][0]["text"])["error"] == "invalid_argument"
+
+
+def test_all_fifteen_tools_match_backend_scope_policy() -> None:
+    from netx_api.auth_scopes import required_scope_for_request
+    from netx_mcp.http_tools import TOOL_REQUIRED_SCOPE
+
+    routes = {
+        "queryNmsAlarms": ("GET", "/v1/ume/alarms"),
+        "aggregateNmsAlarms": ("GET", "/v1/ume/alarms/aggregate"),
+        "runNmsDiagnostics": ("GET", "/v1/ume/diagnostics"),
+        "queryNmsNeInventory": ("GET", "/v1/ume/inventory/ne"),
+        "getNmsNe": ("GET", "/v1/ume/inventory/ne/id"),
+        "queryNmsAlarmsRaw": ("GET", "/v1/ume/alarms/raw"),
+        "aggregateNmsAlarmsRaw": ("GET", "/v1/ume/alarms/aggregate/raw"),
+        "listNmsAlarmFields": ("GET", "/v1/ume/alarms/fields"),
+        "sqlQueryNms": ("POST", "/v1/sql/ume_query"),
+        "listManagedNe": ("GET", "/v1/managed-ne"),
+        "getManagedNe": ("GET", "/v1/managed-ne/id"),
+        "execManagedNe": ("POST", "/v1/managed-ne/exec"),
+        "getNeExecJob": ("GET", "/v1/managed-ne/exec-jobs/id"),
+        "listCliTargets": ("GET", "/v1/cli/targets"),
+        "findTopologyPaths": ("POST", "/v1/topology/fabric/paths"),
+    }
+    assert set(routes) == {t["name"] for t in HTTP_MCP_TOOLS} == set(TOOL_REQUIRED_SCOPE)
+    for name, (method, path) in routes.items():
+        assert TOOL_REQUIRED_SCOPE[name] == required_scope_for_request(method, path)
+        assert name in {t["name"] for t in tools_for_scopes([TOOL_REQUIRED_SCOPE[name]])}
+    assert tools_for_scopes([]) == []
+
+
+@pytest.mark.parametrize(("name", "args", "path", "expected"), [
+    ("aggregateNmsAlarms", {"top_ne": 3000}, "/v1/ume/alarms/aggregate", {"top_ne": 3000}),
+    ("runNmsDiagnostics", {}, "/v1/ume/diagnostics", None),
+    ("queryNmsNeInventory", {"keyword": "edge", "page": 9, "page_size": 900}, "/v1/ume/inventory/ne", {"keyword": "edge", "page": 9, "page_size": 500}),
+    ("listNmsAlarmFields", {}, "/v1/ume/alarms/fields", None),
+    ("getNeExecJob", {"job_id": "job /?"}, "/v1/managed-ne/exec-jobs/job%20%2F%3F", None),
+    ("listCliTargets", {"source": "nms", "keyword": "edge"}, "/v1/cli/targets", {"source": "ume", "keyword": "edge", "page": 1, "page_size": 50}),
+])
+def test_ops_read_routes_and_backend_limits(name: str, args: dict, path: str, expected: dict | None) -> None:
+    with patch("netx_mcp.http_tools.http_json", return_value={"ok": True, "data": {"items": []}}) as get:
+        out = call_http_tool(name, args)
+    get.assert_called_once_with("GET", path, params=expected)
+    assert not out.get("isError")
+
+
+def test_raw_aggregation_filters_and_compaction() -> None:
+    with patch("netx_mcp.http_tools.http_json", return_value={"ok": True, "data": {"buckets": [{"key": "edge", "count": 4}], "meta": {"group_by_allowed": ["large"], "time_filter_field": "last_seen_at"}}}) as get:
+        out = call_http_tool("aggregateNmsAlarmsRaw", {"group_by": "alarm_host_name", "severity": "CRITICAL", "exclude_missing_host": False, "limit": 9999})
+    assert get.call_args.kwargs["params"] == {"group_by": "alarm_host_name", "severity": "critical", "exclude_missing_host": False, "limit": 2000}
+    data = json.loads(out["content"][0]["text"])["data"]
+    assert data["buckets"][0]["count"] == 4
+    assert data["meta"] == {"time_filter_field": "last_seen_at"}
+
+
+def test_sql_limits_are_forwarded_and_denial_is_tool_error() -> None:
+    with patch("netx_mcp.http_tools.http_post_json", return_value={"ok": False, "error": "netx_http_403", "detail": "insufficient_scope:sql:query"}) as post:
+        out = call_http_tool("sqlQueryNms", {"sql": " SELECT ne_id FROM ume_inventory_ne ", "limit": 9999, "statement_timeout_ms": 99999})
+    post.assert_called_once_with("/v1/sql/ume_query", {"sql": "SELECT ne_id FROM ume_inventory_ne", "limit": 2000, "statement_timeout_ms": 30000}, timeout=60.0)
+    assert out["isError"] is True
+    assert "insufficient_scope" in out["content"][0]["text"]
+
+
+@pytest.mark.parametrize("name,args", [
+    ("listManagedNe", {"keyword": "edge"}),
+    ("getManagedNe", {"ne_id": "m1"}),
+    ("listCliTargets", {"source": "managed"}),
+    ("getNmsNe", {"ne_id": "u1"}),
+])
+def test_structured_credentials_are_removed_but_capabilities_remain(name: str, args: dict) -> None:
+    row = {"id": "m1", "password": "secret", "has_password": True, "capability": {"recommended_mode": "show_only", "token": "secret"}, "hop_password_enc": "secret"}
+    data = {"items": [row]} if name.startswith("list") else row
+    with patch("netx_mcp.http_tools.http_json", return_value={"ok": True, "data": data}):
+        out = call_http_tool(name, args)
+    text = out["content"][0]["text"]
+    assert "secret" not in text
+    assert "show_only" in text
+    assert "has_password" in text
+
+
+@pytest.mark.parametrize("args", [
+    {"targets": [{"ne_id": "m1", "nms_ne_id": "u1", "commands": ["show version"]}]},
+    {"targets": [{"ne_id": "m1"}]},
+    {"targets": [{"ne_id": "m1", "commands": ["show version"] * 6}]},
+    {"ne_ids": ["m1"]},
+    {"ne_ids": ["m1"] * 11, "nms_ne_ids": ["u1"] * 10, "commands": ["show version"]},
+    {"ne_id": "m1", "ne_ids": ["m2"], "commands": ["show version"]},
+    {"targets": ["m1"], "commands": ["show version"]},
+])
+def test_invalid_exec_batches_do_not_reach_http(args: dict, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NETX_NE_EXEC_MAX_COMMANDS", "5")
+    with patch("netx_mcp.http_tools.http_post_json") as post:
+        out = call_http_tool("execManagedNe", args)
+    post.assert_not_called()
+    assert out["isError"] is True
+
+
+def test_async_auto_counts_all_target_forms_and_poll_preserves_terminal_result(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NETX_NE_EXEC_ASYNC_MIN_NES", "4")
+    with patch("netx_mcp.http_tools.http_post_json", return_value={"ok": True, "data": {"ok": True, "job_id": "j1", "terminal": False}}) as post:
+        ack = call_http_tool("execManagedNe", {"ne_ids": ["m1", "m2"], "nms_ne_ids": ["u1", "u2"], "commands": ["show version"], "concurrency": 20})
+    assert post.call_args.args[0] == "/v1/managed-ne/exec-jobs"
+    assert post.call_args.args[1]["concurrency"] == 8
+    assert json.loads(ack["content"][0]["text"])["job_id"] == "j1"
+    terminal = {"ok": True, "terminal": True, "result": {"ok": True, "results": [{"ok": False, "error": "timeout"}]}}
+    with patch("netx_mcp.http_tools.http_json", return_value={"ok": True, "data": terminal}):
+        out = call_http_tool("getNeExecJob", {"job_id": "j1"})
+    assert json.loads(out["content"][0]["text"])["data"] == terminal
+    assert out["isError"] is True
+
+
+def test_explicit_sync_overrides_auto_async(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NETX_NE_EXEC_ASYNC_MIN_NES", "1")
+    with patch("netx_mcp.http_tools.http_post_json", return_value={"ok": True, "data": {"ok": True}}) as post:
+        call_http_tool("execManagedNe", {"nms_ne_ids": ["u1", "u2"], "commands": ["show version"], "async": False})
+    assert post.call_args.args[0] == "/v1/managed-ne/exec-batch"
+
+
+def test_stdio_scope_denial_never_invokes_handler() -> None:
+    import io
+    from netx_mcp.server import run_stdio_loop
+
+    request = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "execManagedNe", "arguments": {"ne_id": "m1", "commands": ["show version"]}}}
+    output = io.StringIO()
+    with patch("netx_mcp.server.sys.stdin", io.StringIO(json.dumps(request) + "\n")), patch("netx_mcp.server.sys.stdout", output), patch("netx_mcp.server._fetch_scopes", return_value=["ne:read"]), patch("netx_mcp.server.call_http_tool") as handler:
+        run_stdio_loop()
+    handler.assert_not_called()
+    response = json.loads(output.getvalue())
+    assert response["error"]["code"] == -32001
+    assert "ne:exec" in response["error"]["message"]
+
+
+@pytest.mark.parametrize("method", ["GET", "POST"])
+@pytest.mark.parametrize("status", [401, 403, 404, 500])
+def test_http_errors_preserve_status_and_bound_detail(method: str, status: int) -> None:
+    import httpx
+    from netx_mcp.http_client import http_json, http_post_json
+
+    transport = httpx.MockTransport(lambda request: httpx.Response(status, text="denied" * 300))
+    client = httpx.Client(transport=transport)
+    with patch("netx_mcp.http_client.httpx.Client", return_value=client):
+        result = http_json("GET", "/v1/ume/alarms") if method == "GET" else http_post_json("/v1/managed-ne/exec", {})
+    assert result["ok"] is False
+    assert result["error"] == f"netx_http_{status}"
+    assert len(result["detail"]) == 800
+
+
+
+def test_mixed_exec_targets_translate_nms_ids_and_preserve_per_target_commands() -> None:
+    with patch("netx_mcp.http_tools.http_post_json", return_value={"ok": True, "data": {"ok": True, "items": [{"ok": True, "password": "secret", "output": "version"}]}}) as post:
+        out = call_http_tool("execManagedNe", {"targets": [{"ne_id": "m1"}, {"nms_ne_id": "u1", "commands": ["display version"]}], "commands": ["show version"], "async": False})
+    assert post.call_args.args[0] == "/v1/managed-ne/exec-batch"
+    assert post.call_args.args[1]["targets"] == [{"ne_id": "m1"}, {"ume_ne_id": "u1", "commands": ["display version"]}]
+    text = out["content"][0]["text"]
+    assert "secret" not in text
+    assert json.loads(text)["data"]["items"][0]["output"] == "version"
+
+
+def test_async_job_queue_failure_is_not_a_successful_ack() -> None:
+    with patch("netx_mcp.http_tools.http_post_json", return_value={"ok": True, "data": {"ok": False, "error": "ne_exec_job_busy"}}):
+        out = call_http_tool("execManagedNe", {"ne_id": "m1", "commands": ["show version"], "async": True})
+    assert out["isError"] is True
+    assert json.loads(out["content"][0]["text"])["error"] == "ne_exec_job_busy"
+
+
+@pytest.mark.parametrize("args", [{}, {"group_by": ""}])
+def test_raw_aggregation_missing_dimension_is_actionable(args: dict) -> None:
+    with patch("netx_mcp.http_tools.http_json") as get:
+        out = call_http_tool("aggregateNmsAlarmsRaw", args)
+    get.assert_not_called()
+    assert out["isError"] is True
+    assert "group_by" in out["content"][0]["text"]

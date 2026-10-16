@@ -60,11 +60,11 @@ pip install "git+https://github.com/hansjone/netx.git#subdirectory=packages/netx
 
 与告警 MCP 并存时，把两个 server 都放进 `mcpServers` 即可；未勾选/未安装的不会加载工具。
 
-oclaw：Install from JSON → Health → Sync Tools（应看到 **14** 个工具，含 `layoutTopologyView` / `sinkTopologyDualUnits` / `queryTopologyFabricNodes`）→ 专家绑定勾选 `server_id=netx-topology`。
+oclaw：Install from JSON → Health → Sync Tools（完整 scope 下应看到 **16** 个工具，含 `layoutTopologyView` / `sinkTopologyDualUnits` / `queryTopologyFabricNodes`）→ 专家绑定勾选 `server_id=netx-topology`。
 
 Cursor：改包后若 Sync 工具数不对，请 **禁用/启用** `netx-topology` 或重载窗口（须重启 stdio 进程）。可选在 env 加 `PYTHONPATH=.../packages/netx-topology-mcp/src` 强制最新源码。
 
-配套 Agent Skill（dual_unit 排水 → 扫角/polish → 手拖）：[`.cursor/skills/netx-topology/SKILL.md`](../.cursor/skills/netx-topology/SKILL.md)。Cursor / oclaw 读 skill 后再调 MCP。
+配套 Agent Skill（dual_unit 排水 → 扫角/polish → 手拖）：[`skills/topology/netx-topology/SKILL.md`](../skills/topology/netx-topology/SKILL.md)。Cursor / oclaw 读 skill 后再调 MCP。
 
 ---
 
@@ -97,7 +97,7 @@ Cursor：改包后若 Sync 工具数不对，请 **禁用/启用** `netx-topolog
 | `removeTopologyViewNodes` | 筛选或 id 从画布移除（不删 Fabric），摘要 |
 | `sinkTopologyDualUnits` | 根图 dual_units 分批沉入子区域；默认 `layout_batch`→`layout_dual_unit`→块扫挂载；日常禁 `until_empty` |
 | `copyTopologyViewNodes` | 一键克隆画布成员+坐标到另一画布（`clear_target` 可选）；源画布不动，测沙箱用 |
-| `layoutTopologyView` `move_nodes` | 指定 `fabric_node_ids` 从 `source_view_id`→`view_id`（默认同移出源）；对调两 view 回迁；别名 `sink_nodes`；`park=true` 扫角停靠 |
+| `layoutTopologyView` `move_nodes` | 指定 `fabric_node_ids` 从 `source_view_id`→`view_id`（默认同移出源）；对调两 view 回迁；`park=true` 扫角停靠 |
 | `updateTopologyViewPositions` | **优先** `layout=grid\|offset\|stack` + 筛选，API 自己挪点；`positions[]` 仅少量微调 |
 | `layoutTopologyView` | **布图/局部修**：公开 `action=layout\|layout_dual_unit\|orbit_sweep\|clear_edge_hits\|pull_far_chains\|compact_bbox\|polish_crossings\|fix_overlaps\|untangle\|straighten_channels\|level_bands\|move_nodes`；recipe 仅 `compact\|corridor\|rings\|unstick`。眼 sink 主路径：`until_limit(crossing→total)` → `clear_edge_hits` → `pull_far_chains` → `compact_bbox` → 手拖；禁对眼跑 polish/fix_overlaps/untangle/round。stall 且 moved≈0 即算法到头。巨图 apply 可能返回 `job_id` → 轮询 `job_status` / `job_cancel`。Job=**子进程+`data/runtime/layout_jobs` 落盘**。`mode=preview\|apply` |
 | `projectTopologyNeighbors` | 投影**已有** LLDP 邻居到画布；区域画布务必传 `region_folder_id`，读 `out_of_region_skipped` |
@@ -120,8 +120,11 @@ Cursor：改包后若 Sync 工具数不对，请 **禁用/启用** `netx-topolog
 
 | 包 | server_id | 职责 |
 |----|-----------|------|
-| `netx-mcp` | `netx` | 告警、UME、托管网元 CLI（**13** 工具） |
-| `netx-topology-mcp` | `netx-topology` | 拓扑画布 / Fabric 只读 + 分类打标 + 安全画图（**15** 工具） |
+| `netx-mcp` | `netx` | NMS 告警、网元和只读 CLI（**15** 工具） |
+| `netx-topology-mcp` | `netx-topology` | topology 组 15 工具及额外 sinkTopologyDualUnits（共 **16**） |
+| `netx-bizmonitor-mcp` | `netx-bizmonitor` | 割接 / 业务状态只读分析（**8** 工具） |
+
+显式后台保存：`layoutTopologyView(view_id=...,action=layout,recipe=compact,mode=apply,params={background:true})`。用 `layoutTopologyView(action=job_status,params={job_id:...})` 轮询，成功后 getTopologyView 回读。任务是 MCP 本地子进程与落盘 JSON，没有 HTTP layout job API；跨目录或机器不能轮询同一 job。失败后可能已有部分写入，先回读，不盲重试。布局保存成功与评分诊断分别判断；评分校准另行安排，本轮不改算法/阈值。
 
 `queryTopologyEdges` 已从 `netx-mcp` **迁出**到本包，避免重复。
 

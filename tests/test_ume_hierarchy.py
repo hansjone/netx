@@ -10,7 +10,7 @@ from sqlalchemy.orm import sessionmaker
 
 import netx_api.models  # noqa: F401
 from netx_api.db import Base
-from netx_api.models import TopoFabricNode, TopoFolder, TopoView, UmeInventoryNE, UmeTopoLink, UmeTopoNode
+from netx_api.models import TopoFabricNode, TopoFolder, TopoView, TopoViewNode, UmeInventoryNE, UmeTopoLink, UmeTopoNode
 from netx_api.ume_topology_apply import apply_ume_topology_to_fabric
 from netx_api.ume_topology_flat_coords import recompute_flat_world_coords
 from netx_api.ume_topology_world import ensure_ume_world_and_sbn_folders, get_world_view
@@ -217,6 +217,11 @@ class UmeHierarchyTests(unittest.TestCase):
         self.assertEqual(moved.x, 777.0)
         self.assertEqual(moved.y, 888.0)
 
+        placement = self.db.query(TopoViewNode).filter_by(
+            view_id=world.id, fabric_node_id=region.fabric_node_id,
+        ).one()
+        self.assertEqual((placement.x, placement.y), (777.0, 888.0))
+        self.db.expire_all()
         g1 = get_level_view_graph(self.db, world)
         again = next(n for n in g1.nodes if n.fabric_node_id == region.fabric_node_id)
         self.assertEqual(again.x, 777.0)
@@ -394,6 +399,57 @@ class UmeHierarchyTests(unittest.TestCase):
         moved = next(n for n in g1.nodes if n.fabric_node_id == target.fabric_node_id)
         self.assertEqual(moved.x, ox)
         self.assertEqual(moved.y, oy)
+
+    def test_flat_drag_accepts_negative_and_distant_display_coordinates(self):
+        from netx_api.topology_schemas import ViewNodeIn, ViewPositionsPatch
+        from netx_api.topology_views_graph import patch_view_positions
+        from netx_api.ume_topology_world import get_world_flat_view
+
+        self._seed_tree()
+        apply_ume_topology_to_fabric(self.db)
+        ensure_ume_world_and_sbn_folders(self.db)
+        flat = get_world_flat_view(self.db)
+        initial = get_flat_view_graph(self.db, flat, lod="detail")
+        target = initial.nodes[0]
+        patch_view_positions(self.db, flat.id, ViewPositionsPatch(
+            positions=[ViewNodeIn(fabric_node_id=target.fabric_node_id, x=-20000, y=30000, locked=True)],
+            return_graph=False,
+        ))
+        placement = self.db.query(TopoViewNode).filter_by(
+            view_id=flat.id, fabric_node_id=target.fabric_node_id,
+        ).one()
+        self.assertEqual((placement.x, placement.y, placement.locked), (-20000, 30000, True))
+        recompute_flat_world_coords(self.db)
+        self.db.expire_all()
+        graph = get_flat_view_graph(self.db, flat, lod="detail")
+        moved = next(n for n in graph.nodes if n.fabric_node_id == target.fabric_node_id)
+        self.assertEqual((moved.x, moved.y, moved.locked), (-20000, 30000, True))
+        # Later dragging cannot move a locked placement without explicit unlock.
+        result = patch_view_positions(self.db, flat.id, ViewPositionsPatch(
+            positions=[ViewNodeIn(fabric_node_id=target.fabric_node_id, x=10, y=20)],
+            return_graph=False,
+        ))
+        self.assertEqual(result.skipped_locked, 1)
+        self.assertEqual((placement.x, placement.y), (-20000, 30000))
+
+    def test_level_position_patch_does_not_add_members_from_another_level(self):
+        from netx_api.topology_schemas import ViewNodeIn, ViewPositionsPatch
+        from netx_api.topology_views_graph import patch_view_positions
+
+        self._seed_tree()
+        apply_ume_topology_to_fabric(self.db)
+        ensure_ume_world_and_sbn_folders(self.db)
+        world = get_world_view(self.db)
+        foreign = self.db.query(TopoFabricNode).filter_by(ume_ne_id="me-a1").one()
+        result = patch_view_positions(self.db, world.id, ViewPositionsPatch(
+            positions=[ViewNodeIn(fabric_node_id=foreign.id, x=1, y=2)],
+            return_graph=False,
+        ))
+        self.assertEqual(result.updated, 0)
+        self.assertEqual(result.skipped_missing, 1)
+        self.assertEqual(self.db.query(TopoViewNode).filter_by(
+            view_id=world.id, fabric_node_id=foreign.id,
+        ).count(), 0)
 
     def test_create_folder_under_ume_world_remounts_to_drill(self):
         from netx_api.topology_schemas import TopologyFolderCreate

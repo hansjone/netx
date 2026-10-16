@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import unittest
+import re
 from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
 
-from netx_api.ne_session_connect import _collection_driver_class, _zte_collection_driver_class
+from netmiko.base_connection import BaseConnection
+
+from netx_api.ne_session_connect import _collection_driver_class, _zte_collection_driver_class, _cisco_ios_collection_driver_class, _base_connect_kwargs
 from netx_api.ne_session_factory import (
     _build_netmiko_connection,
     _interactive_driver_class,
@@ -48,6 +52,74 @@ class InteractiveNetmikoTests(unittest.TestCase):
             open_netmiko_connection(creds, interactive=True)
             direct.assert_called_once()
             self.assertTrue(direct.call_args.kwargs.get("interactive"))
+
+
+class CiscoCollectionPrepTests(unittest.TestCase):
+    def test_only_cisco_ssh_uses_cr_enter_on_the_actual_driver(self):
+        for device_type in ("cisco_ios", "cisco_ios_ssh", "cisco_ios_telnet", "huawei", "linux_ssh", "mikrotik_routeros"):
+            with self.subTest(device_type=device_type):
+                kwargs = _base_connect_kwargs(device_type=device_type, host="127.0.0.1", port=22,
+                                              username="fixture", password="fixture", enable_secret="")
+                if device_type in ("cisco_ios", "cisco_ios_ssh"):
+                    self.assertEqual(kwargs["default_enter"], "\r")
+                    driver = BaseConnection(**kwargs, auto_connect=False)
+                    self.assertEqual(driver.normalize_cmd("show version"), "show version\r")
+                else:
+                    self.assertNotIn("default_enter", kwargs)
+
+    def session(self):
+        cls = _cisco_ios_collection_driver_class(_netmiko_driver_class("cisco_ios"))
+        sess = cls.__new__(cls)
+        sess.base_prompt = "R2.lab"
+        sess.RETURN = "\r"
+        sess._test_channel_read = MagicMock()  # type: ignore[method-assign]
+        sess.set_base_prompt = MagicMock()  # type: ignore[method-assign]
+        sess.write_channel = MagicMock()  # type: ignore[method-assign]
+        sess.read_until_pattern = MagicMock()  # type: ignore[method-assign]
+        sess.set_terminal_width = MagicMock()  # type: ignore[method-assign]
+        sess.disable_paging = MagicMock()  # type: ignore[method-assign]
+        sess.send_command_timing = MagicMock()  # type: ignore[method-assign]
+        return sess
+
+    @patch("netx_api.ne_netmiko.drain_read_channel")
+    def test_setup_only_establishes_hostname_prompt(self, drain: MagicMock):
+        sess = self.session()
+        order: list[str] = []
+        drain.side_effect = lambda *_a, **_k: order.append("drain")
+        sess.set_base_prompt.side_effect = lambda **kw: order.append("prompt")
+        sess.session_preparation()
+        self.assertEqual(order, ["prompt", "drain"])
+        sess.set_base_prompt.assert_called_once()
+        initial = sess._test_channel_read.call_args.kwargs["pattern"]
+        self.assertIsNotNone(re.search(initial, "R2.lab#"))
+        self.assertIsNone(re.search(initial, "R2.lab#terminal length 0"))
+        channel = SimpleNamespace(read_timeout_override=None, _read_buffer="", read_channel=lambda: "R2.lab#")
+        self.assertEqual(BaseConnection.read_until_pattern(channel, pattern=initial), "R2.lab#")
+        sess.set_terminal_width.assert_not_called()
+        sess.disable_paging.assert_not_called()
+        sess.write_channel.assert_not_called()
+        sess.send_command_timing.assert_not_called()
+        drain.assert_called_once()
+        self.assertEqual(drain.call_args.kwargs.get("idle_reads"), 8)
+
+    @patch("netx_api.ne_netmiko.drain_read_channel")
+    def test_setup_timeout_stops_before_drain(self, drain: MagicMock):
+        sess = self.session()
+        sess.set_base_prompt.side_effect = TimeoutError("late prompt")
+        with self.assertRaises(TimeoutError):
+            sess.session_preparation()
+        drain.assert_not_called()
+        sess.write_channel.assert_not_called()
+        sess.send_command_timing.assert_not_called()
+
+    @patch("netx_api.ne_netmiko.drain_read_channel")
+    def test_setup_never_sends_terminal_commands(self, drain: MagicMock):
+        sess = self.session()
+        sess.session_preparation()
+        sess.write_channel.assert_not_called()
+        sess.set_terminal_width.assert_not_called()
+        sess.disable_paging.assert_not_called()
+        drain.assert_called_once_with(sess, idle_reads=8, pause_sec=0.1)
 
 
 class ZteCollectionPrepTests(unittest.TestCase):

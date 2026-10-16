@@ -6,12 +6,56 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from fastapi import HTTPException
+from sqlalchemy import create_engine, event, inspect
+from sqlalchemy.orm import Session
+
+from netx_api.db import Base
 
 from netx_api.biz_state.service import get_batch, list_batch_metric_rows
-from netx_api.models import BizStateBatch, BizStateBatchCommand
+from netx_api.models import BizStateBatch, BizStateBatchCommand, BizStateMetricRow
 
 
 class BatchWorkbookApiTests(unittest.TestCase):
+    def _stored_summary(self, batch, commands, metric_counts):
+        """Exercise SQL summary projection against an isolated DB, with raw text deferred."""
+        engine = create_engine("sqlite+pysqlite:///:memory:")
+        self.addCleanup(engine.dispose)
+        Base.metadata.create_all(engine)
+        with Session(engine, expire_on_commit=False) as db:
+            db.add(batch)
+            db.add_all(commands)
+            for metric_id, count in metric_counts:
+                db.add_all([
+                    BizStateMetricRow(batch_id=batch.id, metric_id=metric_id, seq=i)
+                    for i in range(count)
+                ])
+            db.commit()
+            db.expunge_all()
+            selected_commands = []
+            column_loads = []
+
+            @event.listens_for(db, "loaded_as_persistent")
+            def check_deferred(session, row):
+                if isinstance(row, BizStateBatchCommand):
+                    selected_commands.append(row)
+                    self.assertIn("raw_text", inspect(row).unloaded)
+
+            @event.listens_for(db, "do_orm_execute")
+            def track_column_loads(state):
+                if state.is_column_load:
+                    column_loads.append(state.statement)
+
+            with patch(
+                "netx_api.biz_state.service.batch_protect_info",
+                return_value={"protected": False, "reasons": []},
+            ):
+                result = get_batch(db, batch.id)
+            self.assertEqual(len(selected_commands), len(commands))
+            self.assertEqual(column_loads, [], "summary must never lazy-load raw CLI text")
+            for row in selected_commands:
+                self.assertIn("raw_text", inspect(row).unloaded)
+            return result
+
     def test_get_batch_summary_has_sheets_not_metrics(self) -> None:
         batch = BizStateBatch(
             id="b1",
@@ -31,35 +75,7 @@ class BatchWorkbookApiTests(unittest.TestCase):
             row_count=2,
             raw_text="RAW",
         )
-        db = MagicMock()
-        db.get.side_effect = lambda model, pk: batch if pk == "b1" else None
-
-        cmd_q = MagicMock()
-        cmd_q.filter.return_value.order_by.return_value.all.return_value = [cmd]
-        metric_count_q = MagicMock()
-        metric_count_q.filter.return_value.group_by.return_value.all.return_value = [("arp", 2)]
-        lldp_count_q = MagicMock()
-        lldp_count_q.filter.return_value.scalar.return_value = 0
-
-        def query(*_args, **_kwargs):
-            # First call in get_batch after protect: BatchCommand; then metric count; then lldp
-            # Distinguish by call count
-            n = query.n
-            query.n += 1
-            if n == 0:
-                return cmd_q
-            if n == 1:
-                return metric_count_q
-            return lldp_count_q
-
-        query.n = 0
-        db.query.side_effect = query
-
-        with patch(
-            "netx_api.biz_state.service.batch_protect_info",
-            return_value={"protected": False, "reasons": []},
-        ):
-            out = get_batch(db, "b1")
+        out = self._stored_summary(batch, [cmd], [("arp", 2)])
 
         self.assertIn("sheets", out)
         self.assertNotIn("metrics", out)
@@ -93,32 +109,7 @@ class BatchWorkbookApiTests(unittest.TestCase):
             raw_text="a\nb\nc\n",
             message="",
         )
-        db = MagicMock()
-        db.get.side_effect = lambda model, pk: batch if pk == "b1" else None
-        cmd_q = MagicMock()
-        cmd_q.filter.return_value.order_by.return_value.all.return_value = [cmd]
-        metric_count_q = MagicMock()
-        metric_count_q.filter.return_value.group_by.return_value.all.return_value = [("arp", 3)]
-        lldp_count_q = MagicMock()
-        lldp_count_q.filter.return_value.scalar.return_value = 0
-
-        def query(*_args, **_kwargs):
-            n = query.n
-            query.n += 1
-            if n == 0:
-                return cmd_q
-            if n == 1:
-                return metric_count_q
-            return lldp_count_q
-
-        query.n = 0
-        db.query.side_effect = query
-
-        with patch(
-            "netx_api.biz_state.service.batch_protect_info",
-            return_value={"protected": False, "reasons": []},
-        ):
-            out = get_batch(db, "b1")
+        out = self._stored_summary(batch, [cmd], [("arp", 3)])
 
         self.assertEqual(out["message"], "stopped")
         self.assertEqual(out["commands"][0]["raw_line_count"], 3)
@@ -148,34 +139,7 @@ class BatchWorkbookApiTests(unittest.TestCase):
             declared_total=1669101,
             message="declared=1669101;parsed=100",
         )
-        db = MagicMock()
-        db.get.side_effect = lambda model, pk: batch if pk == "b1" else None
-        cmd_q = MagicMock()
-        cmd_q.filter.return_value.order_by.return_value.all.return_value = [cmd]
-        metric_count_q = MagicMock()
-        metric_count_q.filter.return_value.group_by.return_value.all.return_value = [
-            ("bgp_route", 100)
-        ]
-        lldp_count_q = MagicMock()
-        lldp_count_q.filter.return_value.scalar.return_value = 0
-
-        def query(*_args, **_kwargs):
-            n = query.n
-            query.n += 1
-            if n == 0:
-                return cmd_q
-            if n == 1:
-                return metric_count_q
-            return lldp_count_q
-
-        query.n = 0
-        db.query.side_effect = query
-
-        with patch(
-            "netx_api.biz_state.service.batch_protect_info",
-            return_value={"protected": False, "reasons": []},
-        ):
-            out = get_batch(db, "b1")
+        out = self._stored_summary(batch, [cmd], [("bgp_route", 100)])
 
         self.assertEqual(out["commands"][0]["raw_line_count"], 119303)
         self.assertEqual(out["commands"][0]["declared_total"], 1669101)
@@ -263,34 +227,7 @@ class BatchWorkbookApiTests(unittest.TestCase):
                 row_count=1,
             ),
         ]
-        db = MagicMock()
-        db.get.side_effect = lambda model, pk: batch if pk == "b1" else None
-        cmd_q = MagicMock()
-        cmd_q.filter.return_value.order_by.return_value.all.return_value = cmds
-        metric_count_q = MagicMock()
-        metric_count_q.filter.return_value.group_by.return_value.all.return_value = [
-            ("bgp_peer", 3)
-        ]
-        lldp_count_q = MagicMock()
-        lldp_count_q.filter.return_value.scalar.return_value = 0
-
-        def query(*_args, **_kwargs):
-            n = query.n
-            query.n += 1
-            if n == 0:
-                return cmd_q
-            if n == 1:
-                return metric_count_q
-            return lldp_count_q
-
-        query.n = 0
-        db.query.side_effect = query
-
-        with patch(
-            "netx_api.biz_state.service.batch_protect_info",
-            return_value={"protected": False, "reasons": []},
-        ):
-            out = get_batch(db, "b1")
+        out = self._stored_summary(batch, cmds, [("bgp_peer", 3)])
 
         bgp = next(s for s in out["sheets"] if s["metric_id"] == "bgp_peer")
         self.assertEqual(bgp["title"], "BGP Status Summary")

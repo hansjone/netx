@@ -1,0 +1,13 @@
+MDN-BCP-CN1-ZM8SP#show bgp vpnv6 unicast summary | one-line 
+08:04:10 Indonesia Sat Sep 19 2026
+BGP router ID  : 124.195.96.248
+Local AS       : 4761
+All peers      : 2
+  Established  : 2
+All prefixes   : 0
+Neighbor        Ver As          MsgRcvd    MsgSend    Up/Down      State/PfxRcd
+FC00:A000:0:61:114::75
+                4   4761        14476867   2679817    5w4d         0
+FC00:A000:0:61:114::76
+                4   4761        14609910   2680356    5w4d         0
+MDN-BCP-CN1-ZM8SP#

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 import time
 import uuid
@@ -24,6 +25,8 @@ _INFLIGHT = 0
 _DEFAULT_TIMEOUT_S = 900
 _DEFAULT_MAX_CONCURRENT = 3
 _DEFAULT_ASYNC_MIN_NES = 4
+_JOB_ID_RE = re.compile(r"[0-9a-f]{32}")
+_MAX_JOB_TARGETS = 20  # Same combined limit as ne_exec._normalize_batch_targets.
 
 
 def _env_int(name: str, default: int, *, min_v: int, max_v: int) -> int:
@@ -72,7 +75,14 @@ def _jobs_dir() -> Path:
 
 
 def _job_path(job_id: str) -> Path:
-    return _jobs_dir() / f"{job_id}.json"
+    if not isinstance(job_id, str) or not _JOB_ID_RE.fullmatch(job_id):
+        raise ValueError("invalid_job_id")
+    directory = _jobs_dir().resolve()
+    path = (directory / f"{job_id}.json").resolve()
+    # Also reject a valid-looking filename symlinked outside the job directory.
+    if path.parent != directory:
+        raise ValueError("invalid_job_id")
+    return path
 
 
 def _atomic_write(path: Path, payload: dict[str, Any]) -> None:
@@ -90,13 +100,11 @@ def _read_job(job_id: str) -> dict[str, Any] | None:
         data = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return None
-    return data if isinstance(data, dict) else None
+    return data if isinstance(data, dict) and data.get("job_id") == job_id else None
 
 
 def _write_job(job: dict[str, Any]) -> None:
-    jid = str(job.get("job_id") or "").strip()
-    if not jid:
-        return
+    jid = job.get("job_id")
     _atomic_write(_job_path(jid), job)
 
 
@@ -116,17 +124,16 @@ def default_job_timeout_s() -> int:
 def count_exec_ne_targets(args: dict[str, Any] | None) -> int:
     a = args if isinstance(args, dict) else {}
     n = 0
-    for key in ("ne_ids", "ume_ne_ids", "nms_ne_ids"):
+    for key in ("ne_ids", "ume_ne_ids"):
         val = a.get(key)
         if isinstance(val, list):
-            n = max(n, len([x for x in val if str(x or "").strip()]))
+            n += len([x for x in val if str(x or "").strip()])
     targets = a.get("targets")
     if isinstance(targets, list):
-        n = max(n, len([t for t in targets if isinstance(t, dict)]))
+        n += len([t for t in targets if isinstance(t, dict)])
     if n == 0 and (
         str(a.get("ne_id") or "").strip()
         or str(a.get("ume_ne_id") or "").strip()
-        or str(a.get("nms_ne_id") or "").strip()
     ):
         return 1
     return int(n)
@@ -164,11 +171,18 @@ def start_ne_exec_job(
     *,
     kind: str,
     arguments: dict[str, Any],
+    owner_user_id: str,
     runner: Callable[[], dict[str, Any]],
     timeout_s: int | None = None,
 ) -> dict[str, Any]:
     """Start background runner; returns immediate ack with job_id."""
     global _INFLIGHT
+    owner = str(owner_user_id or "").strip()
+    if not owner:
+        return {"ok": False, "error_code": "job_owner_required", "error": "job_owner_required"}
+    ne_count = count_exec_ne_targets(arguments)
+    if ne_count > _MAX_JOB_TARGETS:
+        return {"ok": False, "error_code": "too_many_targets", "error": "too_many_targets", "max_targets": _MAX_JOB_TARGETS}
     max_c = max_concurrent_jobs()
     with _LOCK:
         if _INFLIGHT >= max_c:
@@ -189,10 +203,11 @@ def start_ne_exec_job(
     now = int(time.time() * 1000)
     job = {
         "job_id": job_id,
+        "owner_user_id": owner,
         "status": _STATUS_RUNNING,
         "kind": str(kind or "exec"),
         "arguments": dict(arguments or {}),
-        "ne_count": count_exec_ne_targets(arguments),
+        "ne_count": ne_count,
         "created_at_ms": now,
         "updated_at_ms": now,
         "timeout_s": timeout,
@@ -260,13 +275,26 @@ def start_ne_exec_job(
     }
 
 
-def get_ne_exec_job(job_id: str) -> dict[str, Any]:
-    jid = str(job_id or "").strip()
+def get_ne_exec_job(job_id: str, *, user_id: str, is_admin: bool = False) -> dict[str, Any]:
+    """Read only the caller's jobs; explicit admins may inspect any persisted job.
+
+    Ownerless legacy records are never granted to ordinary callers.
+    """
+    jid = job_id
     if not jid:
         return {"ok": False, "error_code": "job_id_required", "error": "job_id_required"}
-    job = _read_job(jid)
+    try:
+        job = _read_job(jid)
+    except ValueError:
+        return {"ok": False, "error_code": "invalid_job_id", "error": "invalid_job_id"}
+    requester = str(user_id or "").strip()
+    if not requester:
+        return {"ok": False, "error_code": "job_forbidden", "error": "job_forbidden"}
     if not job:
         return {"ok": False, "error_code": "job_not_found", "error": "job_not_found", "job_id": jid}
+    owner = str(job.get("owner_user_id") or "").strip()
+    if not is_admin and (not owner or owner != requester):
+        return {"ok": False, "error_code": "job_forbidden", "error": "job_forbidden"}
     status = str(job.get("status") or "")
     out: dict[str, Any] = {
         "ok": True,

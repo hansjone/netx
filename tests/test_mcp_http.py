@@ -100,23 +100,10 @@ def test_stdio_initialize_and_tools_list() -> None:
     proc.wait(timeout=5)
 
 
-def test_legacy_netx_api_mcp_module_still_works() -> None:
-    proc = subprocess.Popen(
-        [sys.executable, "-m", "netx_api.mcp"],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        cwd=str(__import__("pathlib").Path(__file__).resolve().parents[1]),
-    )
-    assert proc.stdin and proc.stdout
-    init_req = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}) + "\n"
-    proc.stdin.write(init_req)
-    proc.stdin.flush()
-    init_line = proc.stdout.readline()
-    init_resp = json.loads(init_line)
-    assert init_resp["result"]["serverInfo"]["mode"] == "http"
-    proc.terminate()
-    proc.wait(timeout=5)
+
+def test_only_standalone_mcp_implementation_is_kept() -> None:
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    assert not (root / "netx_api/mcp_server.py").exists()
+    assert not list((root / "netx_api/mcp").glob("*.py"))

@@ -169,20 +169,24 @@ Fool-proof Windows delivery via `NetX-Setup-*.exe` (bundled or external Postgres
 **完整说明（安装、配置、更新、排错）见：[docs/MCP.md](docs/MCP.md)**  
 **拓扑画布独立 MCP** 见：[docs/MCP_TOPOLOGY.md](docs/MCP_TOPOLOGY.md)
 
+**割接 / 业务监控独立 MCP** 见：[docs/MCP_BIZMONITOR.md](docs/MCP_BIZMONITOR.md)。三组一起使用时无需 netxops，完整配置为 [mcp.all.json](mcp.all.json)。
+
 速查：
 
 ```powershell
 pip install -e ./packages/netx-mcp
 # 拓扑（可选，单独安装）
 pip install -e ./packages/netx-topology-mcp
-# 配置见 mcp.json，运行：
+pip install -e ./packages/netx-bizmonitor-mcp
+# 三组配置见 mcp.all.json，分别运行：
 python -m netx_mcp
 python -m netx_topology_mcp
+python -m netx_bizmonitor_mcp
 ```
 
 - 客户端配置：[`mcp.json`](mcp.json)（含 `netx` + 可选 `netx-topology`）
 - oclaw payload：[`mcp_install_payload.json`](mcp_install_payload.json) / [`mcp_topology_install_payload.json`](mcp_topology_install_payload.json)
-- 子包：[`packages/netx-mcp`](packages/netx-mcp/README.md)、[`packages/netx-topology-mcp`](packages/netx-topology-mcp/README.md)
+- 子包：[`packages/netx-mcp`](packages/netx-mcp/README.md)、[`packages/netx-topology-mcp`](packages/netx-topology-mcp/README.md)、[`packages/netx-bizmonitor-mcp`](packages/netx-bizmonitor-mcp/README.md)
 
 ## Useful API endpoints
 

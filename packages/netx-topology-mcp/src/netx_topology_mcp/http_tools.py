@@ -28,7 +28,10 @@ def _data(out: dict[str, Any]) -> dict[str, Any]:
     data = out.get("data")
     if isinstance(data, dict):
         merged = dict(data)
-        merged["ok"] = True
+        # HTTP 200 can carry a failed mutation (for example membership_max_nodes).
+        merged.setdefault("ok", True)
+        if merged.get("ok") is False and not merged.get("error"):
+            merged["error"] = "netx_operation_failed"
         return merged
     return {"ok": True, "data": data}
 
@@ -233,10 +236,12 @@ def _get_topology_view(args: dict[str, Any]) -> dict[str, Any]:
     if not out.get("ok"):
         return out
     detail = str(args.get("detail") or "summary").strip().lower()
-    if detail in {"full", "raw", "graph"}:
+    if detail not in {"summary", "full"}:
+        return {"ok": False, "error": "detail_invalid", "hint": "detail=summary|full"}
+    if detail == "full":
         out["detail"] = "full"
         return out
-    sample = int(args.get("sample") or 20)
+    sample = int(args["sample"]) if args.get("sample") is not None else 20
     return _summarize_view_graph(out, sample=sample)
 
 
@@ -359,7 +364,7 @@ def _patch_positions_chunked(view_id: str, positions: list[dict[str, Any]]) -> d
                 "updated": updated,
                 "detail": out,
             }
-        updated += int(out.get("updated") or len(chunk))
+        updated += int(out.get("updated", len(chunk)))
         chunks += 1
     return {"ok": True, "updated": updated, "chunks": chunks}
 
@@ -469,7 +474,6 @@ def _layout_topology_view(args: dict[str, Any]) -> dict[str, Any]:
     _public = {
         "layout",
         "fix_overlaps",
-        "resolve_overlaps",
         "untangle",
         "straighten_channels",
         "layout_dual_unit",
@@ -478,11 +482,9 @@ def _layout_topology_view(args: dict[str, Any]) -> dict[str, Any]:
         "compact_bbox",
         "pull_far_chains",
         "align_reference",
-        "align_to_reference",
         "orbit_sweep",
         "level_bands",
         "move_nodes",
-        "sink_nodes",
         "job_status",
         "job_cancel",
     }
@@ -503,16 +505,12 @@ def _layout_topology_view(args: dict[str, Any]) -> dict[str, Any]:
             ),
             **list_layout_catalog(),
         }
-    if action == "resolve_overlaps":
-        action = "fix_overlaps"
-        args = {**args, "action": "fix_overlaps"}
-
     # Bidirectional membership move: view_id=TO, source_view_id=FROM.
-    if action in {"move_nodes", "sink_nodes"}:
+    if action == "move_nodes":
         return _move_topology_view_nodes(args)
 
     # Reference alignment: view_id=TO, source_view_id|params.reference_view_id=FROM.
-    if action in {"align_reference", "align_to_reference"}:
+    if action == "align_reference":
         return _align_topology_reference(args)
 
     # Background job poll / cancel (no view_id required).
@@ -544,8 +542,8 @@ def _layout_topology_view(args: dict[str, Any]) -> dict[str, Any]:
                 "error": "job_not_found",
                 "job_id": job_id,
                 "hint": (
-                    "Unknown job_id. Jobs are in-process on this MCP worker; "
-                    "restart or another instance cannot see them."
+                    "Unknown job_id. Poll from a worker sharing NETX_LAYOUT_JOB_DIR; "
+                    "records survive MCP restarts but may have been pruned."
                 ),
             }
         status = str(job.get("status") or "unknown")
@@ -870,9 +868,7 @@ def _layout_topology_view(args: dict[str, Any]) -> dict[str, Any]:
     force_sync = _truthy((overrides or {}).get("sync")) or _truthy(
         (overrides or {}).get("_force_sync")
     )
-    until_limit = _truthy((overrides or {}).get("until_limit")) or _truthy(
-        (overrides or {}).get("until_stall")
-    )
+    until_limit = _truthy((overrides or {}).get("until_limit"))
     heavy_bg = action in {
         "polish_crossings",
         "orbit_sweep",
@@ -885,10 +881,9 @@ def _layout_topology_view(args: dict[str, Any]) -> dict[str, Any]:
     bg_n_thr = 80 if (action == "orbit_sweep" and until_limit) else 600
     if (
         mode == "apply"
-        and heavy_bg
         and not force_sync
         and (
-            len(nodes) >= bg_n_thr
+            (heavy_bg and len(nodes) >= bg_n_thr)
             or _truthy((overrides or {}).get("background"))
             or (until_limit and action == "orbit_sweep")
         )
@@ -912,6 +907,9 @@ def _layout_topology_view(args: dict[str, Any]) -> dict[str, Any]:
             tool_args=sync_args,
             meta={"node_count": len(nodes), "until_limit": until_limit},
         )
+        started = job_public(job_id)
+        if started and started.get("status") in {"done", "error", "cancelled"}:
+            return _layout_topology_view({"action": "job_status", "params": {"job_id": job_id}})
         print(
             f"[netx-topology] {action} background job_id={job_id} n={len(nodes)}"
             + (" until_limit" if until_limit else ""),
@@ -1870,10 +1868,6 @@ def _add_topology_view_nodes(args: dict[str, Any]) -> dict[str, Any]:
             "error": "fabric_nodes_only",
             "detail": "Use keyword/role/vendor/link_status or fabric_node_ids; never managed/UME ids.",
         }
-    if args.get("max_nodes") is not None:
-        bump = _ensure_view_max_nodes(view_id, int(args.get("max_nodes") or 2000))
-        if isinstance(bump, dict) and bump.get("ok") is False:
-            return bump
     filters = _filter_fields(args)
     fabric_ids = [str(x) for x in (args.get("fabric_node_ids") or []) if str(x).strip()]
     if not filters and not fabric_ids:
@@ -1882,6 +1876,11 @@ def _add_topology_view_nodes(args: dict[str, Any]) -> dict[str, Any]:
             "error": "filter_or_fabric_node_ids_required",
             "detail": "Pass keyword/role/vendor/link_status (preferred) or fabric_node_ids.",
         }
+
+    if args.get("max_nodes") is not None:
+        bump = _ensure_view_max_nodes(view_id, int(args.get("max_nodes") or 2000))
+        if bump.get("ok") is False:
+            return bump
 
     layout = str(args.get("layout") or "grid").strip() or "grid"
     if filters:
@@ -1909,6 +1908,8 @@ def _add_topology_view_nodes(args: dict[str, Any]) -> dict[str, Any]:
             "return_graph": False,
         }
         parts.append(_data(http_json("POST", f"/v1/topology/views/{view_id}/nodes", body=body)))
+        if not parts[-1].get("ok"):
+            break
     return _merge_mutation_summaries(parts)
 
 
@@ -1935,6 +1936,8 @@ def _remove_topology_view_nodes(args: dict[str, Any]) -> dict[str, Any]:
                 )
             )
         )
+        if not parts[-1].get("ok"):
+            break
     return _merge_mutation_summaries(parts)
 
 
@@ -2002,6 +2005,8 @@ def _update_topology_view_positions(args: dict[str, Any]) -> dict[str, Any]:
                 )
             )
         )
+        if not parts[-1].get("ok"):
+            break
     return _merge_mutation_summaries(parts)
 
 
@@ -2009,8 +2014,11 @@ def _project_topology_neighbors(args: dict[str, Any]) -> dict[str, Any]:
     view_id = str(args.get("view_id") or "").strip()
     if not view_id:
         return {"ok": False, "error": "view_id_required"}
+    detail = str(args.get("detail") or "summary").strip().lower()
+    if detail not in {"summary", "full"}:
+        return {"ok": False, "error": "detail_invalid", "hint": "detail=summary|full"}
     body: dict[str, Any] = {}
-    seeds = args.get("seed_fabric_node_ids") or args.get("fabric_node_ids") or []
+    seeds = args.get("seed_fabric_node_ids") or []
     if isinstance(seeds, list) and seeds:
         body["seed_fabric_node_ids"] = [str(x).strip() for x in seeds if str(x).strip()]
     mids = args.get("managed_ne_ids") or []
@@ -2019,6 +2027,8 @@ def _project_topology_neighbors(args: dict[str, Any]) -> dict[str, Any]:
     region_folder_id = str(args.get("region_folder_id") or "").strip()
     if region_folder_id:
         body["region_folder_id"] = region_folder_id
+    if "dry_run" in args:
+        body["dry_run"] = _truthy(args["dry_run"])
     # API still returns the full graph; large canvases easily exceed the 60s default.
     out = _data(
         http_json(
@@ -2030,12 +2040,11 @@ def _project_topology_neighbors(args: dict[str, Any]) -> dict[str, Any]:
     )
     if not out.get("ok"):
         return out
-    detail = str(args.get("detail") or "summary").strip().lower()
     skipped = int(out.get("out_of_region_skipped") or 0)
     skipped_sample = out.get("out_of_region_sample") or []
     if not isinstance(skipped_sample, list):
         skipped_sample = []
-    if detail in {"full", "raw", "graph"}:
+    if detail == "full":
         out["detail"] = "full"
         out["region_folder_id"] = region_folder_id or None
         out["out_of_region_skipped"] = skipped
@@ -2046,9 +2055,11 @@ def _project_topology_neighbors(args: dict[str, Any]) -> dict[str, Any]:
                 f"skipped {skipped} out-of-region neighbors (not added)."
             )
         return out
-    summary = _summarize_view_graph(out, sample=int(args.get("sample") or 20))
+    sample = int(args["sample"]) if args.get("sample") is not None else 20
+    summary = _summarize_view_graph(out, sample=sample)
     summary["view_id"] = view_id
     summary["projected"] = True
+    summary["dry_run"] = bool(body.get("dry_run"))
     summary["region_folder_id"] = region_folder_id or None
     summary["out_of_region_skipped"] = skipped
     summary["out_of_region_sample"] = [
@@ -2076,13 +2087,15 @@ def _query_topology_fabric_nodes(args: dict[str, Any]) -> dict[str, Any]:
             mode = "search"
         else:
             mode = "list"
-    if mode in {"summary", "stats", "count"}:
+    if mode not in {"summary", "search", "list"}:
+        return {"ok": False, "error": "mode_invalid", "hint": "mode=summary|list|search"}
+    if mode == "summary":
         out = _data(http_json("GET", "/v1/topology/fabric/summary"))
         if isinstance(out, dict) and out.get("ok") is not False:
             out = dict(out)
             out["mode"] = "summary"
         return out
-    if mode in {"search", "find"}:
+    if mode == "search":
         needle = q or keyword
         if not needle:
             return {
@@ -2141,11 +2154,11 @@ def _classify_topology_fabric_nodes(args: dict[str, Any]) -> dict[str, Any]:
             "hint": (
                 "action=match|tag|patch|unmatched|preview_rules|apply_rules|list_rules. "
                 "Typical: match → tag(level|role, dry_run) → tag; "
-                "then addTopologyViewNodes by role/level_major/region."
+                "then queryTopologyFabricNodes by level/region and add returned fabric_node_ids."
             ),
         }
 
-    if action in {"match", "find"}:
+    if action == "match":
         pattern = str(args.get("pattern") or args.get("q") or "").strip()
         if not pattern:
             return {"ok": False, "error": "pattern_required"}
@@ -2180,7 +2193,7 @@ def _classify_topology_fabric_nodes(args: dict[str, Any]) -> dict[str, Any]:
             )
         return out
 
-    if action in {"tag", "bulk_tag", "assign"}:
+    if action == "tag":
         level = args.get("level") if "level" in args else Ellipsis
         role = args.get("role") if "role" in args else Ellipsis
         region = args.get("region_folder_id") if "region_folder_id" in args else Ellipsis
@@ -2232,7 +2245,7 @@ def _classify_topology_fabric_nodes(args: dict[str, Any]) -> dict[str, Any]:
             else:
                 out["hint"] = (
                     "Tagged. Use queryTopologyFabricNodes(role|level_major|region_folder_id) or "
-                    "addTopologyViewNodes filters to place on region canvas."
+                    "pass returned fabric_node_ids to addTopologyViewNodes to place on region canvas."
                 )
         return out
 
@@ -2286,7 +2299,7 @@ def _classify_topology_fabric_nodes(args: dict[str, Any]) -> dict[str, Any]:
             page["action"] = "unmatched"
         return page
 
-    if action in {"preview_rules", "preview"}:
+    if action == "preview_rules":
         out = _data(http_json("POST", "/v1/topology/classify/preview"))
         if isinstance(out, dict) and out.get("ok") is not False:
             out = dict(out)
@@ -2294,7 +2307,7 @@ def _classify_topology_fabric_nodes(args: dict[str, Any]) -> dict[str, Any]:
             out["hint"] = "Rule engine dry-run. Re-call action=apply_rules to write."
         return out
 
-    if action in {"apply_rules", "apply"}:
+    if action == "apply_rules":
         skip_manual = True
         if "skip_manual" in args:
             skip_manual = _truthy(args.get("skip_manual"))
@@ -2310,7 +2323,7 @@ def _classify_topology_fabric_nodes(args: dict[str, Any]) -> dict[str, Any]:
             out["action"] = "apply_rules"
         return out
 
-    if action in {"list_rules", "rules"}:
+    if action == "list_rules":
         out = _data(http_json("GET", "/v1/topology/classify/rules"))
         if isinstance(out, dict) and out.get("ok") is not False:
             out = dict(out)
@@ -2362,7 +2375,9 @@ def _query_topology_edges(args: dict[str, Any]) -> dict[str, Any]:
     page_size = min(500, max(1, int(args.get("page_size") or 100)))
     node_id = str(args.get("node_id") or "").strip()
     detail = str(args.get("detail") or "adjacency").strip().lower()
-    want_ports = detail in {"ports", "raw", "full"}
+    if detail not in {"adjacency", "ports"}:
+        return {"ok": False, "error": "detail_invalid", "hint": "detail=adjacency|ports"}
+    want_ports = detail == "ports"
     params: dict[str, Any] = {
         "page": page,
         "page_size": page_size,
@@ -2374,16 +2389,13 @@ def _query_topology_edges(args: dict[str, Any]) -> dict[str, Any]:
         params["status"] = str(args.get("status")).strip()
     if str(args.get("source") or "").strip():
         src = str(args.get("source")).strip().lower()
-        if src == "stale":
-            src = "lldp"
         params["source"] = src
     if str(args.get("keyword") or "").strip():
         params["keyword"] = str(args.get("keyword")).strip()
 
-    out = http_json("GET", "/v1/topology/fabric/edges", params=params)
-    if not isinstance(out, dict) or not out.get("ok"):
-        return out if isinstance(out, dict) else {"ok": False, "error": "invalid_response"}
-    data = out.get("data") if isinstance(out.get("data"), dict) else {}
+    data = _data(http_json("GET", "/v1/topology/fabric/edges", params=params))
+    if not data.get("ok"):
+        return data
     items = [e for e in (data.get("items") or []) if isinstance(e, dict)]
     edge_total = int(data.get("total") or len(items))
     links = _collapse_edges_to_links(items, include_names=True)
@@ -2528,12 +2540,8 @@ def _sink_topology_dual_units(args: dict[str, Any]) -> dict[str, Any]:
         units_as_batch_rows,
     )
 
-    source_view_id = str(
-        args.get("source_view_id") or args.get("root_view_id") or ""
-    ).strip()
-    sink_view_id = str(
-        args.get("sink_view_id") or args.get("target_view_id") or ""
-    ).strip()
+    source_view_id = str(args.get("source_view_id") or "").strip()
+    sink_view_id = str(args.get("sink_view_id") or "").strip()
     if not source_view_id or not sink_view_id:
         return {
             "ok": False,
@@ -2883,6 +2891,17 @@ def _sink_topology_dual_units(args: dict[str, Any]) -> dict[str, Any]:
         patch_out: dict[str, Any] = {"ok": True, "updated": 0}
         if pos_patch:
             patch_out = _patch_positions_chunked(sink_view_id, pos_patch)
+            if not patch_out.get("ok"):
+                return {
+                    "ok": False,
+                    "error": patch_out.get("error") or "positions_patch_failed",
+                    "detail": patch_out,
+                    "source_preserved": True,
+                    "added": int(add_out.get("added", 0)),
+                    "batches": batches,
+                    "batch": batch_row,
+                    "hint": "Sink membership may already be added; source nodes were kept. Inspect both views before retrying.",
+                }
 
         rm_out = _remove_topology_view_nodes(
             {"view_id": source_view_id, "fabric_node_ids": move_ids}
@@ -2900,6 +2919,16 @@ def _sink_topology_dual_units(args: dict[str, Any]) -> dict[str, Any]:
         # Refresh counts
         src2 = _data(http_json("GET", f"/v1/topology/views/{source_view_id}", timeout=120.0))
         snk2 = _data(http_json("GET", f"/v1/topology/views/{sink_view_id}", timeout=120.0))
+        if not src2.get("ok") or not snk2.get("ok"):
+            return {
+                "ok": False,
+                "error": "view_readback_failed",
+                "write_completed": True,
+                "detail": {"source": src2, "sink": snk2},
+                "batches": batches,
+                "batch": batch_row,
+                "hint": "Writes completed but verification failed. Read both views before retrying this batch.",
+            }
         src_ids2, _ = _view_node_id_pos(src2 if src2.get("ok") else {})
         snk_ids2, _ = _view_node_id_pos(snk2 if snk2.get("ok") else {})
         source_remaining = len(src_ids2) if src2.get("ok") else max(0, source_remaining - len(move_ids))
@@ -2908,8 +2937,8 @@ def _sink_topology_dual_units(args: dict[str, Any]) -> dict[str, Any]:
         batch_row.update(
             {
                 "added": int(add_out.get("added") or len(add_ids)),
-                "positions_updated": int(patch_out.get("updated") or len(pos_patch)),
-                "removed_from_source": int(rm_out.get("removed") or len(move_ids)),
+                "positions_updated": int(patch_out.get("updated", 0)),
+                "removed_from_source": int(rm_out.get("removed", 0)),
                 "source_after": source_remaining,
                 "sink_after": sink_count,
                 "max_nodes_bump": bump,
@@ -2963,19 +2992,8 @@ def _move_topology_view_nodes(args: dict[str, Any]) -> dict[str, Any]:
     Bidirectional: swap view_id / source_view_id to send nodes back.
     Caller supplies fabric_node_ids — no auto CN/dual-unit selection.
     """
-    dest_view_id = str(
-        args.get("view_id")
-        or args.get("sink_view_id")
-        or args.get("target_view_id")
-        or args.get("to_view_id")
-        or ""
-    ).strip()
-    source_view_id = str(
-        args.get("source_view_id")
-        or args.get("from_view_id")
-        or args.get("root_view_id")
-        or ""
-    ).strip()
+    dest_view_id = str(args.get("view_id") or "").strip()
+    source_view_id = str(args.get("source_view_id") or "").strip()
     if not dest_view_id or not source_view_id:
         return {
             "ok": False,
@@ -3010,6 +3028,8 @@ def _move_topology_view_nodes(args: dict[str, Any]) -> dict[str, Any]:
         return {"ok": False, "error": "fabric_node_ids_empty"}
 
     mode = str(args.get("mode") or "preview").strip().lower() or "preview"
+    if mode not in {"preview", "apply"}:
+        return {"ok": False, "error": "mode_invalid", "hint": "mode=preview|apply"}
     dry_run = bool(overrides.get("dry_run") if "dry_run" in overrides else args.get("dry_run"))
     if mode != "apply":
         dry_run = True
@@ -3109,7 +3129,7 @@ def _move_topology_view_nodes(args: dict[str, Any]) -> dict[str, Any]:
 
     bump = _ensure_view_max_nodes(dest_view_id, min(2000, max(need_cap + 20, 200)))
     if isinstance(bump, dict) and bump.get("ok") is False:
-        return {**bump, **base}
+        return {**base, **bump}
 
     add_out: dict[str, Any] = {"ok": True, "added": 0, "skipped_existing": len(already)}
     if add_ids:
@@ -3158,6 +3178,16 @@ def _move_topology_view_nodes(args: dict[str, Any]) -> dict[str, Any]:
     patch_out: dict[str, Any] = {"ok": True, "updated": 0}
     if pos_patch:
         patch_out = _patch_positions_chunked(dest_view_id, pos_patch)
+        if not patch_out.get("ok"):
+            return {
+                **base,
+                "ok": False,
+                "error": patch_out.get("error") or "positions_patch_failed",
+                "detail": patch_out,
+                "added": int(add_out.get("added", 0)),
+                "source_preserved": True,
+                "hint": "Destination membership may already be added; source nodes were kept. Inspect both views before retrying.",
+            }
 
     rm_out: dict[str, Any] = {"ok": True, "removed": 0}
     if remove_from_source:
@@ -3176,14 +3206,23 @@ def _move_topology_view_nodes(args: dict[str, Any]) -> dict[str, Any]:
 
     src2 = _data(http_json("GET", f"/v1/topology/views/{source_view_id}", timeout=120.0))
     dst2 = _data(http_json("GET", f"/v1/topology/views/{dest_view_id}", timeout=120.0))
+    if not src2.get("ok") or not dst2.get("ok"):
+        return {
+            **base,
+            "ok": False,
+            "error": "view_readback_failed",
+            "write_completed": True,
+            "detail": {"source": src2, "destination": dst2},
+            "hint": "Writes completed but verification failed. Read both views before retrying the move.",
+        }
     src_after, _ = _view_node_id_pos(src2 if src2.get("ok") else {})
     dst_after, _ = _view_node_id_pos(dst2 if dst2.get("ok") else {})
     return {
         **base,
         "dry_run": False,
         "added": int(add_out.get("added") or len(add_ids)),
-        "positions_updated": int(patch_out.get("updated") or len(pos_patch)),
-        "removed_from_source": int(rm_out.get("removed") or (len(move_ids) if remove_from_source else 0)),
+        "positions_updated": int(patch_out.get("updated", 0)),
+        "removed_from_source": int(rm_out.get("removed", 0)),
         "source_after": len(src_after) if src2.get("ok") else None,
         "dest_after": len(dst_after) if dst2.get("ok") else None,
         "max_nodes_bump": bump,
@@ -3201,12 +3240,8 @@ def _copy_topology_view_nodes(args: dict[str, Any]) -> dict[str, Any]:
     Source membership is unchanged. For test sandboxes: clone a known-good
     canvas onto a fresh child region without re-adding ids by hand.
     """
-    source_view_id = str(
-        args.get("source_view_id") or args.get("from_view_id") or ""
-    ).strip()
-    target_view_id = str(
-        args.get("target_view_id") or args.get("to_view_id") or ""
-    ).strip()
+    source_view_id = str(args.get("source_view_id") or "").strip()
+    target_view_id = str(args.get("target_view_id") or "").strip()
     if not source_view_id or not target_view_id:
         return {
             "ok": False,
@@ -3322,8 +3357,29 @@ def _copy_topology_view_nodes(args: dict[str, Any]) -> dict[str, Any]:
         ]
         if positions:
             patch_out = _patch_positions_chunked(target_view_id, positions)
+            if not patch_out.get("ok"):
+                return {
+                    "ok": False,
+                    "error": patch_out.get("error") or "positions_patch_failed",
+                    "detail": patch_out,
+                    "source_view_id": source_view_id,
+                    "target_view_id": target_view_id,
+                    "cleared": cleared,
+                    "added": int(add_out.get("added", 0)),
+                    "hint": "Target membership may already be changed; source is unchanged. Inspect target before retrying.",
+                }
 
     dst2 = _data(http_json("GET", f"/v1/topology/views/{target_view_id}", timeout=120.0))
+    if not dst2.get("ok"):
+        return {
+            "ok": False,
+            "error": "view_readback_failed",
+            "write_completed": True,
+            "source_view_id": source_view_id,
+            "target_view_id": target_view_id,
+            "detail": dst2,
+            "hint": "Writes completed but verification failed. Read target before retrying the copy.",
+        }
     dst_after, _ = _view_node_id_pos(dst2 if dst2.get("ok") else {})
     return {
         "ok": True,
@@ -3779,6 +3835,11 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
                         "skipped peers are counted in out_of_region_skipped."
                     ),
                 },
+                "dry_run": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Preview projected graph without saving placements.",
+                },
                 "detail": {
                     "type": "string",
                     "enum": ["summary", "full"],
@@ -3797,8 +3858,7 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
             "Default: q→search, else list. "
             "summary=node/edge counts; list=paged filters "
             "(keyword/role/link_status/region_folder_id); "
-            "search=quick name/IP/id (needs q). Replaces getTopologyFabricSummary / "
-            "listTopologyFabricNodes / searchTopologyFabricNodes."
+            "search=quick name/IP/id (needs q)."
         ),
         "inputSchema": {
             "type": "object",
@@ -3853,7 +3913,8 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
             "level: 0=external, 1=core, 2=agg, 3=access; use 1.1 / 2.1 for sub-tiers. "
             "action=match → tag(level|role preset, dry_run) → tag. "
             "role preset still accepted (maps to *.0). "
-            "After tagging, addTopologyViewNodes by role/region. No slice maps. "
+            "After tagging, queryTopologyFabricNodes by region/level, then place returned "
+            "fabric_node_ids with addTopologyViewNodes (canvas filters do not support region/level). "
             "Requires ne:write."
         ),
         "inputSchema": {
@@ -4030,8 +4091,8 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
                 },
                 "use_source_dual_portals": {
                     "type": "boolean",
-                    "default": True,
-                    "description": "Exclude portals from source dual_units (default true).",
+                    "default": False,
+                    "description": "Exclude portals from source dual_units (default false).",
                 },
                 "use_sink_dual_portals": {
                     "type": "boolean",
@@ -4156,7 +4217,7 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
             "action=layout: recipe=rings|corridor|compact|unstick (small graphs). "
             "action=layout_dual_unit: CN/core dual-portal eye (max membership; "
             "residual crossings OK unless params.require_zero_cross=true). "
-            "action=move_nodes (alias sink_nodes): move fabric_node_ids from "
+            "action=move_nodes: move fabric_node_ids from "
             "source_view_id→view_id; park=true for orbit attach; swap views to reverse. "
             "Prefer sinkTopologyDualUnits for dual_units batches. "
             "action=orbit_sweep: crossing orbit; preview+node_id / apply+pick; "
@@ -4170,9 +4231,12 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
             "action=pull_far_chains: scale far corridors/isolates toward portal mid-point. "
             "action=align_reference: SAME-network A/B debug only "
             "(shared fabric_node_ids); not a cross-network template. "
-            "action=fix_overlaps|resolve_overlaps: pull apart overlaps (not on eye sinks). "
+            "action=fix_overlaps: pull apart overlaps (not on eye sinks). "
             "action=untangle / straighten_channels: surgical polish (not on eye sinks). "
             "action=job_status|job_cancel: poll/cancel background jobs. "
+            "params.background=true starts an apply action in a durable subprocess; "
+            "poll params.job_id until done|error|cancelled, then inspect result. "
+            "Successful apply persists positions; getTopologyView reads them back. "
             "preset: loose|balanced|dense. mode: preview|apply. "
             "Workflow: analyze(structure) → sinkTopologyDualUnits(max_units=1) → "
             "suggestSinkHubs/move_nodes(park) → until_limit(crossing→total) → "
@@ -4192,7 +4256,6 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
                     "enum": [
                         "layout",
                         "fix_overlaps",
-                        "resolve_overlaps",
                         "layout_dual_unit",
                         "straighten_channels",
                         "untangle",
@@ -4204,7 +4267,6 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
                         "orbit_sweep",
                         "level_bands",
                         "move_nodes",
-                        "sink_nodes",
                         "job_status",
                         "job_cancel",
                     ],
@@ -4212,13 +4274,13 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
                     "description": (
                         "layout=full recipe; layout_dual_unit=dual-portal eye; "
                         "level_bands=horizontal layer bands; "
-                        "move_nodes|sink_nodes=migrate fabric_node_ids; "
+                        "move_nodes=migrate fabric_node_ids; "
                         "orbit_sweep=polar sweep; polish_crossings=one-shot cut crossings; "
                         "clear_edge_hits=eject edge hits (no crossing rise); "
                         "pull_far_chains=scale far corridors toward portal mid; "
                         "compact_bbox=gated farthest-K shrink; "
                         "align_reference=same-network A/B debug only; "
-                        "fix_overlaps|resolve_overlaps; "
+                        "fix_overlaps; "
                         "untangle/straighten_channels; job_status|job_cancel."
                     ),
                 },
@@ -4281,10 +4343,15 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
                         "max_jump/angle_step/nn_floor; until_limit defaults "
                         "protect_rigid=portals + objective=crossing; "
                         "single-node/round default protect_rigid=off. "
-                        "move_nodes|sink_nodes: fabric_node_ids[] (required), "
+                        "move_nodes: fabric_node_ids[] (required), "
                         "copy_positions (default true), park, remove_from_source "
                         "(default true), pad/offset_x/offset_y."
                     ),
+                    "properties": {
+                        "job_id": {"type": "string", "description": "Required for job_status/job_cancel; returned by background start."},
+                        "background": {"type": "boolean", "description": "Run apply computation in a durable subprocess and return job_id immediately."},
+                        "sync": {"type": "boolean", "description": "Force inline computation, disabling automatic background execution."},
+                    },
                     "additionalProperties": True,
                 },
                 "catalog": {

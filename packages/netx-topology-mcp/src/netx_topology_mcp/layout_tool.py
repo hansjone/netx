@@ -144,7 +144,6 @@ _PARAM_KEYS = (
 ACTIONS = (
     "layout",
     "fix_overlaps",
-    "resolve_overlaps",  # alias of fix_overlaps
     "untangle",
     "straighten_channels",
     "layout_dual_unit",
@@ -328,8 +327,6 @@ def run_layout_on_graph(
             f"unknown_action:{action_key}; "
             f"allowed={','.join(ACTIONS)}"
         )
-    if action_key == "resolve_overlaps":
-        action_key = "fix_overlaps"
     base_params = build_params(preset=preset, overrides=params)
     st0 = build_state_from_nodes_edges(nodes, edges)
     park_phantom_nodes(st0)
@@ -899,14 +896,13 @@ def list_layout_catalog() -> dict[str, Any]:
         "actions": {
             "layout": "全图配方（骨架）；块内 pack，结束时局部解叠",
             "fix_overlaps": "只拉开当前重叠点（+1 跳邻居），不重排全图",
-            "resolve_overlaps": "fix_overlaps 别名",
             "straighten_channels": (
                 "拉直 deg≤2 通道（弦/横/纵）；仅全局交叉下降才接受该通道"
                 "（params: step/min_len）"
             ),
             "layout_dual_unit": (
                 "双门户单元美化（多走廊→平行 H/V 道；链→拉直）；"
-                "单元内交叉必须为 0 才接受（params: unit_id）"
+                "默认允许残留交叉；params.require_zero_cross=true 时要求为 0（params: unit_id）"
             ),
             "untangle": (
                 "贪心挪低度数点降交叉；默认 protect_rigid=portals "
@@ -963,7 +959,6 @@ def list_layout_catalog() -> dict[str, Any]:
                 "默认 remove_from_source；对调两 view 即回迁；"
                 "copy_positions|park；mode=preview|apply"
             ),
-            "sink_nodes": "move_nodes 别名",
         },
         "recipes": {
             "rings": "环+链花瓣；core_bar 时梁优先（多 CN 不塞进 AN 列）",

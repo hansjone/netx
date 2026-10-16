@@ -188,8 +188,9 @@ class ManagedNeApiTests(unittest.TestCase):
         self.assertEqual(listed.json()["total"], 1, listed.text)
         self.client.delete(f"/v1/managed-ne/{ne_id}")
 
-    def test_create_without_crypto_key(self):
-        settings.credential_secret_key = ""
+    @patch("netx_api.ne_service_common.credentials_configured", return_value=False)
+    def test_create_without_crypto_key(self, mock_configured):
+        # Empty settings now auto-provision a key; model an unavailable key explicitly.
         r = self.client.post(
             "/v1/managed-ne",
             json={
@@ -201,6 +202,7 @@ class ManagedNeApiTests(unittest.TestCase):
             },
         )
         self.assertEqual(r.status_code, 503, r.text)
+        mock_configured.assert_called_once()
 
     def test_delete_ume_sync_route_not_captured_by_ne_id(self):
         """DELETE /ume-sync must not match DELETE /{ne_id} with ne_id='ume-sync'."""

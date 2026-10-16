@@ -410,6 +410,9 @@ class WebcrtServiceTests(unittest.TestCase):
                 "password": "p",
                 "hop_enabled": True,
                 "hop_vendor": "huawei",
+                "hop_host": "192.0.2.10",
+                "hop_username": "hop-user",
+                "hop_password": "test-only-hop-password",
                 "ip_address": "10.0.0.3",
                 "protocol": "ssh",
             },
@@ -479,6 +482,7 @@ class WebcrtServiceTests(unittest.TestCase):
         self.assertTrue(
             svc._webcrt_creds_ready(
                 {
+                    "ip_address": "192.0.2.20",
                     "username": "ca-oper",
                     "password": "",
                     "hop_enabled": True,
@@ -493,6 +497,7 @@ class WebcrtServiceTests(unittest.TestCase):
         self.assertFalse(
             svc._webcrt_creds_ready(
                 {
+                    "ip_address": "192.0.2.20",
                     "username": "ca-oper",
                     "password": "",
                     "hop_enabled": True,
@@ -507,6 +512,7 @@ class WebcrtServiceTests(unittest.TestCase):
         self.assertFalse(
             svc._webcrt_creds_ready(
                 {
+                    "ip_address": "192.0.2.20",
                     "username": "u",
                     "password": "",
                     "protocol": "ssh",
@@ -517,6 +523,7 @@ class WebcrtServiceTests(unittest.TestCase):
         self.assertTrue(
             svc._webcrt_creds_ready(
                 {
+                    "ip_address": "192.0.2.20",
                     "username": "",
                     "password": "",
                     "protocol": "telnet",

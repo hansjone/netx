@@ -1,0 +1,11 @@
+MDN-BCP-CN1-ZM8SP#show bgp vpnv6 unicast vrf vpn.giims neighbor out 2407::45:0:0:5:1 | one-line                                                                              
+09:51:15 Indonesia Sat Sep 19 2026
+Routes Sent To This Neighbor:
+Origin codes: i - IGP, e - EGP, ? - incomplete
+Total number of routes: 1
+Network            Next Hop        From            Metric LocPrf Path
+
+2407::45:0:0:5:0/127
+                   2407::45:0:0:5:0
+                                                                 4761 ?
+MDN-BCP-CN1-ZM8SP#

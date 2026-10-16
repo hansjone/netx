@@ -73,6 +73,7 @@ class NeExecJobTests(unittest.TestCase):
                 ack = start_ne_exec_job(
                     kind="exec",
                     arguments={"ne_id": "abc", "commands": ["show version"]},
+                    owner_user_id="test-owner",
                     runner=lambda: {"ok": True, "output": "hi"},
                 )
                 self.assertTrue(ack.get("ok"))
@@ -80,7 +81,7 @@ class NeExecJobTests(unittest.TestCase):
                 self.assertTrue(jid)
                 done = None
                 for _ in range(50):
-                    polled = get_ne_exec_job(jid)
+                    polled = get_ne_exec_job(jid, user_id="test-owner")
                     if polled.get("terminal"):
                         done = polled
                         break

@@ -89,7 +89,12 @@ def _prune_disk() -> None:
     files = [p for p in files if not p.name.endswith(".args.json")]
     if len(files) <= _MAX_JOBS:
         return
-    for path in files[: max(0, len(files) - _MAX_JOBS)]:
+    # Active jobs must remain pollable and cancellable even when history fills up.
+    removable = [
+        path for path in files
+        if (_read_job_disk(path.stem) or {}).get("status") in {"done", "error", "cancelled"}
+    ]
+    for path in removable[: max(0, len(files) - _MAX_JOBS)]:
         try:
             path.unlink(missing_ok=True)
             path.with_name(path.stem + ".args.json").unlink(missing_ok=True)
@@ -400,25 +405,33 @@ def start_job(
             subprocess, "DETACHED_PROCESS", 0x00000008
         )
 
-    proc = subprocess.Popen(  # noqa: S603 — controlled argv
-        [sys.executable, "-m", "netx_topology_mcp.layout_job_worker", "--job-id", job_id],
-        env=env,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        creationflags=creationflags,
-        close_fds=True,
-    )
+    try:
+        proc = subprocess.Popen(  # noqa: S603 — controlled argv
+            [sys.executable, "-m", "netx_topology_mcp.layout_job_worker", "--job-id", job_id],
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=creationflags,
+            close_fds=True,
+        )
+    except OSError as exc:
+        finish_job(job_id, error=f"worker_start_failed:{exc}")
+        _args_path(job_id).unlink(missing_ok=True)
+        # The caller receives a pollable terminal job instead of an orphaned running record.
+        return job_id
     with _LOCK:
         job = _read_job_disk(job_id) or job
         job["pid"] = proc.pid
-        job["progress"] = {
-            **(job.get("progress") or {}),
-            "phase": "running",
-            "message": f"worker pid={proc.pid}",
-            "updated_at": time.time(),
-        }
-        job["heartbeat_at"] = time.time()
+        # A short computation can finish before Popen returns to the parent.
+        # Keep its terminal progress/result intact.
+        if job.get("status") in {"running", "cancelling"}:
+            job["progress"] = {
+                **(job.get("progress") or {}),
+                "message": f"worker pid={proc.pid}",
+                "updated_at": time.time(),
+            }
+            job["heartbeat_at"] = time.time()
         _JOBS[job_id] = job
         _write_job_disk(job)
     return job_id

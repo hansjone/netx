@@ -116,7 +116,7 @@ pip install "git+https://github.com/hansjone/netx.git#subdirectory=packages/netx
 
 1. 完成上文 **§1**（用 **oclaw 同机同一个 `python`** 安装 `netx-mcp`）。
 2. Admin → MCP → 粘贴 `mcp.json` 全文 → 点击 **Install from JSON**（安装状态在下方一行小字）。
-3. **Health** → **Sync Tools**（应看到 **14** 个工具）。
+3. **Health** → **Sync Tools**（完整 scope 下应看到 **15** 个工具）。
 4. 在 **MCP 专家绑定** 中为 ops 专家勾选 `server_id=netx`。
 
 更细的 oclaw 说明（双轨内置工具、锚点注入等）见 oclaw 仓库：  
@@ -141,9 +141,11 @@ pip install "git+https://github.com/hansjone/netx.git#subdirectory=packages/netx
 | NMS 原始/SQL | `queryNmsAlarmsRaw`, `aggregateNmsAlarmsRaw`, `listNmsAlarmFields`, `sqlQueryNms` |
 | common（CLI + 路径） | `listManagedNe`, `getManagedNe`, `execManagedNe`, `getNeExecJob`, `listCliTargets`, `findTopologyPaths` |
 
-参数优先 `nms_ne_id` / `nms_ne_ids`（保留 `ume_*` 别名）。拓扑 Fabric / 画布工具在 **[`netx-topology-mcp`](./MCP_TOPOLOGY.md)**。oclaw 中名称带前缀：`mcp__netx__<toolName>`；DSH：`netx__<toolName>`。
+参数使用 `nms_ne_id` / `nms_ne_ids`，旧 `ume_*` 模型参数已删除；`getManagedNe` 只接受 `ne_id`。拓扑 Fabric / 画布工具在 **[`netx-topology-mcp`](./MCP_TOPOLOGY.md)**。oclaw 中名称带前缀：`mcp__netx__<toolName>`；DSH：`netx__<toolName>`。
 
-**业务监控 / 割接分析**：不走 netx-mcp。DSH **netxops** 宿主工具组 `bizMonitor`（`netx__listBizMonitors` / `netx__getBizMonitorContext` 等）直连 netx REST（`/v1/biz-migration/*`、`/v1/biz-state/*`，需 token scope `biz-monitor:read`）。
+**业务监控 / 割接分析**：独立 [`netx-bizmonitor-mcp`](./MCP_BIZMONITOR.md) 提供 8 个工具，需 `biz-monitor:read`；netxops 的 bizMonitor 组使用相同 stem。三组统一配置见根 [`mcp.all.json`](../mcp.all.json)，不需要安装 netxops。
+
+**CLI 安全边界**：独立 MCP 强制单行只读 `show` / `display`，可用只读输出过滤；配置、shell 操作符、重定向和多行脚本在 HTTP 前拒绝。后端开放 exec_policy 或 capability 的脚本提示也不能解除这个 MCP 门禁，Linux/RouterOS 原生 CLI 当前未暴露。异步 job_id 仅表示开始，按 poll_after_ms 有界轮询；terminal 后检查 result.ok，批量还须检查 summary.failed 和每条 results[].ok，不能只凭作业 succeeded 宣称全部成功。
 
 ---
 
@@ -191,10 +193,10 @@ pip show netx-mcp
 
 | 旧方式 | 新方式 |
 |--------|--------|
-| `python -m netx_api.mcp` | `python -m netx_mcp`（推荐） |
+| `python -m netx_api.mcp` | `python -m netx_mcp`（唯一 Python 模块入口） |
 | `NETX_MCP_MODE=db` 直连库 | 已废弃；使用 HTTP 模式 |
 
-根目录 `python -m netx_api.mcp` 仍会委托到 `netx_mcp`，新环境请只装 `netx-mcp` 包。
+旧入口 `netx_api.mcp`、`netx_api/mcp_server.py` 和 `NETX_MCP_MODE=db` 已删除。请安装独立 `netx-mcp` 包并迁移配置；不再保留兼容委托。旧 DB 模式独有的导入告警查询/聚合/批次/诊断、同步触发、历史告警查询仍有 HTTP API，但不属于当前 ops 15 工具。
 
 ---
 
@@ -233,7 +235,7 @@ $p = Start-Process python -ArgumentList "-m","netx_mcp" -RedirectStandardInput p
 | 工具调用连不上 API | 检查 `NETX_API_URL`、防火墙、远端 API 是否启动 |
 | Windows 乱码 / JSON 解析失败 | 配置里保留 `PYTHONIOENCODING=utf-8`、`PYTHONUTF8=1`（见 `mcp.json`） |
 | oclaw 工具数为 0 | Admin **Health → Sync Tools**；确认 `server_id=netx` 已绑定 ops 专家 |
-| 仍想用仓库脚本路径 | 未 pip 安装时可临时 `"args": ["D:/.../netx_api/mcp_server.py"]`（开发用） |
+| 旧脚本路径或模块不存在 | 安装 `packages/netx-mcp`，配置改为 `"args": ["-m", "netx_mcp"]` |
 
 ---
 

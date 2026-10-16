@@ -304,24 +304,23 @@ class _ProgressSessionLog:
 
 
 def _cisco_ios_collection_driver_class(base_cls: type) -> type:
-    """Cisco IOSv-friendly session prep: avoid cmd_verify on terminal width/length."""
+    """Cisco IOSv collection prep: establish hostname prompt only (like interactive)."""
 
     class _CiscoIosCollectionSession(base_cls):  # type: ignore[misc,valid-type]
         def session_preparation(self) -> None:
-            # Default Netmiko waits for exact echo of "terminal width 511" (ReadTimeout on IOSv).
-            self._test_channel_read(pattern=r"[>#]")
-            try:
-                self.set_terminal_width(command="terminal width 511", pattern=r"[>#]")
-            except Exception:
-                pass
-            try:
-                self.disable_paging(command="terminal length 0", cmd_verify=False, pattern=r"[>#]")
-            except Exception:
-                try:
-                    self.send_command_timing("terminal length 0", read_timeout=15)
-                except Exception:
-                    pass
-            self.set_base_prompt()
+            # Stock Netmiko width/paging on IOSv+CR races leftover prompts
+            # (``terexit`` / ``terminal lengexit``) or blocks forever waiting for
+            # setup echo once VTY pressure builds. The interactive WebCRT path
+            # skips these commands and still returns complete show output; MCP
+            # show/display bodies are short enough that --More-- is not required.
+            # Keep hostname discovery so send_show_command can use a full-line
+            # prompt expect without auto_find_prompt.
+            from .ne_netmiko import drain_read_channel
+
+            initial_pattern = r"(?m:^[^\r\n#>]+[>#][ \t]*$)"
+            self._test_channel_read(pattern=initial_pattern)
+            self.set_base_prompt(pattern=initial_pattern)
+            drain_read_channel(self, idle_reads=8, pause_sec=0.1)
 
     _CiscoIosCollectionSession.__name__ = (
         f"CiscoIosCollection{getattr(base_cls, '__name__', 'Netmiko')}"
@@ -508,6 +507,13 @@ def _base_connect_kwargs(
         "auth_timeout": timeout,
         "banner_timeout": timeout,
     }
+    # IOSv SSH accepts CR as Enter. LF alone can leave command input pending
+    # until a later write, producing missing echo, empty output or prompt timeouts.
+    # Keep Telnet's own line ending and other vendors' defaults unchanged.
+    from .ne_netmiko import is_cisco_ios_device_type
+
+    if is_cisco_ios_device_type(device_type) and "telnet" not in device_type.lower():
+        dev["default_enter"] = "\r"
     if session_timeout is not None:
         dev["session_timeout"] = session_timeout
     if keepalive is not None and int(keepalive) > 0:

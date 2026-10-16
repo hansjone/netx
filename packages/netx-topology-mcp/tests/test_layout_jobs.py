@@ -16,6 +16,60 @@ from netx_topology_mcp.layout_jobs import (
 )
 
 
+def test_terminal_job_survives_cache_reset_and_reports_failure(tmp_path) -> None:
+    from netx_topology_mcp import layout_jobs as lj
+
+    lj._write_job_disk({"job_id": "persisted", "status": "running", "started_at": time.time()})
+    lj.finish_job("persisted", result={"ok": False, "error": "backend_write_failed", "applied": False})
+    lj._JOBS.clear()
+    out = _layout_topology_view({"action": "job_status", "params": {"job_id": "persisted"}})
+    assert out["ok"] is False
+    assert out["status"] == "error"
+    assert out["error"] == "backend_write_failed"
+    assert out["result"]["applied"] is False
+
+
+def test_spawn_failure_is_persisted_as_terminal_error() -> None:
+    from netx_topology_mcp import layout_jobs as lj
+
+    with patch.object(lj.subprocess, "Popen", side_effect=OSError("spawn denied")):
+        jid = start_job(action="layout", view_id="v", tool_args={"view_id": "v"})
+    lj._JOBS.clear()
+    out = _layout_topology_view({"action": "job_status", "params": {"job_id": jid}})
+    assert out["ok"] is False
+    assert out["status"] == "error"
+    assert out["error"].startswith("worker_start_failed:")
+    assert not lj._args_path(jid).exists()
+
+
+def test_fast_worker_terminal_progress_is_not_overwritten() -> None:
+    from types import SimpleNamespace
+    from netx_topology_mcp import layout_jobs as lj
+
+    def spawn(argv, **kwargs):
+        jid = argv[-1]
+        lj.finish_job(jid, result={"ok": True, "applied": True})
+        return SimpleNamespace(pid=123)
+
+    with patch.object(lj.subprocess, "Popen", side_effect=spawn):
+        jid = start_job(action="layout", view_id="v", tool_args={"view_id": "v"})
+    out = lj.job_public(jid)
+    assert out["status"] == "done"
+    assert out["progress"]["phase"] == "done"
+    assert out["progress"]["pct"] == 100.0
+
+
+def test_pruning_preserves_active_jobs() -> None:
+    from netx_topology_mcp import layout_jobs as lj
+
+    lj._write_job_disk({"job_id": "active", "status": "running"})
+    lj._write_job_disk({"job_id": "completed", "status": "done"})
+    with patch.object(lj, "_MAX_JOBS", 1):
+        lj._prune_disk()
+    assert lj._read_job_disk("active") is not None
+    assert lj._read_job_disk("completed") is None
+
+
 def test_start_job_and_poll() -> None:
     def runner() -> dict:
         report_progress("mid", pct=50.0, message="halfway", step=1, total_steps=2)

@@ -270,7 +270,7 @@ class ZteExtendedParserTests(unittest.TestCase):
         self.assertTrue(all(r["afi"] == "ipv4" for r in vrf), "vrf-scoped vpnv4 → ipv4")
 
         # Real wrapped vpnv6 summary + IPv6 neighbor in/out routes
-        sample_dir = Path(__file__).resolve().parents[2] / "test" / "show-zte"
+        sample_dir = Path(__file__).resolve().parent / "fixtures" / "zte_vpnv6"
         v6_sum = (sample_dir / "show-bgp-vpnv6").read_text(encoding="utf-8", errors="replace")
         v6_real = normalize_bgp_peer(
             raw_text=v6_sum, command="show bgp vpnv6 unicast summary | one-line"

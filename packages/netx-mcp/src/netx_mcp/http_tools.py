@@ -1,7 +1,7 @@
 """MCP tool schemas and HTTP-backed handlers (NMS adapter + managed NE).
 
 Model-facing tool names use generic Nms*; REST paths remain /v1/ume/* for the
-current zte-ume provider. Params prefer nms_ne_id with ume_ne_id aliases.
+current zte-ume provider. Model-facing params use nms_ne_id exclusively.
 """
 
 from __future__ import annotations
@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 from typing import Any, Callable
 
+from .cli_guard import validate_readonly_cli
 from .http_client import http_json, http_post_json, mcp_from_handler_result, quote_ne_id
 
 _EXEC_MAX_COMMANDS_CAP = 50
@@ -47,17 +48,16 @@ def _truthy_async_flag(raw: Any) -> bool | None:
 
 def _count_exec_ne_targets(args: dict[str, Any]) -> int:
     n = 0
-    for key in ("ne_ids", "nms_ne_ids", "ume_ne_ids"):
+    for key in ("ne_ids", "nms_ne_ids"):
         val = args.get(key)
         if isinstance(val, list):
-            n = max(n, len([x for x in val if str(x or "").strip()]))
+            n += len([x for x in val if str(x or "").strip()])
     targets = args.get("targets")
     if isinstance(targets, list):
-        n = max(n, len([t for t in targets if isinstance(t, dict)]))
+        n += len([t for t in targets if isinstance(t, dict)])
     if n == 0 and (
         str(args.get("ne_id") or "").strip()
         or str(args.get("nms_ne_id") or "").strip()
-        or str(args.get("ume_ne_id") or "").strip()
     ):
         return 1
     return int(n)
@@ -243,11 +243,8 @@ def _query_ume_alarms(args: dict[str, Any]) -> dict[str, Any]:
     if str(args.get("is_cleared") or "").strip():
         params["is_cleared"] = str(args.get("is_cleared")).strip()
     keyword = str(args.get("keyword") or "").strip()
-    ne_name = str(args.get("ne_name") or "").strip()
     if keyword:
         params["keyword"] = keyword
-    elif ne_name:
-        params["keyword"] = ne_name
     if str(args.get("ne_id") or "").strip():
         params["ne_id"] = str(args.get("ne_id")).strip()
     if str(args.get("host_name") or "").strip():
@@ -264,7 +261,7 @@ def _aggregate_ume_alarms(args: dict[str, Any]) -> dict[str, Any]:
     if group_by:
         return _aggregate_ume_alarms_raw(args)
     # Default top 50 named NEs — missing host buckets reported separately.
-    params: dict[str, Any] = {"top_ne": _int_arg(args, "top_ne", 50, 0, 500)}
+    params: dict[str, Any] = {"top_ne": _int_arg(args, "top_ne", 50, 0, 5000)}
     if "exclude_missing_host" in args:
         params["exclude_missing_host"] = bool(args.get("exclude_missing_host"))
     if _severity(args):
@@ -357,6 +354,8 @@ def _query_ume_alarms_raw(args: dict[str, Any]) -> dict[str, Any]:
 
 
 def _aggregate_ume_alarms_raw(args: dict[str, Any]) -> dict[str, Any]:
+    if not str(args.get("group_by") or "").strip():
+        raise ToolArgError("group_by is required; use listNmsAlarmFields to choose a field")
     params: dict[str, Any] = {}
     for k in (
         "group_by",
@@ -442,9 +441,7 @@ def _first_str(*vals: Any) -> str:
 
 
 def _get_managed_ne(args: dict[str, Any]) -> dict[str, Any]:
-    ne_id = str(
-        args.get("ne_id") or args.get("managed_ne_id") or args.get("id") or ""
-    ).strip()
+    ne_id = str(args.get("ne_id") or "").strip()
     if not ne_id:
         return {
             "ok": False,
@@ -473,12 +470,46 @@ def _get_managed_ne(args: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _exec_ack(out: dict[str, Any]) -> dict[str, Any]:
+    if not out.get("ok"):
+        return out
+    data = out.get("data") if isinstance(out.get("data"), dict) else out
+    if isinstance(data, dict) and data.get("job_id"):
+        data = dict(data)
+        data["poll_after_ms"] = 5000
+        data["hint"] = (
+            "Execution started; it has not succeeded yet. Continue independent work, then poll "
+            "getNeExecJob with this job_id after about 5 seconds. Do not resubmit commands while "
+            "the job is running. Inspect terminal, result.ok, summary.failed and every target result before reporting success."
+        )
+    return data if isinstance(data, dict) else {"ok": True, "data": data}
+
+
+def _exec_result_failed(data: Any) -> bool:
+    """Batch ok means the request ran; individual targets may still all fail."""
+    if not isinstance(data, dict):
+        return False
+    if data.get("ok") is False:
+        return True
+    summary = data.get("summary")
+    if isinstance(summary, dict) and isinstance(summary.get("failed"), int) and summary["failed"] > 0:
+        return True
+    results = data.get("results")
+    return isinstance(results, list) and any(isinstance(row, dict) and row.get("ok") is False for row in results)
+
+
 def _exec_managed_ne(args: dict[str, Any]) -> dict[str, Any]:
+    supplied_commands = list(args.get("commands") or [])
+    for target in args.get("targets") or []:
+        supplied_commands.extend(target.get("commands") or [])
+    for command in supplied_commands:
+        try:
+            validate_readonly_cli(command)
+        except ValueError as exc:
+            raise ToolArgError(str(exc)) from None
     targets_raw = args.get("targets")
     ne_ids_raw = args.get("ne_ids")
     nms_ne_ids_raw = args.get("nms_ne_ids")
-    if not isinstance(nms_ne_ids_raw, list) or not nms_ne_ids_raw:
-        nms_ne_ids_raw = args.get("ume_ne_ids")
     shared_cmds_raw = args.get("commands")
     shared_commands = (
         [str(c).strip() for c in shared_cmds_raw if str(c).strip()]
@@ -492,6 +523,13 @@ def _exec_managed_ne(args: dict[str, Any]) -> dict[str, Any]:
     )
     want_async = _should_run_exec_async(args)
 
+    if multi and (args.get("ne_id") or args.get("nms_ne_id")):
+        raise ToolArgError("Do not mix single NE identifiers with batch targets")
+    if multi and _count_exec_ne_targets(args) == 0:
+        raise ToolArgError("targets_required")
+    if _count_exec_ne_targets(args) > 20:
+        raise ToolArgError("too_many_targets (max 20 across targets/ne_ids/nms_ne_ids)")
+
     if multi:
         body: dict[str, Any] = {}
         if isinstance(targets_raw, list) and targets_raw:
@@ -502,13 +540,20 @@ def _exec_managed_ne(args: dict[str, Any]) -> dict[str, Any]:
                 row: dict[str, Any] = {}
                 if str(t.get("ne_id") or "").strip():
                     row["ne_id"] = str(t.get("ne_id")).strip()
-                # Wire still uses ume_ne_id on REST; accept nms_ne_id as preferred model param.
-                nms_id = _first_str(t.get("nms_ne_id"), t.get("ume_ne_id"))
+                # Wire still uses ume_ne_id on REST.
+                nms_id = _first_str(t.get("nms_ne_id"))
+                if bool(row.get("ne_id")) == bool(nms_id):
+                    raise ToolArgError("Each target requires exactly one of ne_id or nms_ne_id")
                 if nms_id:
                     row["ume_ne_id"] = nms_id
                 cmds = t.get("commands")
                 if isinstance(cmds, list) and cmds:
                     row["commands"] = [str(c).strip() for c in cmds if str(c).strip()]
+                effective_commands = row.get("commands", shared_commands)
+                if not effective_commands:
+                    raise ToolArgError("commands_required for every target")
+                if len(effective_commands) > exec_max_commands():
+                    raise ToolArgError("too_many_commands for target")
                 if row:
                     cleaned_targets.append(row)
             body["targets"] = cleaned_targets
@@ -516,6 +561,8 @@ def _exec_managed_ne(args: dict[str, Any]) -> dict[str, Any]:
             body["ne_ids"] = [str(x).strip() for x in ne_ids_raw if str(x).strip()]
         if isinstance(nms_ne_ids_raw, list) and nms_ne_ids_raw:
             body["ume_ne_ids"] = [str(x).strip() for x in nms_ne_ids_raw if str(x).strip()]
+        if (body.get("ne_ids") or body.get("ume_ne_ids")) and not shared_commands:
+            raise ToolArgError("commands_required for ne_ids/nms_ne_ids")
         if shared_commands:
             if len(shared_commands) > exec_max_commands():
                 return {"ok": False, "error": "too_many_commands", "error_code": "too_many_commands"}
@@ -525,28 +572,25 @@ def _exec_managed_ne(args: dict[str, Any]) -> dict[str, Any]:
             body["concurrency"] = _int_arg(args, "concurrency", 4, 1, 8)
         if want_async:
             out = http_post_json("/v1/managed-ne/exec-jobs", body, timeout=60.0)
-            if not out.get("ok"):
-                return out
-            data = out.get("data") if isinstance(out.get("data"), dict) else out
-            return data if isinstance(data, dict) else {"ok": True, "data": data}
+            return _exec_ack(out)
         # Wall clock: many NEs × per-cmd timeout; keep below oclaw MCP override.
         out = http_post_json("/v1/managed-ne/exec-batch", body, timeout=600.0)
         if not out.get("ok"):
             return out
         data = out.get("data") or {}
-        if isinstance(data, dict) and data.get("ok") is False:
+        if _exec_result_failed(data):
             return {"ok": False, "data": data, "error": str(data.get("error") or "exec_batch_failed")}
         return {"ok": True, "data": data}
 
     ne_id = str(args.get("ne_id") or "").strip()
-    nms_ne_id = _first_str(args.get("nms_ne_id"), args.get("ume_ne_id"))
+    nms_ne_id = _first_str(args.get("nms_ne_id"))
     if bool(ne_id) == bool(nms_ne_id):
         return {
             "ok": False,
             "error": "exactly_one_of_ne_id_or_nms_ne_id_required",
             "error_code": "exactly_one_of_ne_id_or_nms_ne_id_required",
             "hint": (
-                "For one NE pass ne_id OR nms_ne_id (alias ume_ne_id). For many NEs pass "
+                "For one NE pass ne_id OR nms_ne_id. For many NEs pass "
                 "ne_ids / nms_ne_ids with shared commands, or targets[] with per-NE commands — "
                 "one call, concurrent on server."
             ),
@@ -564,10 +608,7 @@ def _exec_managed_ne(args: dict[str, Any]) -> dict[str, Any]:
     body["read_timeout_sec"] = _int_arg(args, "read_timeout_sec", 60, 10, 120)
     if want_async:
         out = http_post_json("/v1/managed-ne/exec-jobs", body, timeout=60.0)
-        if not out.get("ok"):
-            return out
-        data = out.get("data") if isinstance(out.get("data"), dict) else out
-        return data if isinstance(data, dict) else {"ok": True, "data": data}
+        return _exec_ack(out)
     out = http_post_json("/v1/managed-ne/exec", body, timeout=300.0)
     if not out.get("ok"):
         return out
@@ -586,7 +627,16 @@ def _get_ne_exec_job(args: dict[str, Any]) -> dict[str, Any]:
             "error_code": "job_id_required",
             "hint": "Pass job_id from execManagedNe async ack.",
         }
-    return http_json("GET", f"/v1/managed-ne/exec-jobs/{quote_ne_id(job_id)}", params=None)
+    out = http_json("GET", f"/v1/managed-ne/exec-jobs/{quote_ne_id(job_id)}", params=None)
+    data = out.get("data")
+    if out.get("ok") and isinstance(data, dict):
+        if data.get("terminal") and (data.get("status") in {"failed", "timeout"}
+                                   or _exec_result_failed(data.get("result"))):
+            return {"ok": False, "error": "ne_exec_job_failed", "data": data}
+        if not data.get("terminal") and data.get("status") == "running":
+            data["poll_after_ms"] = 5000
+            data["hint"] = "Still running. Continue independent work; poll this job_id after about 5 seconds. Do not resubmit."
+    return out
 
 
 def _list_cli_targets(args: dict[str, Any]) -> dict[str, Any]:
@@ -610,9 +660,9 @@ def _list_cli_targets(args: dict[str, Any]) -> dict[str, Any]:
 
 
 def _find_topology_paths(args: dict[str, Any]) -> dict[str, Any]:
-    from_uid = _first_str(args.get("from_nms_ne_id"), args.get("from_ume_ne_id"))
+    from_uid = _first_str(args.get("from_nms_ne_id"))
     from_mid = str(args.get("from_managed_ne_id") or "").strip()
-    to_uid = _first_str(args.get("to_nms_ne_id"), args.get("to_ume_ne_id"))
+    to_uid = _first_str(args.get("to_nms_ne_id"))
     to_mid = str(args.get("to_managed_ne_id") or "").strip()
     if bool(from_uid) == bool(from_mid):
         return {"ok": False, "error": "exactly_one_of_from_nms_ne_id_or_from_managed_ne_id_required"}
@@ -664,7 +714,6 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
                 "is_cleared": {"type": "string", "description": "\"False\" = active only; \"True\" = cleared."},
                 "ne_id": {"type": "string", "description": "Filter only; do not show UUID to users"},
                 "host_name": {"type": "string", "description": "Filter by NE host_name"},
-                "ne_name": {"type": "string", "description": "Legacy alias mapped to keyword"},
                 "keyword": {
                     "type": "string",
                     "description": (
@@ -703,9 +752,9 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
                 "top_ne": {
                     "type": "integer",
                     "minimum": 0,
-                    "maximum": 500,
+                    "maximum": 5000,
                     "default": 50,
-                    "description": "Max NE buckets to return (0 = all, capped at API 5000). Ignored when group_by is set.",
+                    "description": "Max NE buckets to return (0 = all; positive limit up to 5000). Ignored when group_by is set.",
                 },
                 "exclude_missing_host": {
                     "type": "boolean",
@@ -883,8 +932,9 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
         "name": "getManagedNe",
         "description": (
             "Get one **managed** NE by managed ne_id (from listManagedNe / listCliTargets source=managed). "
-            "Response includes capability (device_family, exec_policy_effective, recommended_mode, hints) "
-            "— read it before complex execManagedNe. "
+            "Response includes BACKEND capability (device_family, exec_policy_effective, recommended_mode, hints). "
+            "This MCP independently permits show/display only: backend shell/script capability does not "
+            "authorize scripts here. Native Linux/RouterOS CLI is not exposed by this MCP. "
             "Do NOT pass NMS inventory UUID here — use getNmsNe or execManagedNe(nms_ne_id=...) instead."
         ),
         "inputSchema": {
@@ -894,23 +944,21 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
                     "type": "string",
                     "description": "Managed NE id (not NMS host_name / not NMS ne_id unless they coincide).",
                 },
-                "managed_ne_id": {"type": "string", "description": "Alias for ne_id."},
-                "id": {"type": "string", "description": "Alias for ne_id."},
             },
-            "required": [],
+            "required": ["ne_id"],
             "additionalProperties": False,
         },
     },
     {
         "name": "execManagedNe",
         "description": (
-            f"Run CLI via netx (default read-only: show/display/ping/traceroute; "
+            f"Run single-line read-only show/display CLI via netx ("
             f"max {exec_max_commands()} commands per NE, NETX_NE_EXEC_MAX_COMMANDS). "
-            "Managed NE exec_policy=linux_shell|unrestricted allows shell/script on Linux or "
-            "MikroTik (routeros/switchos) hosts "
-            "(pipes/&&/;/quotes/heredoc / RouterOS multiline OK; check getManagedNe / listManagedNe). "
-            "Single NE: ne_id OR nms_ne_id (+ alias ume_ne_id) + commands. "
-            "Many NEs (batch-first, server concurrency default 4, max 20): "
+            "MCP independently allows single-line read-only show/display only, even when the "
+            "device has an open exec_policy. Shell operators, configuration commands and multiline "
+            "scripts are rejected before HTTP; only read-only output-filter pipes are allowed. "
+            "Single NE: ne_id OR nms_ne_id + commands. "
+            "Many NEs (batch-first, max 20 targets, concurrency default 4, max 8): "
             "(1) same CLI on all → ne_ids[]/nms_ne_ids[] + shared commands; "
             "(2) different CLI per NE (vendor/role) → ONE targets=["
             "{nms_ne_id|ne_id, commands:[…]}, …] — do NOT fall back to one-NE loops. "
@@ -918,14 +966,15 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
             "Default read_timeout_sec=60; on timeout raise to 90–120 — do not blind-retry. "
             "Long or multi-NE work: async=true (or auto when ≥4 NEs) returns job_id immediately; "
             "poll getNeExecJob. Pass async=false to force sync. "
-            "Read getManagedNe.capability before choosing show_only vs script_on_device."
+            "Use getManagedNe.capability to identify the vendor and backend policy; open backend "
+            "policies never expand this MCP's show/display restriction. For batches inspect "
+            "summary.failed and every result: job succeeded/result.ok alone does not mean all targets passed."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "ne_id": {"type": "string"},
                 "nms_ne_id": {"type": "string", "description": "NMS inventory id (preferred)."},
-                "ume_ne_id": {"type": "string", "description": "Legacy alias of nms_ne_id."},
                 "ne_ids": {
                     "type": "array",
                     "items": {"type": "string"},
@@ -938,12 +987,6 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
                     "maxItems": 20,
                     "description": "NMS inventory ne_ids for concurrent batch (shared commands).",
                 },
-                "ume_ne_ids": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "maxItems": 20,
-                    "description": "Legacy alias of nms_ne_ids.",
-                },
                 "targets": {
                     "type": "array",
                     "maxItems": 20,
@@ -952,7 +995,6 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
                         "properties": {
                             "ne_id": {"type": "string"},
                             "nms_ne_id": {"type": "string"},
-                            "ume_ne_id": {"type": "string", "description": "Legacy alias of nms_ne_id."},
                             "commands": {
                                 "type": "array",
                                 "items": {"type": "string"},
@@ -1010,7 +1052,10 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
         "description": (
             "Poll a background execManagedNe job (job_id from async ack). "
             "When terminal=true, result holds the exec/exec-batch payload. "
-            "Do not busy-wait; end the turn and poll later if still running."
+            "Use poll_after_ms (about 5 seconds); continue independent work while waiting. "
+            "Terminal failed/timeout is a tool error and retains the original result for diagnosis."
+            " Batch jobs can finish succeeded with individual failures: inspect result.summary.failed "
+            "and each result.results[].ok before reporting success."
         ),
         "inputSchema": {
             "type": "object",
@@ -1033,9 +1078,9 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
             "properties": {
                 "source": {
                     "type": "string",
-                    "enum": ["managed", "nms", "ume", "all"],
+                    "enum": ["managed", "nms", "all"],
                     "default": "all",
-                    "description": "nms preferred; ume is a legacy alias mapped to the same inventory.",
+                    "description": "nms selects the configured NMS inventory; managed selects managed NEs.",
                 },
                 "keyword": {"type": "string"},
                 "page": {"type": "integer", "minimum": 1, "default": 1},
@@ -1050,8 +1095,8 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
         "description": (
             "Find up to max_paths simple paths between two fabric nodes for troubleshooting "
             "(parallel links between the same NEs count as one hop; see edges[].parallel_links). "
-            "For each endpoint provide exactly one of nms_ne_id (from NMS alarm ne_id; alias "
-            "from_ume_ne_id) or managed_ne_id — resolved to fabric node internally. Returns "
+            "For each endpoint provide exactly one of nms_ne_id (from NMS alarm ne_id) or "
+            "managed_ne_id — resolved to fabric node internally. Returns "
             "shortest paths first with compact label + node/edge summary (detail=summary default). "
             "Use after critical alarms to correlate neighboring NEs before CLI login."
         ),
@@ -1062,10 +1107,6 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
                     "type": "string",
                     "description": "Source NMS ne_id (from alarm ne_id); mutually exclusive with from_managed_ne_id",
                 },
-                "from_ume_ne_id": {
-                    "type": "string",
-                    "description": "Legacy alias of from_nms_ne_id",
-                },
                 "from_managed_ne_id": {
                     "type": "string",
                     "description": "Source managed NE id; mutually exclusive with from_nms_ne_id",
@@ -1073,10 +1114,6 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
                 "to_nms_ne_id": {
                     "type": "string",
                     "description": "Target NMS ne_id; mutually exclusive with to_managed_ne_id",
-                },
-                "to_ume_ne_id": {
-                    "type": "string",
-                    "description": "Legacy alias of to_nms_ne_id",
                 },
                 "to_managed_ne_id": {
                     "type": "string",
@@ -1121,8 +1158,8 @@ TOOL_REQUIRED_SCOPE: dict[str, str] = {
     "queryNmsAlarms": "alarms:read",
     "aggregateNmsAlarms": "alarms:read",
     "runNmsDiagnostics": "alarms:read",
-    "queryNmsNeInventory": "ne:read",
-    "getNmsNe": "ne:read",
+    "queryNmsNeInventory": "alarms:read",
+    "getNmsNe": "alarms:read",
     "queryNmsAlarmsRaw": "alarms:read",
     "aggregateNmsAlarmsRaw": "alarms:read",
     "listNmsAlarmFields": "alarms:read",
@@ -1137,7 +1174,7 @@ TOOL_REQUIRED_SCOPE: dict[str, str] = {
 
 
 def tools_for_scopes(scopes: list[str] | set[str] | frozenset[str] | None) -> list[dict[str, Any]]:
-    """Filter MCP tool list by granted scopes. Empty/None => return all (offline / unauthenticated listing)."""
+    """Filter by granted scopes. None advertises all offline; an empty grant advertises none."""
     if scopes is None:
         return list(HTTP_MCP_TOOLS)
     granted = {str(s).strip().lower() for s in scopes if str(s).strip()}
@@ -1152,12 +1189,56 @@ def tools_for_scopes(scopes: list[str] | set[str] | frozenset[str] | None) -> li
     return out
 
 
+def _validate_arguments(args: Any, schema: dict[str, Any], path: str = "arguments") -> None:
+    """Enforce advertised shapes even when a host skips JSON Schema validation."""
+    kind = schema.get("type")
+    expected = {"object": dict, "array": list, "string": str, "boolean": bool, "integer": int}
+    if kind in expected and (not isinstance(args, expected[kind]) or (kind == "integer" and isinstance(args, bool))):
+        raise ToolArgError(f"{path} must be {kind}")
+    if "enum" in schema and args not in schema["enum"]:
+        raise ToolArgError(f"{path} must be one of {schema['enum']}")
+    if kind == "object":
+        props = schema.get("properties", {})
+        unknown = set(args) - set(props)
+        if schema.get("additionalProperties") is False and unknown:
+            raise ToolArgError(f"{path}: unsupported parameter(s): {', '.join(sorted(unknown))}")
+        for key, value in args.items():
+            if key in props:
+                _validate_arguments(value, props[key], f"{path}.{key}")
+    elif kind == "array":
+        # Command limits are read at invocation time by the handler (env may change).
+        if not path.endswith(".commands") and len(args) > schema.get("maxItems", float("inf")):
+            raise ToolArgError(f"{path} has too many items (max {schema['maxItems']})")
+        if len(args) < schema.get("minItems", 0):
+            raise ToolArgError(f"{path} requires at least {schema['minItems']} item(s)")
+        for i, value in enumerate(args):
+            _validate_arguments(value, schema.get("items", {}), f"{path}[{i}]")
+
+
+_SECRET_KEYS = frozenset({
+    "password", "hop_password", "password_enc", "hop_password_enc", "password_ciphertext",
+    "hop_password_ciphertext", "credential_secret", "secret_key", "token", "access_token",
+    "refresh_token", "authorization", "private_key",
+})
+
+
+def _redact_secrets(value: Any) -> Any:
+    """Keep capability/has_password flags, but never expose structured credentials to a model."""
+    if isinstance(value, dict):
+        return {key: _redact_secrets(item) for key, item in value.items() if str(key).lower() not in _SECRET_KEYS}
+    if isinstance(value, list):
+        return [_redact_secrets(item) for item in value]
+    return value
+
+
 def call_http_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
     fn = _HANDLERS.get(str(name or "").strip())
     if not fn:
         raise ValueError(f"unknown tool: {name}")
     try:
+        schema = next(tool["inputSchema"] for tool in HTTP_MCP_TOOLS if tool["name"] == name)
+        _validate_arguments(args, schema)
         result = fn(dict(args or {}))
     except ToolArgError as exc:
         result = {"ok": False, "error": "invalid_argument", "error_code": "invalid_argument", "detail": str(exc)}
-    return mcp_from_handler_result(result)
+    return mcp_from_handler_result(_redact_secrets(result))

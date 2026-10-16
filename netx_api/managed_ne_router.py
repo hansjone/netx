@@ -7,6 +7,7 @@ from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from .auth_deps import AuthContext, require_user
+from .auth_scopes import has_scope
 from .auth_service import write_audit
 from .db import get_db
 from .device_types import SUPPORTED_VENDORS
@@ -275,6 +276,10 @@ def api_create_exec_job(
 
     uid, uname = _actor(ctx)
     payload = body.model_dump(exclude_none=True)
+    if not has_scope(ctx.scopes, "ne:exec"):
+        raise HTTPException(status_code=403, detail={"error": "insufficient_scope", "required": ["ne:exec"]})
+    if not uid:
+        raise HTTPException(status_code=401, detail={"error": "job_owner_required"})
     is_batch = bool(
         payload.get("targets")
         or payload.get("ne_ids")
@@ -330,7 +335,7 @@ def api_create_exec_job(
             )
             return out
 
-    ack = start_ne_exec_job(kind=kind, arguments=payload, runner=_runner)
+    ack = start_ne_exec_job(kind=kind, arguments=payload, owner_user_id=uid, runner=_runner)
     write_audit(
         db,
         action="ne.exec_job_start",
@@ -349,9 +354,16 @@ def api_get_exec_job(
     job_id: str,
     ctx: Annotated[AuthContext, Depends(require_user)],
 ):
-    """Poll a background exec job started via POST /exec-jobs."""
-    _ = ctx
-    return get_ne_exec_job(job_id)
+    """Poll own jobs; admins (role or admin:users scope) may read any job."""
+    if not has_scope(ctx.scopes, "ne:exec"):
+        raise HTTPException(status_code=403, detail={"error": "insufficient_scope", "required": ["ne:exec"]})
+    uid, _ = _actor(ctx)
+    is_admin = ctx.user.role == "admin" or has_scope(ctx.scopes, "admin:users")
+    out = get_ne_exec_job(job_id, user_id=uid, is_admin=is_admin)
+    if out.get("error_code") in {"job_forbidden", "invalid_job_id", "job_id_required"}:
+        status = 403 if out["error_code"] == "job_forbidden" else 400
+        raise HTTPException(status_code=status, detail=out)
+    return out
 
 
 @router.post("/connect-test")

@@ -46,9 +46,6 @@ WORLD_FLAT_DETAIL_CAP = VIEW_GRAPH_NODE_HARD_CAP
 # Viewport span (display/world units) at/under which we prefer a full region layout
 # instead of stride-thinning — stops “zoomed in still a peppered blob”.
 WORLD_FLAT_CLOSE_SPAN = 28000.0
-# Legacy crush span (pre-LOD). Flat graph is now 1:1 with fabric world_*;
-# this constant only detects stale TopoViewNode overrides from that era.
-WORLD_FLAT_DISPLAY_SPAN = 6000.0
 
 
 def apply_persisted_view_positions(
@@ -553,8 +550,6 @@ def get_flat_view_graph(
     full_max_x = float(extent_row[1])
     full_min_y = float(extent_row[2])
     full_max_y = float(extent_row[3])
-    span_x = max(1.0, full_max_x - full_min_x)
-    span_y = max(1.0, full_max_y - full_min_y)
     # 1:1 with fabric world_* (only origin-shift to ~0). Infinite zoom keeps
     # each packed region block identical to its UME local relative layout.
     scale = 1.0
@@ -768,25 +763,9 @@ def get_flat_view_graph(
         )
         for n in nodes
     ]
-    # Drag overrides in display space (world - origin). Skip legacy rows saved
-    # under the old ~6000 crush — they would yank nodes to the wrong place.
-    override_rows = (
-        db.query(TopoViewNode).filter(TopoViewNode.view_id == view.id).limit(8).all()
-    )
-    display_span = max(span_x, span_y)
-    overrides_ok = False
-    if override_rows and display_span > 0:
-        oxs = [abs(float(r.x or 0)) for r in override_rows]
-        oys = [abs(float(r.y or 0)) for r in override_rows]
-        peak = max(oxs + oys) if (oxs or oys) else 0.0
-        legacy_crush = display_span > WORLD_FLAT_DISPLAY_SPAN * 2 and peak <= WORLD_FLAT_DISPLAY_SPAN * 1.5
-        overrides_ok = (not legacy_crush) and all(
-            0.0 <= float(r.x or 0) <= display_span * 1.2
-            and 0.0 <= float(r.y or 0) <= display_span * 1.2
-            for r in override_rows
-        )
-    if overrides_ok:
-        nodes_out = apply_persisted_view_positions(db, view.id, nodes_out)
+    # Saved placements are authoritative display coordinates. Do not infer an
+    # obsolete coordinate system from their magnitude or reject valid negatives.
+    nodes_out = apply_persisted_view_positions(db, view.id, nodes_out)
 
     edges_out: list[ViewEdgeOut] = []
     if include_edges and fids:

@@ -1,0 +1,40 @@
+MDN-BCP-CN1-ZM8SP#show bgp vpnv6 unicast vrf vpn.giims neighbor in 2407::45:0:0:5:1 | one-line 
+09:50:02 Indonesia Sat Sep 19 2026
+Routes Learned From This Neighbor:
+Status codes: * valid, < last valid, i - internal, s - stale
+Origin codes: i - IGP, e - EGP, ? - incomplete
+Local router ID 124.195.96.248, Local AS 4761, Local port 179
+Remote router ID 10.83.48.3, Remote AS 65254, Remote port 54486
+Total number of routes: 9
+  Valid routes        : 9
+  Invalid routes      : 0
+     Network          Next Hop        Metric     LocPrf     RtPrf   Path
+
+*    2407::45:0:0:2:780/125
+                      2407::45:0:0:5:1
+                                                            20      65254 ?
+*    2407::45:0:0:2:7c4/128
+                      2407::45:0:0:5:1
+                                                            20      65254 ?
+*    2407::45:0:0:2:7c5/128
+                      2407::45:0:0:5:1
+                                                            20      65254 ?
+*    2407::45:0:0:2:800/123
+                      2407::45:0:0:5:1
+                                                            20      65254 ?
+*    2407::45:0:0:2:844/128
+                      2407::45:0:0:5:1
+                                                            20      65254 ?
+*    2407::45:0:0:2:845/128
+                      2407::45:0:0:5:1
+                                                            20      65254 ?
+*    2407::45:0:0:2:880/123
+                      2407::45:0:0:5:1
+                                                            20      65254 ?
+*    2407::45:0:0:2:8c4/128
+                      2407::45:0:0:5:1
+                                                            20      65254 ?
+*    2407::45:0:0:2:8c5/128
+                      2407::45:0:0:5:1
+                                                            20      65254 ?
+MDN-BCP-CN1-ZM8SP#

@@ -87,21 +87,28 @@ def _collect_on_device(
         if conn_holder is not None:
             conn_holder["conn"] = conn
             conn_holder["session_log"] = log_buf
-        # Belt-and-suspenders: hop/bastion nested CLIs and missed session_prep.
-        try:
-            disable_target_paging(
-                conn,
-                vendor=str(creds.get("vendor") or ""),
-                device_type=str(creds.get("device_type") or ""),
-            )
-        except Exception:
-            _log.debug("collection paging disable failed", exc_info=True)
-        prompt = str(conn.find_prompt() or "")
-        # find_prompt / paging-off often leave an extra prompt in the channel;
-        # drain before the first show or Netmiko returns empty (IOSv).
-        try:
-            from .ne_netmiko import drain_read_channel
+        from .ne_netmiko import drain_read_channel, is_cisco_ios_device_type
 
+        device_type = str(creds.get("device_type") or "")
+        # Direct Cisco session_prep already set width/length. A second timing-based
+        # ``terminal length 0`` plus find_prompt() re-introduces leftover prompts
+        # and line-buffer races on IOSv. Keep the extra paging pass for hop/other.
+        need_paging_pass = bool(creds.get("hop_enabled")) or not is_cisco_ios_device_type(
+            device_type
+        )
+        if need_paging_pass:
+            try:
+                disable_target_paging(
+                    conn,
+                    vendor=str(creds.get("vendor") or ""),
+                    device_type=device_type,
+                )
+            except Exception:
+                _log.debug("collection paging disable failed", exc_info=True)
+        # Transcript header only — never find_prompt() here (sends Enter).
+        base = str(getattr(conn, "base_prompt", "") or "").strip()
+        prompt = f"{base}#" if base else ""
+        try:
             drain_read_channel(conn)
         except Exception:
             _log.debug("collection channel drain failed", exc_info=True)

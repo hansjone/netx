@@ -332,8 +332,8 @@ class ResolveAuditCommandsTests(unittest.TestCase):
         )
         self.assertEqual(out, [prompt + "show ip interface brief"])
 
-    def test_zte_real_backspace_redraw_reconstructs_full_command(self) -> None:
-        """Real ZTE device redraws via backspace runs (not CSI cursor moves).
+    def test_zte_synthetic_backspace_redraw_reconstructs_full_command(self) -> None:
+        """Synthetic ZTE-style replay; no missing field capture is assumed.
 
         Up-arrow recalls ``show interface brief``, left-arrows move the cursor
         after ``show``, then ``ip`` is inserted.  The device redraws using
@@ -344,8 +344,6 @@ class ResolveAuditCommandsTests(unittest.TestCase):
         (standard terminal behaviour) so the recalled text survives the redraw
         and the full edited line is reconstructed.
         """
-        import os
-
         from netx_api.webcrt_channel import (
             _live_input_line,
             _stdout_has_inplace_edit,
@@ -353,12 +351,13 @@ class ResolveAuditCommandsTests(unittest.TestCase):
             render_pty_line,
         )
 
-        fixture = os.path.join(os.path.dirname(__file__), "fixtures",
-                               "zte_history_edit_stdout.txt")
-        with open(fixture, encoding="utf-8") as f:
-            stdout = f.read()
-
         prompt = "AL5458-ACC-6120HS#"
+        # Recall a command, move left without deleting, then redraw the edited suffix.
+        # The final command never appears as one contiguous substring in the replay.
+        recalled = "show interface brief"
+        stdout = prompt + recalled + ("\x08" * len("interface brief")) + "\x1b[Kip interface brief"
+        self.assertNotIn("show ip interface brief", stdout)
+
         expected = prompt + "show ip interface brief"
 
         # render_pty_line must reconstruct the full edited command.

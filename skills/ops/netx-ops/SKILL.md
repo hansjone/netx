@@ -8,7 +8,7 @@ description: netx 运维：告警、网元、只读 CLI。
 处理 netx **告警 / 网元清单 / 只读 CLI** 时遵循本手册。  
 画布布图不在本 skill（见 **netx-topology**）。本手册里的「路径」仅指 `findTopologyPaths` 查两端关联。
 
-**工具名**：DSH 为 `netx__` + stem（如 `netx__queryNmsAlarms`）；MCP 多为同名裸 stem。下文一律写 stem。
+**工具名**：DSH 为 `netx__` + stem（如 `netx__queryNmsAlarms`）；独立 `netx-mcp` 使用同名裸 stem，共 15 个。下文一律写 stem。模型入参只用 `nms_ne_id/nms_ne_ids`；旧 `ume_*`、getManagedNe 的 `id/managed_ne_id` 别名已删除。
 
 **两套「一批」（勿混）：**
 
@@ -23,7 +23,7 @@ description: netx 运维：告警、网元、只读 CLI。
 
 ## 1. 总原则
 
-1. **先新鲜度，再结论**：`runNmsDiagnostics` 或 `aggregateNmsAlarms` → 读 `meta.last_seen_*`。过旧则按快照：时间窗落在 min~max 内，禁止默认「现在−30 分钟」。
+1. **先新鲜度，再结论**：`runNmsDiagnostics` → 读全库 `meta.last_seen_*`。用户问最近一小时则按用户时区查询真实时间窗；若为空且快照过旧，只能说当前数据无法判断。可另按快照 max 前一小时补充历史分析，明确日期，不冒充当前告警。带过滤的 aggregate 元数据只代表过滤后的窗口。
 2. **证据优先**：有告警须有级别计数和/或 Top `host_name`；否则写「证据不足」，禁止臆造根因。
 3. **对用户**：只展示 **host_name**；**严禁**出现任何 UUID/`ne_id`。无 `host_name` 的行当垃圾丢弃（不顶替 label、不提「缺失」）。工具入参仍可用 id，但不得写入对用户可见正文。
 4. **短问**：能 ≤3 次工具调用就闭环的，先聚合/过滤，禁止无过滤翻全库。复杂关联（dying gasp、A<>B CLI）不受 3 次硬顶，但仍须有过滤与目标。
@@ -67,7 +67,10 @@ description: netx 运维：告警、网元、只读 CLI。
 - 命令相同：`nms_ne_ids` 或 `ne_ids` + 共享 `commands`
 - 命令不同（厂商/角色不同）：`targets=[{nms_ne_id|ne_id, commands:[…]}, …]`，仍一次调用
 - 超时：加大 `read_timeout_sec` 或减条数；禁止同参盲重试
-- 只读：`show` / `display` / `ping` / `traceroute` 及带 `?` 的探索；配置类不做
+- 独立 MCP 只允许单行 `show` / `display`，支持只读输出过滤和 `?` 探索；禁止配置、shell、重定向、命令拼接。后端 `linux_shell/unrestricted` 不能解除 MCP 门禁。
+- `async=true` 或多台自动异步返回 job_id 仅代表开始；约 5 秒后用 `getNeExecJob` 有界轮询，期间可继续独立工作。单台须 `terminal=true` 且 `result.ok=true`；批量还须核对 `result.summary.failed=0` 和每条 `result.results[].ok=true`。`status=succeeded` / `result.ok=true` 仍可能是部分成功，要分别报告成功和失败目标。连接失败/timeout 不能当作登录成功，也不要重提相同 job 或整批重跑已成功设备。
+- `getManagedNe.capability` 是后端设备能力；独立 MCP 仍只允许单行 show/display，后端 Linux/RouterOS 开放策略不会放宽此门禁。NAS/VPS/RouterOS 原生 CLI 当前不能通过这组 MCP 执行；连接测试须明确另用 netx Web/API，不能把 API 登录证据写成 MCP 原生 CLI 执行成功。
+- 同一 IP 有多个纳管记录时，结合用户指定厂商与 `vendor/device_type` 选择 ID，不能取第一条 generic 记录就执行。`connect_status` 是上次连接测试状态，exec 成功不会自动刷新；本次登录/查询结论以本次 job 的逐台结果和有效正文为准。空正文或只有命令头不算查询通过。
 
 **✓ 同命令多台**
 
@@ -180,7 +183,7 @@ Neighbour / PW / Tunnel 等控制面量多 **不当断纤**，除非用户问的
 - **优先复用本会话已成功过的命令**（含同厂其他台验证过的）：新台/下一批先试这些，再对失败子集另探；不要一失败就换全员命令。
 - 多台一批时：用 `targets` 给失败台换命令，或先一批共同命令 → 只对失败子集再一批探测；不要为了一台把成功台的结果丢掉重来。
 
-### `?` 规则（`show` / `display` / `ping` 等同一套）
+### `?` 规则（`show` / `display`）
 
 1. 报错中的 **`^`** 标出错位置 → **`^` 之前**已正确 → 对该前缀加 `?` 列下一级。  
 2. `?` 可紧接在部分单词后（`show optical?`、`display inter?`），不必强制空格再写 `?`。  

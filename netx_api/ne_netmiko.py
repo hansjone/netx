@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 from typing import Any
 
@@ -138,6 +139,35 @@ def drain_read_channel(
 
 def _send_command_expect_prompt(conn: Any, cmd: str, *, read_timeout: int) -> str:
     device_type = getattr(conn, "device_type", "")
+    if isinstance(device_type, str) and is_cisco_ios_device_type(device_type):
+        # IOSv has the same late-prompt race as RouterOS: auto_find_prompt sends
+        # a newline after our drain and its reply can terminate the next show.
+        # Use the session's cached hostname, but require a full prompt line so
+        # "R2 uptime ..." inside show version cannot end the command early.
+        #
+        # cmd_verify must stay False: Netmiko hardcodes a 10s echo wait, and
+        # IOSv often echoes ``show version | include ...`` slower than that
+        # (live: ~13s) even when the command itself succeeds. Correctness comes
+        # from drain_read_channel + full-line expect_string, not echo verify.
+        base_prompt = getattr(conn, "base_prompt", "")
+        if not isinstance(base_prompt, str) or not base_prompt.strip():
+            raise ValueError("cisco_base_prompt_missing")
+        prompt_pattern = rf"(?m:^{re.escape(base_prompt.strip())}[>#][ \t]*$)"
+        out = str(
+            conn.send_command(
+                command_string=cmd,
+                read_timeout=read_timeout,
+                auto_find_prompt=False,
+                expect_string=prompt_pattern,
+                cmd_verify=False,
+            )
+            or ""
+        )
+        # Leftover-prompt races still yield a silent empty body with ok=true at
+        # higher layers. Fail loud here — never re-send the command.
+        if not out.strip():
+            raise ValueError("cisco_empty_show_output")
+        return out
     if isinstance(device_type, str) and device_type.lower().startswith("mikrotik"):
         # find_prompt sends an extra Enter *after* our channel drain. RouterOS
         # can repaint that old prompt after send_command starts, ending the read
@@ -179,8 +209,10 @@ def send_show_command(conn: Any, command: str, *, read_timeout: int = 120) -> st
     Prefer ``send_command`` over ``send_command_timing`` for long config dumps:
     idle during ``Building configuration...`` truncates timing reads.
 
-    ``cmd_verify=False``: Netmiko's default echo check often raises
-    ``Pattern not detected: 'show\\ lldp\\ ...'`` on IOSv / hop / slow echo paths.
+    Cisco uses ``cmd_verify=False`` with a full-line prompt expect after drain;
+    Netmiko's echo verify is hardcoded to 10s and false-fails slow IOSv echoes.
+    Other drivers also use ``cmd_verify=False``: the default echo check often
+    raises ``Pattern not detected`` on hop / slow echo paths.
     """
     cmd = str(command or "").strip()
     if not cmd:
@@ -188,5 +220,9 @@ def send_show_command(conn: Any, command: str, *, read_timeout: int = 120) -> st
 
     # IOSv / hop: find_prompt / paging-off often leave an extra prompt in the
     # channel; drain so send_command does not match that leftover immediately.
-    drain_read_channel(conn)
+    device_type = getattr(conn, "device_type", "")
+    if isinstance(device_type, str) and is_cisco_ios_device_type(device_type):
+        drain_read_channel(conn, idle_reads=6, pause_sec=0.08)
+    else:
+        drain_read_channel(conn)
     return _send_command_expect_prompt(conn, cmd, read_timeout=read_timeout)

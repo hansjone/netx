@@ -10,10 +10,10 @@ def test_move_nodes_in_layout_schema_and_catalog() -> None:
     tool = next(t for t in HTTP_MCP_TOOLS if t["name"] == "layoutTopologyView")
     enum = tool["inputSchema"]["properties"]["action"]["enum"]
     assert "move_nodes" in enum
-    assert "sink_nodes" in enum
+    assert "sink_nodes" not in enum
     cat = list_layout_catalog()
     assert "move_nodes" in cat["actions"]
-    assert "sink_nodes" in cat["actions"]
+    assert "sink_nodes" not in cat["actions"]
 
 
 def test_move_nodes_requires_ids_and_views() -> None:

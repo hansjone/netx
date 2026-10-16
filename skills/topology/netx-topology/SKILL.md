@@ -317,7 +317,7 @@ sinkTopologyDualUnits({
 |--------|------|
 | `layout` | 小图 / 剩余块：`compact` / `corridor` / `rings` / `unstick` |
 | `layout_dual_unit` | **仅**重布已沉的那一只眼；椭圆弧带 + 空心眼 |
-| `move_nodes` / `sink_nodes` | **后续下沉主路径**；`park` 块扫 |
+| `move_nodes` | **后续下沉主路径**；`park` 块扫 |
 | `orbit_sweep` | **眼后精修主工具**：`until_limit` 或 `node_id`；`objective=crossing\|total` |
 | `clear_edge_hits` | 眼 sink **可**（须 `portal_ids`；交叉不升） |
 | `pull_far_chains` | 眼 sink **可**：朝门户中点收远走廊/孤立点 |
@@ -376,3 +376,13 @@ sinkTopologyDualUnits({
 4. 机器上常残留多份旧 MCP 进程 → 精修前 catalog 若仍缺 action，**杀光再启**；勿用旧进程半截交付，勿改走 HTTP/临时 py。
 
 拓扑页开「实时同步」可看落笔。勿用告警/CLI MCP 写拓扑。
+
+## MCP 异步与失败处理
+
+小图先用 `layoutTopologyView(view_id=...,action=layout,recipe=compact,mode=preview)` 看提案，再 `mode=apply,params={background:true}` 保存。`job_id/status=running/applied=false` 表示尚未完成；用同一台机器、同一任务目录的 `layoutTopologyView(action=job_status,params={job_id:...})` 轮询。成功需 `status=done` 且 `result.applied=true`，随后 `getTopologyView(detail=full)` 回读坐标。没有 HTTP layout job 接口。
+
+任务状态在 MCP 的 `NETX_LAYOUT_JOB_DIR`（默认 data/runtime/layout_jobs）落盘，换机器/目录不能读同一 job。`job_cancel` 只请求协作取消，不承诺回滚。复制/移动/下沉是多步 HTTP 操作；遇到错误或 `write_completed=true` 先读两端现状，不盲重试。坐标保存失败时不继续删除源成员。
+
+只读 token 不包含 `ne:write`，将看不到布局/建图工具；preview/job_status 目前也随 layout 工具受该权限限制。修改的是 netx 画布与 Fabric 元数据，不向真实设备下配置。需要演练时新建验收视图，避免覆盖既有图。
+
+布局任务成功和评分模型评价分别记录。评分仅供诊断，需结合图形与业务需求；不能仅凭总分判定布局通过或失败。评分模型的校准留待后续专项，本轮不调整算法或阈值。
