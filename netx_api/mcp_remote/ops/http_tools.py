@@ -9,7 +9,6 @@ from __future__ import annotations
 import os
 from typing import Any, Callable
 
-from .cli_guard import validate_readonly_cli
 from netx_api.mcp_remote.asgi_client import http_json, http_post_json, mcp_from_handler_result, quote_ne_id
 
 _EXEC_MAX_COMMANDS_CAP = 50
@@ -499,14 +498,8 @@ def _exec_result_failed(data: Any) -> bool:
 
 
 def _exec_managed_ne(args: dict[str, Any]) -> dict[str, Any]:
-    supplied_commands = list(args.get("commands") or [])
-    for target in args.get("targets") or []:
-        supplied_commands.extend(target.get("commands") or [])
-    for command in supplied_commands:
-        try:
-            validate_readonly_cli(command)
-        except ValueError as exc:
-            raise ToolArgError(str(exc)) from None
+    # Command allow/deny is enforced by REST ne_exec_guard per device exec_policy
+    # (readonly vs linux_shell/unrestricted). MCP does not apply a stricter gate.
     targets_raw = args.get("targets")
     ne_ids_raw = args.get("ne_ids")
     nms_ne_ids_raw = args.get("nms_ne_ids")
@@ -933,8 +926,8 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
         "description": (
             "Get one **managed** NE by managed ne_id (from listManagedNe / listCliTargets source=managed). "
             "Response includes BACKEND capability (device_family, exec_policy_effective, recommended_mode, hints). "
-            "This MCP independently permits show/display only: backend shell/script capability does not "
-            "authorize scripts here. Native Linux/RouterOS CLI is not exposed by this MCP. "
+            "execManagedNe follows the same per-device exec_policy as REST/Web "
+            "(readonly → show/display/ping; linux_shell/unrestricted → native shell/RouterOS). "
             "Do NOT pass NMS inventory UUID here — use getNmsNe or execManagedNe(nms_ne_id=...) instead."
         ),
         "inputSchema": {
@@ -952,11 +945,12 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
     {
         "name": "execManagedNe",
         "description": (
-            f"Run single-line read-only show/display CLI via netx ("
-            f"max {exec_max_commands()} commands per NE, NETX_NE_EXEC_MAX_COMMANDS). "
-            "MCP independently allows single-line read-only show/display only, even when the "
-            "device has an open exec_policy. Shell operators, configuration commands and multiline "
-            "scripts are rejected before HTTP; only read-only output-filter pipes are allowed. "
+            f"Run CLI on managed NEs via netx (max {exec_max_commands()} commands per NE, "
+            "NETX_NE_EXEC_MAX_COMMANDS). Allow/deny matches REST/Web: each device's "
+            "exec_policy (readonly → show/display/ping/traceroute + output-filter pipes; "
+            "linux_shell/unrestricted on Linux/MikroTik → native shell or RouterOS, including "
+            "multiline scripts within platform limits). Call getManagedNe.capability first when "
+            "unsure which command style the device accepts. "
             "Single NE: ne_id OR nms_ne_id + commands. "
             "Many NEs (batch-first, max 20 targets, concurrency default 4, max 8): "
             "(1) same CLI on all → ne_ids[]/nms_ne_ids[] + shared commands; "
@@ -966,9 +960,8 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
             "Default read_timeout_sec=60; on timeout raise to 90–120 — do not blind-retry. "
             "Long or multi-NE work: async=true (or auto when ≥4 NEs) returns job_id immediately; "
             "poll getNeExecJob. Pass async=false to force sync. "
-            "Use getManagedNe.capability to identify the vendor and backend policy; open backend "
-            "policies never expand this MCP's show/display restriction. For batches inspect "
-            "summary.failed and every result: job succeeded/result.ok alone does not mean all targets passed."
+            "For batches inspect summary.failed and every result: job succeeded/result.ok alone "
+            "does not mean all targets passed."
         ),
         "inputSchema": {
             "type": "object",

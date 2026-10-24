@@ -1,11 +1,11 @@
 ---
 name: netx-ops
-description: netx 运维：告警、网元、只读 CLI。
+description: netx 运维：告警、网元、纳管 CLI（按 exec_policy）。
 ---
 
 # netx-ops（告警 · 清单 · 纳管登录）
 
-处理 netx **告警 / 网元清单 / 只读 CLI** 时遵循本手册。  
+处理 netx **告警 / 网元清单 / 纳管 CLI** 时遵循本手册。  
 画布布图不在本 skill（见 **netx-topology**）。本手册里的「路径」仅指 `findTopologyPaths` 查两端关联。
 
 **工具名**：DSH 为 `netx__` + stem（如 `netx__queryNmsAlarms`）；远程 `/mcp`（`?groups=ops`）使用同名裸 stem，共 15 个。下文一律写 stem。模型入参只用 `nms_ne_id/nms_ne_ids`；旧 `ume_*`、getManagedNe 的 `id/managed_ne_id` 别名已删除。
@@ -67,9 +67,9 @@ description: netx 运维：告警、网元、只读 CLI。
 - 命令相同：`nms_ne_ids` 或 `ne_ids` + 共享 `commands`
 - 命令不同（厂商/角色不同）：`targets=[{nms_ne_id|ne_id, commands:[…]}, …]`，仍一次调用
 - 超时：加大 `read_timeout_sec` 或减条数；禁止同参盲重试
-- 独立 MCP 只允许单行 `show` / `display`，支持只读输出过滤和 `?` 探索；禁止配置、shell、重定向、命令拼接。后端 `linux_shell/unrestricted` 不能解除 MCP 门禁。
+- 命令范围与 REST/Web **相同**：看该设备 `exec_policy`（先 `getManagedNe.capability`）。`readonly` → 单行 `show`/`display`（及 ping/traceroute）+ 只读输出过滤 / `?` 探索；`linux_shell`/`unrestricted`（Linux、MikroTik）→ 可跑原生命令与多行脚本（仍受平台长度/行数上限）。不要对 `readonly` 设备发配置或 shell。
 - `async=true` 或多台自动异步返回 job_id 仅代表开始；约 5 秒后用 `getNeExecJob` 有界轮询，期间可继续独立工作。单台须 `terminal=true` 且 `result.ok=true`；批量还须核对 `result.summary.failed=0` 和每条 `result.results[].ok=true`。`status=succeeded` / `result.ok=true` 仍可能是部分成功，要分别报告成功和失败目标。连接失败/timeout 不能当作登录成功，也不要重提相同 job 或整批重跑已成功设备。
-- `getManagedNe.capability` 是后端设备能力；独立 MCP 仍只允许单行 show/display，后端 Linux/RouterOS 开放策略不会放宽此门禁。NAS/VPS/RouterOS 原生 CLI 当前不能通过这组 MCP 执行；连接测试须明确另用 netx Web/API，不能把 API 登录证据写成 MCP 原生 CLI 执行成功。
+- `getManagedNe.capability` 的 `exec_policy_effective` / `recommended_mode` 决定命令风格；开放策略的设备用厂商原生 CLI（RouterOS `/…`、Linux shell），网络设备用 show/display。不能把 API 登录证据写成 CLI 执行成功。
 - 同一 IP 有多个纳管记录时，结合用户指定厂商与 `vendor/device_type` 选择 ID，不能取第一条 generic 记录就执行。`connect_status` 是上次连接测试状态，exec 成功不会自动刷新；本次登录/查询结论以本次 job 的逐台结果和有效正文为准。空正文或只有命令头不算查询通过。
 
 **✓ 同命令多台**

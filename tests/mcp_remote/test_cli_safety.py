@@ -1,4 +1,7 @@
-"""无设备/网络副作用地验证 MCP 执行边界与终态失败语义。"""
+"""无设备/网络副作用地验证 MCP exec 转发与终态失败语义。
+
+命令允许/拒绝由 REST ne_exec_guard（设备 exec_policy）负责；MCP 不再前置 show/display 硬门。
+"""
 import json
 from unittest.mock import patch
 
@@ -7,20 +10,37 @@ import pytest
 from netx_api.mcp_remote.ops.http_tools import call_http_tool
 
 
-@pytest.mark.parametrize("command", [
-    "reboot", "configure terminal", "show version; reboot", "show version && reboot",
-    "show version | reboot", "show version | redirect flash:config", "show $(reboot)",
-    "show `reboot`", "display version\nreboot", "show version\u2028reboot",
-    "show version > config", "show version\x00", "/system reboot",
-])
+@pytest.mark.parametrize(
+    "command",
+    [
+        "reboot",
+        "configure terminal",
+        "show version; reboot",
+        "ip -br addr",
+        "/interface print",
+        "/system reboot",
+    ],
+)
 @pytest.mark.parametrize("batch", [False, True])
-def test_unsafe_cli_never_reaches_http(command, batch):
-    args = {"targets": [{"ne_id": "test-only", "commands": [command]}]} if batch else {
-        "ne_id": "test-only", "commands": [command], "async": True}
-    with patch("netx_api.mcp_remote.ops.http_tools.http_post_json") as post:
+def test_mcp_forwards_commands_to_http_for_policy_enforcement(command, batch):
+    """MCP must not reject by prefix; backend policy decides."""
+    args = (
+        {"targets": [{"ne_id": "test-only", "commands": [command]}], "async": False}
+        if batch
+        else {"ne_id": "test-only", "commands": [command], "async": False}
+    )
+    with patch(
+        "netx_api.mcp_remote.ops.http_tools.http_post_json",
+        return_value={"ok": True, "data": {"ok": True}},
+    ) as post:
         result = call_http_tool("execManagedNe", args)
-    assert result.get("isError") is True
-    post.assert_not_called()
+    assert not result.get("isError")
+    post.assert_called_once()
+    body = post.call_args.args[1]
+    if batch:
+        assert body["targets"][0]["commands"] == [command]
+    else:
+        assert body["commands"] == [command]
 
 
 @pytest.mark.parametrize("command", ["show version", "display version", "show bgp summary | one-line"])

@@ -49,7 +49,7 @@ http://127.0.0.1:8890/mcp?groups=ops
 ## 安全
 
 - `execManagedNe` 等写工具带 `annotations.readOnlyHint=false`
-- CLI 硬门（`cli_guard`）：仅单行 `show`/`display`，拒绝 shell 与破坏性命令
+- CLI 允许范围与 REST/Web 一致：按设备 `exec_policy`（`ne_exec_guard`）校验；`readonly` 仅 show/display/ping 等，`linux_shell`/`unrestricted` 允许 Linux/RouterOS 原生命令
 - 异步 exec / layout job：先返回 job id，再用轮询工具查询
 
 ## 版本
