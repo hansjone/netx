@@ -16,13 +16,13 @@ param(
 # Check for a newer NetX Windows package.
 #
 # Default (no config needed):
-#   GitHub primary + Forgejo mirror fallback (git.avelo.top).
+#   GitHub primary + Forgejo mirror fallback (git.hansjone.top).
 #   Probe every reachable source and pick the highest version;
 #   on equal versions prefer GitHub (listed first).
 #
 # Optional overrides:
 #   NETX_UPDATE_SOURCES=github,forgejo
-#   NETX_UPDATE_FORGEJO_URL=https://git.avelo.top/api/v1/repos/hansjone/netx/releases/latest
+#   NETX_UPDATE_FORGEJO_URL=https://git.hansjone.top/api/v1/repos/hansjone/netx/releases/latest
 #   NETX_UPDATE_GITHUB_REPO=hansjone/netx
 #   NETX_UPDATE_URL=... manifest JSON
 #   NETX_UPDATE_TOKEN=... private API token
@@ -50,7 +50,7 @@ $UpdateUrl = Get-Cfg "NETX_UPDATE_URL" $UpdateUrl
 $FallbackUrl = Get-Cfg "NETX_UPDATE_FALLBACK_URL" $FallbackUrl
 $ForgejoUrl = Get-Cfg "NETX_UPDATE_FORGEJO_URL" $ForgejoUrl
 if (-not $ForgejoUrl) {
-    $ForgejoUrl = "https://git.avelo.top/api/v1/repos/hansjone/netx/releases/latest"
+    $ForgejoUrl = "https://git.hansjone.top/api/v1/repos/hansjone/netx/releases/latest"
 }
 $GithubRepo = Get-Cfg "NETX_UPDATE_GITHUB_REPO" $GithubRepo
 if (-not $GithubRepo) { $GithubRepo = "hansjone/netx" }

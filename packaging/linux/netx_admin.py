@@ -29,7 +29,7 @@ import urllib.request
 from pathlib import Path
 
 DEFAULT_GITHUB_REPO = "hansjone/netx"
-DEFAULT_FORGEJO_URL = "https://git.avelo.top/api/v1/repos/hansjone/netx/releases/latest"
+DEFAULT_FORGEJO_URL = "https://git.hansjone.top/api/v1/repos/hansjone/netx/releases/latest"
 USER_AGENT = "netx-linux-updater"
 
 

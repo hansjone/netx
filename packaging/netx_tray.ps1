@@ -630,7 +630,7 @@ $miAutostart = New-NetxMenuItem -Text (T "Start with Windows" "登录 Windows �
 $miAutoUpdate = New-NetxMenuItem -Text (T "Daily automatic updates" "每日自动更新") -Glyph "check"
 $miSource = New-NetxMenuItem -Text (T "Update source" "更新源") -Glyph "update"
 $miSourceGithub = New-NetxMenuItem -Text (T "GitHub (default)" "GitHub（默认）") -Glyph "check"
-$miSourceForgejo = New-NetxMenuItem -Text "git.avelo.top" -Glyph "check"
+$miSourceForgejo = New-NetxMenuItem -Text "git.hansjone.top" -Glyph "check"
 $miReconfig = New-NetxMenuItem -Text (T "Reconfigure database…" "重新配置数据库…") -Glyph "repair"
 $miPgPort = New-NetxMenuItem -Text (T "Built-in database port…" "内置数据库端口…") -Glyph "settings"
 $miLogs = New-NetxMenuItem -Text (T "Open log folder" "打开日志目录") -Glyph "log"
@@ -683,7 +683,7 @@ Set-NetxDropDownChrome $miSettings.DropDown
 Set-NetxDropDownChrome $miSource.DropDown
 
 # Update source = NETX_UPDATE_SOURCES in .env (read by check_update.ps1).
-# Empty = default (GitHub first, git.avelo.top mirror as fallback); "forgejo" = mirror only.
+# Empty = default (GitHub first, git.hansjone.top mirror as fallback); "forgejo" = mirror only.
 function Get-NetxUpdateSource {
     $v = [string](Read-DotEnv -Path $envPath)["NETX_UPDATE_SOURCES"]
     if ($v.Trim().ToLowerInvariant() -eq "forgejo") { return "forgejo" }
@@ -781,9 +781,9 @@ function Set-NetxUpdateSource([string]$Source) {
         return
     }
     Show-NetxToast $(if ($value) {
-            (T "Updates now come from git.avelo.top." "更新源已切换为 git.avelo.top。")
+            (T "Updates now come from git.hansjone.top." "更新源已切换为 git.hansjone.top。")
         } else {
-            (T "Updates now come from GitHub (git.avelo.top as fallback)." "更新源已切换为 GitHub（git.avelo.top 作为备用）。")
+            (T "Updates now come from GitHub (git.hansjone.top as fallback)." "更新源已切换为 GitHub（git.hansjone.top 作为备用）。")
         })
 }
 $miSourceGithub.add_Click({ Invoke-NetxTrayDeferred { Set-NetxUpdateSource "github" } })

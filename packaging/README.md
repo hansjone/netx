@@ -106,12 +106,12 @@ Stops services, replaces program folders (`netx_api`, `web`, `packaging`, `postg
 
 ## Check / apply updates
 
-**Defaults (no `.env` needed):** probe **GitHub** (`hansjone/netx`) and Forgejo mirror (`https://git.avelo.top/hansjone/netx`), then use the **newest reachable** version. Same version → prefer GitHub.
+**Defaults (no `.env` needed):** probe **GitHub** (`hansjone/netx`) and Forgejo mirror (`https://git.hansjone.top/hansjone/netx`), then use the **newest reachable** version. Same version → prefer GitHub.
 
 ```env
 # Optional overrides in ProgramData\NetX\.env
 # NETX_UPDATE_SOURCES=github,forgejo
-# NETX_UPDATE_FORGEJO_URL=https://git.avelo.top/api/v1/repos/hansjone/netx/releases/latest
+# NETX_UPDATE_FORGEJO_URL=https://git.hansjone.top/api/v1/repos/hansjone/netx/releases/latest
 # NETX_UPDATE_GITHUB_REPO=hansjone/netx
 # NETX_UPDATE_URL=https://cdn.example.com/netx/manifest.json
 # NETX_UPDATE_TOKEN=******
@@ -119,9 +119,9 @@ Stops services, replaces program folders (`netx_api`, `web`, `packaging`, `postg
 
 | Variable | Role |
 |----------|------|
-| `NETX_UPDATE_FORGEJO_URL` | Forgejo/Gitea `releases/latest` API (default: git.avelo.top mirror) |
+| `NETX_UPDATE_FORGEJO_URL` | Forgejo/Gitea `releases/latest` API (default: git.hansjone.top mirror) |
 | `NETX_UPDATE_GITHUB_REPO` | GitHub `owner/repo` (default `hansjone/netx`) |
-| `NETX_UPDATE_SOURCES` | Probe order / tie-break order, e.g. `github,forgejo`. Tray → Settings → Update source sets it: *GitHub (default)* = empty (GitHub + git.avelo.top fallback), *git.avelo.top* = `forgejo` only |
+| `NETX_UPDATE_SOURCES` | Probe order / tie-break order, e.g. `github,forgejo`. Tray → Settings → Update source sets it: *GitHub (default)* = empty (GitHub + git.hansjone.top fallback), *git.hansjone.top* = `forgejo` only |
 | `NETX_UPDATE_URL` | Optional custom JSON manifest |
 
 ```powershell
@@ -136,7 +136,7 @@ Both release hosts must publish the same **Setup.exe and `.sha256` sidecar**. `c
 Release from a clean, version-matched checkout in this order:
 
 1. **Build and publish GitHub** — ` .\packaging\publish_release.ps1 -Version x.y.z` builds, verifies and uploads Setup.exe plus SHA-256.
-2. **Forgejo** — publish the same Setup.exe and checksum sidecar (default: public domain `https://git.avelo.top`):
+2. **Forgejo** — publish the same Setup.exe and checksum sidecar (default: public domain `https://git.hansjone.top`):
 
 ```powershell
 # One-time: User env var (never commit the token)
@@ -144,7 +144,7 @@ Release from a clean, version-matched checkout in this order:
 [Environment]::SetEnvironmentVariable("NETX_FORGEJO_TOKEN", "your_token", "User")
 # Restart Cursor / open a new terminal so the agent/scripts see it
 
-# Default: https://git.avelo.top
+# Default: https://git.hansjone.top
 .\packaging\publish_forgejo_release.ps1 -Version 0.4.11
 
 # Optional when LAN IP is reachable:
@@ -153,13 +153,13 @@ Release from a clean, version-matched checkout in this order:
 
 | Role | URL |
 |------|-----|
-| Publish default | `https://git.avelo.top` (`-ForgejoBase` default) |
+| Publish default | `https://git.hansjone.top` (`-ForgejoBase` default) |
 | Optional LAN | `http://10.0.0.131:3000` |
-| Update probe (default) | GitHub + `https://git.avelo.top/.../releases/latest` |
+| Update probe (default) | GitHub + `https://git.hansjone.top/.../releases/latest` |
 
 Verify:
 - Confirm each release has `NetX-Setup-x.y.z.exe` and `NetX-Setup-x.y.z.exe.sha256`.
-- https://git.avelo.top/hansjone/netx/releases
+- https://git.hansjone.top/hansjone/netx/releases
 - Probe: `.\packaging\check_update.ps1` → both `github` and `forgejo` reachable with the new version
 
 Token: `NETX_FORGEJO_TOKEN` (or `FORGEJO_TOKEN`).

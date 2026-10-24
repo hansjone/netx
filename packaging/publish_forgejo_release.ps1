@@ -1,6 +1,6 @@
 ﻿param(
     [string]$Version = "",
-    [string]$ForgejoBase = "https://git.avelo.top",
+    [string]$ForgejoBase = "https://git.hansjone.top",
     [string]$Owner = "hansjone",
     [string]$Repo = "netx",
     [string]$Token = "",
@@ -9,7 +9,7 @@
 
 # Publish Windows Setup.exe (+ the Linux tar.gz when present in the release dir) to Forgejo/Gitea (mirror sync does NOT copy GitHub Release files).
 # Requires a Forgejo token with repo write (Settings → Applications → Generate New Token).
-# Default: https://git.avelo.top (public domain). LAN IP only when explicitly reachable.
+# Default: https://git.hansjone.top (public domain). LAN IP only when explicitly reachable.
 #
 # Example:
 #   $env:NETX_FORGEJO_TOKEN = "..."   # or User env NETX_FORGEJO_TOKEN
